@@ -48,7 +48,7 @@
     "langsmith": "^0.5.7",
     "mammoth": "^1.12.0",
     "node-html-markdown": "^2.0.0",
-    "openai": "^4.77.0",
+    "openai": "^7.23.0",
     "undici": "^6.29.0",
     "unpdf": "^1.8.0"
   },
