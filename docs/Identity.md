@@ -28,7 +28,7 @@ AgentForEach partitions all data (sessions, memories, prompt-docs, usage, cron-j
 - **No cross-channel unification**: A user on Telegram and the same user on the WebSocket dashboard are treated as different people.
 - **No multi-user support**: Adding a second user requires deploying a separate AgentForEach instance.
 
-The Channel Identity Registry solves all three by mapping `(channel, channelSenderId)` to a canonical `chittiUserId` in the database.
+The Channel Identity Registry solves all three by mapping `(channel, channelSenderId)` to a canonical `userId` in the database.
 
 ---
 
@@ -102,12 +102,12 @@ The Channel Identity Registry solves all three by mapping `(channel, channelSend
 
 ### IdentityLink
 
-Stored in the `identity-links` Cosmos DB container. Partition key: `/chittiUserId`.
+Stored in the `identity-links` Cosmos DB container. Partition key: `/userId`.
 
 ```typescript
 {
   id: "telegram:12345",        // {channel}:{channelUserId}
-  chittiUserId: "alice",       // canonical AgentForEach user ID
+  userId: "alice",       // canonical AgentForEach user ID
   channel: "telegram",         // channel identifier (lowercase)
   channelUserId: "12345",      // channel-specific sender ID
   displayName: "Alice",  // informational (from channel profile)
@@ -126,7 +126,7 @@ Stored in the `identity-channel-index` container. Partition key: `/id`. One docu
 ```typescript
 {
   id: "telegram:12345",        // {channel}:{channelUserId}
-  chittiUserId: "alice",       // current owner
+  userId: "alice",       // current owner
   updatedAt: "2026-09-29T..."
 }
 ```
@@ -141,7 +141,7 @@ Stored in the `identity-pairing` Cosmos DB container. Partition key: `/code`. Au
 {
   id: "A3X9K2",               // the pairing code itself
   code: "A3X9K2",             // same as id (for query convenience)
-  chittiUserId: "alice",      // who requested the code
+  userId: "alice",      // who requested the code
   expiresAt: "2026-02-24T...",
   ttl: 300                    // 5 minutes (Cosmos DB auto-delete)
 }
@@ -159,7 +159,7 @@ Every inbound channel message goes through a 3-tier resolution in `resolveChanne
 
 ```
 1. Database lookup ──▶ Found IdentityLink?
-   │                    YES → return chittiUserId (source: "identity-link")
+   │                    YES → return userId (source: "identity-link")
    │
 2. Config fallback ──▶ fallbackMode = "config-default" AND channel has defaultUserId?
    │                    YES → return defaultUserId (source: "config-default")
@@ -229,7 +229,7 @@ Self-service pairing lets a user link their channel account to their AgentForEac
       │                                │ │  2. Message is 6 chars,  │ │
       │                                │ │     alphanumeric → code? │ │
       │                                │ │  3. consumePairingCode() │ │
-      │                                │ │     → chittiUserId       │ │
+      │                                │ │     → userId       │ │
       │                                │ │  4. upsertLink({         │ │
       │                                │ │       telegram:12345 →   │ │
       │                                │ │       alice })           │ │
@@ -241,7 +241,7 @@ Self-service pairing lets a user link their channel account to their AgentForEac
       │                                │                              │
       │  All future Telegram messages                                 │
       │  from user 12345 now resolve                                  │
-      │  to chittiUserId "alice"                                      │
+      │  to userId "alice"                                      │
 ```
 
 ### Code Detection Logic
@@ -295,7 +295,7 @@ Response:
   "links": [
     {
       "id": "telegram:12345",
-      "chittiUserId": "alice",
+      "userId": "alice",
       "channel": "telegram",
       "channelUserId": "12345",
       "displayName": "Alice",
@@ -308,7 +308,7 @@ Response:
 
 ### `POST /api/identity/links`
 
-**Admin only.** Create an identity link directly, optionally for another user (`chittiUserId`, defaults to the caller). Everyone else links a channel account by pairing: the code sent from the channel proves the sender controls it. A non-admin gets `403`.
+**Admin only.** Create an identity link directly, optionally for another user (`userId`, defaults to the caller). Everyone else links a channel account by pairing: the code sent from the channel proves the sender controls it. A non-admin gets `403`.
 
 The admin role is `auth.settings.adminRole` (default `"admin"`) in the caller's `AuthContext.roles`, which providers fill from:
 - **Easy Auth / JWT:** role claims (e.g. an Entra app role named `admin`);
@@ -327,7 +327,7 @@ With explicit target user:
 {
   "channel": "discord",
   "channelUserId": "abc123",
-  "chittiUserId": "another-user"
+  "userId": "another-user"
 }
 ```
 

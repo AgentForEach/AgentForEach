@@ -33,7 +33,7 @@ class InMemoryContainer<T extends BaseDocument> implements ContainerHandle<T> {
   private docs = new Map<string, T>();
   private partitionKeyPath: string;
 
-  constructor(partitionKeyPath = "/chittiUserId") {
+  constructor(partitionKeyPath = "/userId") {
     this.partitionKeyPath = partitionKeyPath.replace(/^\//, "");
   }
 
@@ -330,7 +330,7 @@ test("resolveChannelIdentity resolves linked user for channel message", async ()
   const store = await setupIdentityStore();
   await store.upsertLink({
     id: "telegram:12345",
-    chittiUserId: "alice",
+    userId: "alice",
     channel: "telegram",
     channelUserId: "12345",
     linkedVia: "admin",
@@ -341,7 +341,7 @@ test("resolveChannelIdentity resolves linked user for channel message", async ()
   const result = await resolveChannelIdentity(store, "telegram", "12345", "default-user");
 
   assert.equal(result.resolved, true);
-  assert.equal(result.resolved && result.chittiUserId, "alice");
+  assert.equal(result.resolved && result.userId, "alice");
   assert.equal(result.source, "identity-link");
 });
 
@@ -352,7 +352,7 @@ test("resolveChannelIdentity falls back to config default when unlinked", async 
   const result = await resolveChannelIdentity(store, "telegram", "99999", "telegram-user");
 
   assert.equal(result.resolved, true);
-  assert.equal(result.resolved && result.chittiUserId, "telegram-user");
+  assert.equal(result.resolved && result.userId, "telegram-user");
   assert.equal(result.source, "config-default");
 });
 
@@ -361,7 +361,7 @@ test("resolveChannelIdentity works with null store (backward compatible)", async
   const result = await resolveChannelIdentity(null, "telegram", "12345", "telegram-user");
 
   assert.equal(result.resolved, true);
-  assert.equal(result.resolved && result.chittiUserId, "telegram-user");
+  assert.equal(result.resolved && result.userId, "telegram-user");
   assert.equal(result.source, "config-default");
 });
 
@@ -380,7 +380,7 @@ test("resolveChannelIdentity identity-link overrides config default", async () =
   const store = await setupIdentityStore();
   await store.upsertLink({
     id: "telegram:12345",
-    chittiUserId: "alice",
+    userId: "alice",
     channel: "telegram",
     channelUserId: "12345",
     linkedVia: "admin",
@@ -391,7 +391,7 @@ test("resolveChannelIdentity identity-link overrides config default", async () =
   const result = await resolveChannelIdentity(store, "telegram", "12345", "other-user");
 
   assert.equal(result.resolved, true);
-  assert.equal(result.resolved && result.chittiUserId, "alice");
+  assert.equal(result.resolved && result.userId, "alice");
   assert.equal(result.source, "identity-link");
 });
 
@@ -413,7 +413,7 @@ test("tryPairChannel creates link when valid pairing code sent", async () => {
   // Verify link created
   const link = await store.resolveByChannel("telegram", "12345");
   assert.ok(link);
-  assert.equal(link.chittiUserId, "alice");
+  assert.equal(link.userId, "alice");
   assert.equal(link.channel, "telegram");
   assert.equal(link.linkedVia, "pairing-code");
   assert.equal(link.displayName, "Alice Example");
@@ -496,13 +496,13 @@ test("mock plugin toSendRequest with undefined defaultUserId", () => {
 // Tests — Cross-channel identity unification
 // ============================================================================
 
-test("same user linked from multiple channels resolves to same chittiUserId", async () => {
+test("same user linked from multiple channels resolves to same userId", async () => {
   const store = await setupIdentityStore();
 
   // Link both telegram and whatsapp to "alice"
   await store.upsertLink({
     id: "telegram:12345",
-    chittiUserId: "alice",
+    userId: "alice",
     channel: "telegram",
     channelUserId: "12345",
     linkedVia: "admin",
@@ -510,7 +510,7 @@ test("same user linked from multiple channels resolves to same chittiUserId", as
   });
   await store.upsertLink({
     id: "whatsapp:+15551234567",
-    chittiUserId: "alice",
+    userId: "alice",
     channel: "whatsapp",
     channelUserId: "+15551234567",
     linkedVia: "pairing-code",
@@ -527,21 +527,21 @@ test("same user linked from multiple channels resolves to same chittiUserId", as
 
   // Both resolve to the same canonical user
   assert.equal(
-    telegramResult.resolved && telegramResult.chittiUserId,
+    telegramResult.resolved && telegramResult.userId,
     "alice",
   );
   assert.equal(
-    whatsappResult.resolved && whatsappResult.chittiUserId,
+    whatsappResult.resolved && whatsappResult.userId,
     "alice",
   );
 });
 
-test("different users on same channel resolve to different chittiUserIds", async () => {
+test("different users on same channel resolve to different userIds", async () => {
   const store = await setupIdentityStore();
 
   await store.upsertLink({
     id: "telegram:12345",
-    chittiUserId: "alice",
+    userId: "alice",
     channel: "telegram",
     channelUserId: "12345",
     linkedVia: "admin",
@@ -549,7 +549,7 @@ test("different users on same channel resolve to different chittiUserIds", async
   });
   await store.upsertLink({
     id: "telegram:67890",
-    chittiUserId: "priya",
+    userId: "priya",
     channel: "telegram",
     channelUserId: "67890",
     linkedVia: "admin",
@@ -561,8 +561,8 @@ test("different users on same channel resolve to different chittiUserIds", async
   const aliceResult = await resolveChannelIdentity(store, "telegram", "12345");
   const priyaResult = await resolveChannelIdentity(store, "telegram", "67890");
 
-  assert.equal(aliceResult.resolved && aliceResult.chittiUserId, "alice");
-  assert.equal(priyaResult.resolved && priyaResult.chittiUserId, "priya");
+  assert.equal(aliceResult.resolved && aliceResult.userId, "alice");
+  assert.equal(priyaResult.resolved && priyaResult.userId, "priya");
 });
 
 // ============================================================================

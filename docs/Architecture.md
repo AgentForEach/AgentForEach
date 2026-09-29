@@ -62,7 +62,7 @@ Every container is defined by the code that uses it and recorded in `infra/cosmo
 | `cron-jobs` | `/userId` | — | Scheduled jobs |
 | `cron-due-index`, `cron-heartbeat-events` | `/shardId` | 7 days, 2 days | What each scheduler shard runs next |
 | `cron-runs` | `/jobId` | 1 day | Run history |
-| `identity-links`, `identity-channel-index`, `identity-pairing` | `/chittiUserId`, `/id`, `/code` | —, —, 5 min | Channel accounts linked to users |
+| `identity-links`, `identity-channel-index`, `identity-pairing` | `/userId`, `/id`, `/code` | —, —, 5 min | Channel accounts linked to users |
 | `hitl-requests` | `/userId` | 1 h | Paused runs waiting for a form or approval |
 | `usage-records` | `/userId` | 90 days | Tokens and cost per run |
 | `rate-limits` | `/id` | per document | Per-user message counters |

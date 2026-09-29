@@ -561,8 +561,5 @@ export function createFunctionAppAuthSettings(args: {
       },
     },
     identityProviders,
-  }, {
-    // Its name before the AgentForEach rename; a singleton, never recreate it.
-    aliases: [{ name: "chitti-functionapp-auth" }],
   });
 }

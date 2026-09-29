@@ -47,14 +47,11 @@ function resolvePath(): string | null {
     }
   }
 
-  // chitti.json is the file's name before the AgentForEach rename: a
-  // deployment that still has one customised it, so it wins over the stock
-  // agentforeach.json until renamed.
-  const names = configFileFromEnv ? [configFileFromEnv] : ["chitti.json", "agentforeach.json"];
-  const candidates = names.flatMap((name) => [
+  const name = configFileFromEnv ?? "agentforeach.json";
+  const candidates = [
     resolve(utilsDir, `../config/${name}`),
     resolve(utilsDir, `../../../config/${name}`),
-  ]);
+  ];
 
   _resolvedPath = candidates.find((p) => existsSync(p)) ?? null;
   if (!_resolvedPath) {
@@ -67,9 +64,6 @@ function resolvePath(): string | null {
     );
   } else {
     console.log(`[config] loaded ${_resolvedPath}`);
-    if (_resolvedPath.endsWith("chitti.json")) {
-      console.warn("[config] chitti.json is the pre-rename name: rename it to agentforeach.json (docs/UPGRADING.md)");
-    }
   }
   return _resolvedPath;
 }

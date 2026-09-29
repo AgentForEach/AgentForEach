@@ -18,28 +18,23 @@ export const environment = cfg.get("environment") ?? "dev";
  *
  *   pulumi config set agentforeach:nameSuffix $(openssl rand -hex 3)
  *
- * "none" keeps every name of a stack deployed before the AgentForEach rename
- * (chitti-* resources, the "chitti" database and hub). Changing it on a live
- * stack replaces those resources.
+ * Changing it on a live stack replaces those resources.
  */
-const nameSuffixConfig = cfg.get("nameSuffix");
-if (!nameSuffixConfig) {
+const nameSuffix = cfg.get("nameSuffix");
+if (!nameSuffix) {
   throw new Error(
-    "Set agentforeach:nameSuffix to a short random string: pulumi config set agentforeach:nameSuffix $(openssl rand -hex 3)" +
-      " (or \"none\" to keep the names of a stack deployed before this setting existed)",
+    "Set agentforeach:nameSuffix to a short random string: pulumi config set agentforeach:nameSuffix $(openssl rand -hex 3)",
   );
 }
-if (nameSuffixConfig !== "none" && !/^[a-z0-9]{3,8}$/.test(nameSuffixConfig)) {
+if (!/^[a-z0-9]{3,8}$/.test(nameSuffix)) {
   throw new Error("agentforeach:nameSuffix must be 3-8 lowercase letters or digits");
 }
-export const legacyNames = nameSuffixConfig === "none";
-const nameSuffix = legacyNames ? "" : nameSuffixConfig;
 /** Resource name prefix: "afe" (AgentForEach), short enough for Azure's name limits. */
-const namePrefix = legacyNames ? "chitti" : "afe";
+const namePrefix = "afe";
 
 /** Cosmos DB database and Web PubSub hub names. */
-export const cosmosDatabaseName = cfg.get("cosmosDatabaseName") ?? (legacyNames ? "chitti" : "agentforeach");
-export const webPubSubHub = cfg.get("webPubSubHub") ?? (legacyNames ? "chitti" : "agentforeach");
+export const cosmosDatabaseName = cfg.get("cosmosDatabaseName") ?? "agentforeach";
+export const webPubSubHub = cfg.get("webPubSubHub") ?? "agentforeach";
 /** Key Vault name prefix (a random suffix follows). */
 export const keyVaultPrefix = `${namePrefix}-kv`;
 /**
@@ -310,7 +305,7 @@ export const location = azureCfg.require("location");
 
 // Naming convention: afe-{resource}-{env}-{suffix}
 export function name(resource: string): string {
-  return nameSuffix ? `${namePrefix}-${resource}-${environment}-${nameSuffix}` : `${namePrefix}-${resource}-${environment}`;
+  return `${namePrefix}-${resource}-${environment}-${nameSuffix}`;
 }
 
 /**

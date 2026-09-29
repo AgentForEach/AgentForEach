@@ -12,7 +12,7 @@ import type { AuthContext } from "../auth/types.js";
 export type LinkCreateBody = {
   channel?: string;
   channelUserId?: string;
-  chittiUserId?: string;
+  userId?: string;
 };
 
 export type LinkCreateDecision =
@@ -39,7 +39,7 @@ export function authorizeLinkCreate(
   }
   return {
     ok: true,
-    targetUserId: body.chittiUserId?.trim() || auth.userId,
+    targetUserId: body.userId?.trim() || auth.userId,
     channel,
     channelUserId,
   };

@@ -2,27 +2,6 @@
 
 Behaviour changes an operator needs to know about, newest first. Most are security fixes that close a default that was unsafe for a multi-tenant deployment. Each says what changed, who is affected, and what to do.
 
-## Renamed to AgentForEach (September 2026)
-
-The project was called Chitti. Everything user-visible was renamed; two names were kept because changing them would need a data migration:
-
-- the `chittiUserId` field (partition key of `identity-links`, and a field in identity and pairing documents);
-- the runtime's `CHITTI_*` environment variables (`CHITTI_RUN_DEADLINE_MS`, `CHITTI_RETURN_ERROR_DETAILS`, `CHITTI_CHAIN_RESPONSES`, `CHITTI_API_KEY_*`).
-
-The scripts' variables were renamed: `AGENTFOREACH_BASE_URL`, `AGENTFOREACH_AUTH_BEARER`, `AGENTFOREACH_TEST_USERS`, `SANDBOX_IMAGE_FULL`, and the workflow's repository variable `AGENTFOREACH_FUNCTION_APP`.
-
-| Change | What to do on an existing stack |
-|---|---|
-| `packages/chitti-src` is `gateway/` (`@agentforeach/gateway`) and `packages/infra` is `infra/`, both at the repo root; the build output is still `dist/gateway/` | Update scripts that reference the old paths |
-| The config file is `config/agentforeach.json` | Rename yours. Until you do, a `config/chitti.json` is still used (it wins over the stock `agentforeach.json`) and the log warns |
-| The Pulumi project is `agentforeach`, so config keys are `agentforeach:*` | Before the next `pulumi up`: `pulumi stack rename <org>/agentforeach/<stack>`, then rename the keys in `Pulumi.<stack>.yaml` (`sed -i.bak 's/^  chitti:/  agentforeach:/' Pulumi.<stack>.yaml`), then `pulumi config set agentforeach:nameSuffix none`. `pulumi preview` should show in-place updates only (tags, the alert group's short name), no replacements |
-| New stacks name resources `afe-<resource>-<env>-<suffix>`, the Cosmos database and Web PubSub hub `agentforeach` | `nameSuffix: none` keeps `chitti-*` resources and the `chitti` database and hub (or set `agentforeach:cosmosDatabaseName` / `agentforeach:webPubSubHub` explicitly) |
-| HTTP headers `x-chitti-*` are `x-agentforeach-*`: the Web PubSub upstream secret header, and the MCP `_meta` keys (`-user-id`, `-channel`, `-channel-chat-id`) | MCP servers: read the new keys. The old `x-chitti-*` `_meta` keys are still sent alongside for one more release |
-| Web PubSub client id `agentforeach-client`, sandbox labels `agentforeach-owner` / `agentforeach-user` | Sandboxes with the old labels are no longer found, so account erasure doesn't reach them; they are deleted `autoDeleteDays` (30) after they stop. To remove them sooner, delete the sandbox group's sandboxes labelled `chitti-owner` |
-| The default agent persona is named "Assistant" (was "Chitti") | Set `prompt.identity` and the `IDENTITY` template in your config to keep a name |
-| Cron scheduler orchestrations are `agentforeach-cron-scheduler[-n]` (`cron.instanceIdPrefix`) | The old `chitti-cron-scheduler*` instances keep running next to the new ones (jobs still run once: claims are etag-guarded). Terminate them, or set `cron.instanceIdPrefix` back to `chitti-cron-scheduler` |
-| LangSmith traces go to the project `agentforeach` | Set `observability.langsmith.project` (or `LANGSMITH_PROJECT`) to keep your old project |
-
 ## Security hardening (September 2026)
 
 ### Authentication
@@ -91,8 +70,7 @@ The scripts' variables were renamed: `AGENTFOREACH_BASE_URL`, `AGENTFOREACH_AUTH
 
 | Change | Who is affected | What to do |
 |---|---|---|
-| `agentforeach:nameSuffix` is required; it is appended to the globally unique resource names (Cosmos, Web PubSub, storage, Function App, Search, ACR) so two stacks called `dev` don't ask for the same names | Every existing stack: `pulumi up` stops with an error until it is set | **Existing stacks:** `pulumi config set agentforeach:nameSuffix none` keeps the current names. Any other value renames, which **replaces** those resources and their data. New stacks: `pulumi config set agentforeach:nameSuffix $(openssl rand -hex 3)` |
-| Runtime secrets live in a Key Vault (random name `afe-kv-xxxxxxxx`, or `chitti-kv-xxxxxxxx` with `nameSuffix: none`) referenced from app settings by version, resolved by a user-assigned identity granted access before the app starts (`agentforeach:keyVaultEnabled`, default true) | Every stack on the next `pulumi up` | Nothing. A new secret value restarts the app onto it. Deleted vaults are soft-deleted for 7 days: `az keyvault purge --name <vault>` if you need the name back |
+| Runtime secrets live in a Key Vault (random name `afe-kv-xxxxxxxx`) referenced from app settings by version, resolved by a user-assigned identity granted access before the app starts (`agentforeach:keyVaultEnabled`, default true) | Every stack on the next `pulumi up` | Nothing. A new secret value restarts the app onto it. Deleted vaults are soft-deleted for 7 days: `az keyvault purge --name <vault>` if you need the name back |
 | The runtime gets a Search **query** key, not the admin key | Knowledge ingestion scripts that used the app setting | Use the admin key from the portal or `az search admin-key show` for ingestion |
 | Web PubSub upstream calls must carry a valid `ce-signature` whenever the runtime has an access key (from `WEBPUBSUB_CONNECTION_STRING`, plus `WEBPUBSUB_SECONDARY_ACCESS_KEY` during rotation). The shared secret no longer substitutes for it, and is no longer put in the event handler URLs. Only key-less (identity-based) connections still use `WEBPUBSUB_UPSTREAM_SHARED_SECRET`, sent as a header | Anyone calling `/ws/*` with the shared secret; deployments whose hub is configured outside Pulumi with `?upstreamSecret=` URLs | Re-run `pulumi up` (handler URLs without secrets). `webPubSubUpstreamSharedSecret` is now optional; rotate it if it was ever in a URL |
 | Only the message handler receives Web PubSub user events (handlers match in order; the connect handler used to be first with `userEventPattern: "*"`) | Hubs configured outside Pulumi | Match the Pulumi hub definition |

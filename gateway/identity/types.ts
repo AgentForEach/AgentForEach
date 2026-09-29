@@ -5,7 +5,7 @@
  * Maps channel-specific sender IDs to canonical AgentForEach user IDs.
  *
  * Two containers:
- *   "identity-links"   — IdentityLink documents (partition key: /chittiUserId)
+ *   "identity-links"   — IdentityLink documents (partition key: /userId)
  *   "identity-pairing" — PairingCode documents (partition key: /code)
  *
  * All identity mappings live exclusively in Cosmos DB (no static config).
@@ -20,7 +20,7 @@
  * An identity link mapping a channel-specific sender to a AgentForEach user.
  *
  * Container: "identity-links"
- * Partition key: /chittiUserId
+ * Partition key: /userId
  * Document ID: `{channel}:{channelUserId}` (e.g., "telegram:12345")
  *
  * A single AgentForEach user can have multiple identity links (one per channel account).
@@ -31,7 +31,7 @@ export interface IdentityLink {
   id: string;
 
   /** Canonical AgentForEach user ID. Partition key. */
-  chittiUserId: string;
+  userId: string;
 
   /** Channel identifier (e.g., "telegram", "whatsapp", "discord"). */
   channel: string;
@@ -82,7 +82,7 @@ export interface PairingCode {
   code: string;
 
   /** The canonical AgentForEach user ID that requested the code. */
-  chittiUserId: string;
+  userId: string;
 
   /** ISO-8601 expiration timestamp. */
   expiresAt: string;
@@ -105,7 +105,7 @@ export interface PairingCode {
  * Result of resolving a channel sender to a AgentForEach user.
  */
 export type IdentityResolution =
-  | { resolved: true; chittiUserId: string; source: "identity-link" | "config-default" }
+  | { resolved: true; userId: string; source: "identity-link" | "config-default" }
   | { resolved: false; fallbackUserId: string; source: "sender-id-passthrough" }
   /** Legacy links disagree on the owner: the turn must be refused. */
   | { resolved: false; source: "conflict" };

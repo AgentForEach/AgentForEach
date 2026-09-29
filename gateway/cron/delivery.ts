@@ -198,7 +198,7 @@ async function lookupChannelOwner(channelId: string, channelUserId: string): Pro
   const store = getIdentityStore();
   if (!store) return null;
   try {
-    return (await store.resolveByChannel(channelId, channelUserId))?.chittiUserId ?? null;
+    return (await store.resolveByChannel(channelId, channelUserId))?.userId ?? null;
   } catch {
     return null; // conflicting links: don't deliver
   }

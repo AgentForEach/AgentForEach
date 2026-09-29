@@ -47,7 +47,7 @@ import {
 import { redactId } from "../utils/redact.js";
 
 const RETURN_ERROR_DETAILS =
-  (process.env.CHITTI_RETURN_ERROR_DETAILS ?? "").toLowerCase() === "true";
+  (process.env.AGENTFOREACH_RETURN_ERROR_DETAILS ?? "").toLowerCase() === "true";
 
 function toErrorParts(err: unknown): { message: string; stack?: string } {
   if (err instanceof Error) {

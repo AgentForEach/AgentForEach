@@ -68,7 +68,7 @@ const VALID_PROVIDER_IDS = new Set(["openai", "anthropic"]);
 // When true, include the raw error message in responses (for local/dev only).
 // Keep this OFF in production.
 const RETURN_ERROR_DETAILS =
-  (process.env.CHITTI_RETURN_ERROR_DETAILS ?? "").toLowerCase() === "true";
+  (process.env.AGENTFOREACH_RETURN_ERROR_DETAILS ?? "").toLowerCase() === "true";
 
 function toErrorParts(err: unknown): { message: string; stack?: string } {
   if (err instanceof Error) {
@@ -800,7 +800,7 @@ async function apiIdentityLinks(
 
       const link = await store.upsertLink({
         id: IdentityStore.buildLinkId(decision.channel, decision.channelUserId),
-        chittiUserId: decision.targetUserId,
+        userId: decision.targetUserId,
         channel: decision.channel,
         channelUserId: decision.channelUserId,
         linkedVia: "admin",

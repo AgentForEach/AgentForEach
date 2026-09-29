@@ -360,7 +360,7 @@ if (cfg.sandboxEnabled && cfg.sandboxProvider === "aca-sessions") {
     const acrServer = pulumi.interpolate`${acr.name}.azurecr.io`;
     const containerImage = cfg.sandboxContainerImage
       ? pulumi.output(cfg.sandboxContainerImage)
-      : pulumi.interpolate`${acrServer}/${cfg.legacyNames ? "chitti" : "agentforeach"}-sandbox:latest`;
+      : pulumi.interpolate`${acrServer}/agentforeach-sandbox:latest`;
 
     const sessionPool = createCustomContainerSessionPool({
       resourceGroupName: resourceGroup.name,

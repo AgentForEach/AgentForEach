@@ -238,7 +238,7 @@ export interface SendRequest {
 
   /**
    * Epoch ms by which the run must finish; it fails with a timeout error
-   * after that. Default: now + CHITTI_RUN_DEADLINE_MS (9 min, under the
+   * after that. Default: now + AGENTFOREACH_RUN_DEADLINE_MS (9 min, under the
    * Functions timeout). HTTP callers pass less: Azure's front end drops
    * requests after 230 s.
    */

@@ -58,7 +58,7 @@ const identity = new IdentityStore(new InMemoryCosmosDatabase(), identityConfig)
 await identity.initialize();
 await identity.upsertLink({
   id: IdentityStore.buildLinkId("telegram", "111"),
-  chittiUserId: "alice",
+  userId: "alice",
   channel: "telegram",
   channelUserId: "111",
   linkedVia: "admin",

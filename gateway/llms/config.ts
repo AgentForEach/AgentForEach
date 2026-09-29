@@ -144,7 +144,7 @@ export interface LlmConfig {
   /**
    * Continue conversations with the provider's stored response chain
    * (OpenAI previous_response_id) instead of sending local history.
-   * Default: true. CHITTI_CHAIN_RESPONSES overrides.
+   * Default: true. AGENTFOREACH_CHAIN_RESPONSES overrides.
    */
   chainResponses?: boolean;
 
@@ -522,7 +522,7 @@ function matchesBuiltInReasoningModel(providerId: string, model: string): boolea
 
 /** Whether new turns continue the provider's response chain (see LlmConfig.chainResponses). */
 export function chainResponsesEnabled(): boolean {
-  const env = process.env.CHITTI_CHAIN_RESPONSES;
+  const env = process.env.AGENTFOREACH_CHAIN_RESPONSES;
   if (env !== undefined && env !== "") return env === "true" || env === "1";
   return loadLlmConfig().chainResponses ?? true;
 }

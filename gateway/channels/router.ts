@@ -183,7 +183,7 @@ export async function processInbound(
   }
 
   const resolvedUserId = identity.resolved
-    ? identity.chittiUserId
+    ? identity.userId
     : identity.fallbackUserId;
 
   // Build SendRequest using the plugin's channel-specific mapping

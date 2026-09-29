@@ -372,7 +372,7 @@ async function settleToolCall(
 
 /** Default run budget: under the 10-minute functionTimeout in host.json. */
 const DEFAULT_RUN_DEADLINE_MS = (() => {
-  const v = Number.parseInt(process.env.CHITTI_RUN_DEADLINE_MS ?? "", 10);
+  const v = Number.parseInt(process.env.AGENTFOREACH_RUN_DEADLINE_MS ?? "", 10);
   return v > 0 ? v : 540_000;
 })();
 

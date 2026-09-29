@@ -376,11 +376,6 @@ class McpServerConnection {
               ...(context?.channelChatId
                 ? { "x-agentforeach-channel-chat-id": context.channelChatId }
                 : {}),
-              // Pre-rename keys, for MCP servers not yet updated. Remove in
-              // the release after next.
-              "x-chitti-user-id": userId,
-              ...(context?.channelName ? { "x-chitti-channel": context.channelName } : {}),
-              ...(context?.channelChatId ? { "x-chitti-channel-chat-id": context.channelChatId } : {}),
             }
           : undefined;
 

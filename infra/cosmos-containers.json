@@ -209,7 +209,7 @@
     "id": "identity-links",
     "partitionKey": {
       "paths": [
-        "/chittiUserId"
+        "/userId"
       ],
       "kind": "Hash",
       "version": 2

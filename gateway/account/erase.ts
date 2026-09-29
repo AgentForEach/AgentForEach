@@ -6,10 +6,9 @@
  * container catalog (database/catalog.ts), the same list the IaC provisions,
  * so a container added later is covered without touching this file:
  *
- *   - containers partitioned by the user (/userId, /chittiUserId): the whole
- *     partition;
+ *   - containers partitioned by the user (/userId): the whole partition;
  *   - other containers (messages, channel index, pairing codes, cron index,
- *     runs, heartbeat events): documents whose userId or chittiUserId is the
+ *     runs, heartbeat events): documents whose userId is the
  *     user, found with one cross-partition query each.
  *
  * Not deleted here, because they hold no identifying content and expire on
@@ -26,8 +25,8 @@ import { redactId } from "../utils/redact.js";
 /** Deletes in flight at once per container. */
 const DELETE_CONCURRENCY = 16;
 
-/** Partition key paths that mean "one partition per user". */
-const USER_PARTITIONS = new Set(["/userId", "/chittiUserId"]);
+/** Partition key path that means "one partition per user". */
+const USER_PARTITION = "/userId";
 
 export type ErasureReport = {
   /** Documents deleted, by container. */
@@ -65,14 +64,14 @@ export async function eraseUserData(
     try {
       const container = await db.getOrCreateContainer(def);
       let docs: Keyed[];
-      if (USER_PARTITIONS.has(pkPath)) {
+      if (pkPath === USER_PARTITION) {
         docs = (await container.queryWithParams<{ id: string }>("SELECT c.id FROM c", [], { partitionKey: userId })).map(
           (d) => ({ id: d.id, pk: userId }),
         );
       } else {
         const field = pkPath.slice(1);
         docs = await container.queryWithParams<Keyed>(
-          `SELECT c.id, c["${field}"] AS pk FROM c WHERE c.userId = @user OR c.chittiUserId = @user`,
+          `SELECT c.id, c["${field}"] AS pk FROM c WHERE c.userId = @user`,
           [{ name: "@user", value: userId }],
         );
       }

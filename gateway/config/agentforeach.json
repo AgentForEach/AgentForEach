@@ -19,7 +19,7 @@
         "enabled": false,
         "headerName": "x-api-key",
         "keys": {
-          "$CHITTI_API_KEY_1": {
+          "$AGENTFOREACH_API_KEY_1": {
             "userId": "api-user-1",
             "roles": ["user"],
             "email": "api-user@example.com"

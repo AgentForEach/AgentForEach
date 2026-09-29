@@ -6,7 +6,7 @@
  * canonical AgentForEach user ID.
  *
  * Resolution order:
- *   1. Identity link in database → chittiUserId
+ *   1. Identity link in database → userId
  *   2. Channel config defaultUserId (fallbackMode: "config-default")
  *   3. Passthrough "{channel}:{senderId}" (fallbackMode: "sender-passthrough")
  */
@@ -48,7 +48,7 @@ export async function resolveChannelIdentity(
     if (link) {
       return {
         resolved: true,
-        chittiUserId: link.chittiUserId,
+        userId: link.userId,
         source: "identity-link",
       };
     }
@@ -58,7 +58,7 @@ export async function resolveChannelIdentity(
   if (config.fallbackMode === "config-default" && configDefaultUserId) {
     return {
       resolved: true,
-      chittiUserId: configDefaultUserId,
+      userId: configDefaultUserId,
       source: "config-default",
     };
   }
@@ -91,7 +91,7 @@ const PAIRING_CODE_PATTERN = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]+$/;
  * @param messageText - The message text to check.
  * @param senderName - Optional sender display name.
  * @param senderUsername - Optional sender username.
- * @returns The resolved chittiUserId if pairing succeeded, null otherwise.
+ * @returns The resolved userId if pairing succeeded, null otherwise.
  */
 export async function tryPairChannel(
   store: IdentityStore,
@@ -115,8 +115,8 @@ export async function tryPairChannel(
     return null;
   }
 
-  const chittiUserId = await store.consumePairingCode(trimmed);
-  if (!chittiUserId) {
+  const userId = await store.consumePairingCode(trimmed);
+  if (!userId) {
     // Every miss counts, linked senders included: a correct guess would
     // relink the sender to someone else's account. The lockout only blocks
     // pairing, and it expires.
@@ -127,7 +127,7 @@ export async function tryPairChannel(
   // Create the identity link
   const link = {
     id: IdentityStore.buildLinkId(channel, channelUserId),
-    chittiUserId,
+    userId,
     channel: channel.toLowerCase(),
     channelUserId,
     displayName: senderName,
@@ -137,5 +137,5 @@ export async function tryPairChannel(
   };
 
   await store.upsertLink(link);
-  return chittiUserId;
+  return userId;
 }

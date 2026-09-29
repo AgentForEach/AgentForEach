@@ -5,7 +5,7 @@
  * Follows the same pattern as SessionStore.
  *
  * Three containers:
- *   "identity-links"         — IdentityLink documents (partition key: /chittiUserId)
+ *   "identity-links"         — IdentityLink documents (partition key: /userId)
  *   "identity-channel-index" — one owner doc per channel account (partition key: /id)
  *   "identity-pairing"       — PairingCode + attempt docs (partition key: /code)
  *
@@ -54,7 +54,7 @@ type PairingAttempts = {
 /** Owner of one channel account (identity-channel-index, partition /id). */
 type ChannelOwner = {
   id: string;
-  chittiUserId: string;
+  userId: string;
   updatedAt: string;
 };
 
@@ -106,7 +106,7 @@ export class IdentityStore {
       this.db.getOrCreateContainer<IdentityLink>({
         id: this.config.containerId,
         partitionKey: {
-          paths: ["/chittiUserId"],
+          paths: ["/userId"],
           kind: PartitionKeyKind.Hash,
           version: 2,
         },
@@ -166,11 +166,11 @@ export class IdentityStore {
     const previous = await this.indexContainer.read(link.id, link.id);
     await this.indexContainer.upsert({
       id: link.id,
-      chittiUserId: link.chittiUserId,
+      userId: link.userId,
       updatedAt: new Date().toISOString(),
     });
-    if (previous && previous.chittiUserId !== link.chittiUserId) {
-      await this.linksContainer.delete(link.id, previous.chittiUserId);
+    if (previous && previous.userId !== link.userId) {
+      await this.linksContainer.delete(link.id, previous.userId);
     }
     return this.linksContainer.upsert(link);
   }
@@ -195,7 +195,7 @@ export class IdentityStore {
 
     const owner = await this.indexContainer.read(docId, docId);
     if (owner) {
-      const link = await this.linksContainer.read(docId, owner.chittiUserId);
+      const link = await this.linksContainer.read(docId, owner.userId);
       if (!link) {
         console.error(`[identity] channel index points at a missing link doc for a ${channel} account`);
       }
@@ -215,7 +215,7 @@ export class IdentityStore {
       this.legacyMisses.set(docId, Date.now());
       return null;
     }
-    const owners = new Set(legacy.map((l) => l.chittiUserId));
+    const owners = new Set(legacy.map((l) => l.userId));
     if (owners.size > 1) {
       console.error(
         `[identity] ${owners.size} users linked to one ${channel} account; turns refused until an admin re-links it`,
@@ -224,7 +224,7 @@ export class IdentityStore {
     }
     await this.indexContainer.upsert({
       id: docId,
-      chittiUserId: legacy[0]!.chittiUserId,
+      userId: legacy[0]!.userId,
       updatedAt: new Date().toISOString(),
     });
     return legacy[0]!;
@@ -239,14 +239,14 @@ export class IdentityStore {
   async backfillChannelIndex(): Promise<{ indexed: number; alreadyIndexed: number; conflicts: number }> {
     this.ensureInitialized();
     const links = await this.linksContainer.queryWithParams<IdentityLink>(
-      "SELECT c.id, c.chittiUserId FROM c",
+      "SELECT c.id, c.userId FROM c",
     );
     const owners = new Map<string, Set<string>>();
     for (const l of links) {
-      if (!l.id || !l.chittiUserId) continue;
+      if (!l.id || !l.userId) continue;
       let set = owners.get(l.id);
       if (!set) owners.set(l.id, (set = new Set()));
-      set.add(l.chittiUserId);
+      set.add(l.userId);
     }
     let indexed = 0;
     let alreadyIndexed = 0;
@@ -256,9 +256,9 @@ export class IdentityStore {
         conflicts++;
         continue;
       }
-      const chittiUserId = [...users][0]!;
+      const userId = [...users][0]!;
       const existing = await this.indexContainer.read(id, id);
-      if (existing?.chittiUserId === chittiUserId) {
+      if (existing?.userId === userId) {
         alreadyIndexed++;
         continue;
       }
@@ -267,7 +267,7 @@ export class IdentityStore {
         conflicts++;
         continue;
       }
-      await this.indexContainer.upsert({ id, chittiUserId, updatedAt: new Date().toISOString() });
+      await this.indexContainer.upsert({ id, userId, updatedAt: new Date().toISOString() });
       indexed++;
     }
     this.legacyMisses.clear();
@@ -278,18 +278,18 @@ export class IdentityStore {
    * Get all identity links a AgentForEach user currently owns. A link doc left
    * behind by a concurrent re-link is excluded: the channel index decides.
    */
-  async getLinksForUser(chittiUserId: string): Promise<IdentityLink[]> {
+  async getLinksForUser(userId: string): Promise<IdentityLink[]> {
     this.ensureInitialized();
     const links = await this.linksContainer.queryWithParams<IdentityLink>(
-      "SELECT * FROM c WHERE c.chittiUserId = @userId",
-      [{ name: "@userId", value: chittiUserId }],
-      { partitionKey: chittiUserId },
+      "SELECT * FROM c WHERE c.userId = @userId",
+      [{ name: "@userId", value: userId }],
+      { partitionKey: userId },
     );
     const owned = await Promise.all(
       links.map(async (l) => {
         const owner = await this.indexContainer.read(l.id, l.id);
         // Links from before the index count as owned until backfilled.
-        return !owner || owner.chittiUserId === chittiUserId;
+        return !owner || owner.userId === userId;
       }),
     );
     return links.filter((_, i) => owned[i]);
@@ -302,15 +302,15 @@ export class IdentityStore {
   async deleteLink(
     channel: string,
     channelUserId: string,
-    chittiUserId: string,
+    userId: string,
   ): Promise<boolean> {
     this.ensureInitialized();
     const docId = IdentityStore.buildLinkId(channel, channelUserId);
     const owner = await this.indexContainer.read(docId, docId);
-    if (owner?.chittiUserId === chittiUserId) {
+    if (owner?.userId === userId) {
       await this.indexContainer.delete(docId, docId);
     }
-    return this.linksContainer.delete(docId, chittiUserId);
+    return this.linksContainer.delete(docId, userId);
   }
 
   /** Whether a channel account is linked to any user (index only, no fallback). */
@@ -327,14 +327,14 @@ export class IdentityStore {
   /**
    * Generate a pairing code for a user.
    */
-  async createPairingCode(chittiUserId: string): Promise<PairingCode> {
+  async createPairingCode(userId: string): Promise<PairingCode> {
     this.ensureInitialized();
     const now = new Date();
     // ISO-8601 strings compare correctly as text.
     const active = await this.pairingContainer.queryWithParams<PairingCode>(
-      "SELECT * FROM c WHERE c.chittiUserId = @userId AND c.expiresAt > @now",
+      "SELECT * FROM c WHERE c.userId = @userId AND c.expiresAt > @now",
       [
-        { name: "@userId", value: chittiUserId },
+        { name: "@userId", value: userId },
         { name: "@now", value: now.toISOString() },
       ],
     );
@@ -352,7 +352,7 @@ export class IdentityStore {
     const doc: PairingCode = {
       id: code,
       code,
-      chittiUserId,
+      userId,
       expiresAt: expiresAt.toISOString(),
       consumed: false,
       ttl: this.config.pairingCodeTtlSeconds,
@@ -364,7 +364,7 @@ export class IdentityStore {
 
   /**
    * Consume a pairing code: look up by code, validate expiry, then delete it.
-   * Returns the chittiUserId if valid, null if invalid/expired/consumed.
+   * Returns the userId if valid, null if invalid/expired/consumed.
    *
    * Consumption is the delete: `delete` returns false when the document is
    * already gone, so of two concurrent consumers exactly one wins.
@@ -374,12 +374,12 @@ export class IdentityStore {
     const normalizedCode = code.trim().toUpperCase();
 
     const doc = (await this.pairingContainer.read(normalizedCode, normalizedCode)) as PairingCode | null;
-    if (!doc || !("chittiUserId" in doc)) return null;
+    if (!doc || !("userId" in doc)) return null;
     if (doc.consumed) return null; // legacy docs only; codes are now deleted on use
     if (new Date(doc.expiresAt) < new Date()) return null;
 
     const won = await this.pairingContainer.delete(normalizedCode, normalizedCode);
-    return won ? doc.chittiUserId : null;
+    return won ? doc.userId : null;
   }
 
   // --------------------------------------------------------------------------

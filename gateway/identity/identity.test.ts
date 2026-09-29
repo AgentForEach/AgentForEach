@@ -28,11 +28,11 @@ import type { IdentityConfig } from "./config.js";
  * In-memory container that is partition-key aware and supports the subset
  * of Cosmos SQL used by IdentityStore:
  *
- *   - Equality:   c.id = @id, c.chittiUserId = @userId
+ *   - Equality:   c.id = @id, c.userId = @userId
  *   - TOP @limit
  *
  * Two containers are created by IdentityStore.initialize():
- *   - "identity-links"   partition key: /chittiUserId
+ *   - "identity-links"   partition key: /userId
  *   - "identity-pairing" partition key: /code
  */
 class InMemoryContainer<T extends BaseDocument> implements ContainerHandle<T> {
@@ -40,7 +40,7 @@ class InMemoryContainer<T extends BaseDocument> implements ContainerHandle<T> {
   private docs = new Map<string, T>();
   private partitionKeyPath: string;
 
-  constructor(partitionKeyPath = "/chittiUserId") {
+  constructor(partitionKeyPath = "/userId") {
     this.partitionKeyPath = partitionKeyPath.replace(/^\//, "");
   }
 
@@ -277,7 +277,7 @@ async function setupStore(
 function makeLink(overrides?: Partial<IdentityLink>): IdentityLink {
   return {
     id: "telegram:12345",
-    chittiUserId: "alice",
+    userId: "alice",
     channel: "telegram",
     channelUserId: "12345",
     linkedVia: "admin",
@@ -297,7 +297,7 @@ test("upsertLink creates a new identity link", async () => {
   const created = await store.upsertLink(link);
 
   assert.equal(created.id, "telegram:12345");
-  assert.equal(created.chittiUserId, "alice");
+  assert.equal(created.userId, "alice");
   assert.equal(created.channel, "telegram");
   assert.equal(created.channelUserId, "12345");
 });
@@ -309,20 +309,20 @@ test("upsertLink + resolveByChannel round-trips", async () => {
   const resolved = await store.resolveByChannel("telegram", "12345");
 
   assert.ok(resolved);
-  assert.equal(resolved.chittiUserId, "alice");
+  assert.equal(resolved.userId, "alice");
   assert.equal(resolved.channel, "telegram");
   assert.equal(resolved.channelUserId, "12345");
 });
 
 test("upsertLink updates existing link (reassign user)", async () => {
   const store = await setupStore();
-  await store.upsertLink(makeLink({ chittiUserId: "alice" }));
-  await store.upsertLink(makeLink({ chittiUserId: "priya" }));
+  await store.upsertLink(makeLink({ userId: "alice" }));
+  await store.upsertLink(makeLink({ userId: "priya" }));
 
   const resolved = await store.resolveByChannel("telegram", "12345");
 
   assert.ok(resolved);
-  assert.equal(resolved.chittiUserId, "priya");
+  assert.equal(resolved.userId, "priya");
 });
 
 test("resolveByChannel returns null for non-existent link", async () => {
@@ -346,13 +346,13 @@ test("getLinksForUser returns all links for one user", async () => {
   const store = await setupStore();
   await store.upsertLink(makeLink({
     id: "telegram:12345",
-    chittiUserId: "alice",
+    userId: "alice",
     channel: "telegram",
     channelUserId: "12345",
   }));
   await store.upsertLink(makeLink({
     id: "whatsapp:+15551234567",
-    chittiUserId: "alice",
+    userId: "alice",
     channel: "whatsapp",
     channelUserId: "+15551234567",
   }));
@@ -368,13 +368,13 @@ test("getLinksForUser isolates between users", async () => {
   const store = await setupStore();
   await store.upsertLink(makeLink({
     id: "telegram:12345",
-    chittiUserId: "alice",
+    userId: "alice",
     channel: "telegram",
     channelUserId: "12345",
   }));
   await store.upsertLink(makeLink({
     id: "telegram:67890",
-    chittiUserId: "priya",
+    userId: "priya",
     channel: "telegram",
     channelUserId: "67890",
   }));
@@ -418,12 +418,12 @@ test("createPairingCode generates a valid code", async () => {
   assert.ok(pairing.code);
   assert.equal(pairing.code.length, 6);
   assert.match(pairing.code, /^[A-Z0-9]+$/);
-  assert.equal(pairing.chittiUserId, "alice");
+  assert.equal(pairing.userId, "alice");
   assert.equal(pairing.consumed, false);
   assert.ok(pairing.expiresAt);
 });
 
-test("consumePairingCode returns chittiUserId for valid code", async () => {
+test("consumePairingCode returns userId for valid code", async () => {
   const store = await setupStore();
   const pairing = await store.createPairingCode("alice");
 
@@ -495,7 +495,7 @@ test("resolveChannelIdentity returns identity-link when found", async () => {
   );
 
   assert.equal(result.resolved, true);
-  assert.equal(result.resolved && result.chittiUserId, "alice");
+  assert.equal(result.resolved && result.userId, "alice");
   assert.equal(result.source, "identity-link");
 });
 
@@ -508,7 +508,7 @@ test("resolveChannelIdentity falls back to config-default when no link", async (
   );
 
   assert.equal(result.resolved, true);
-  assert.equal(result.resolved && result.chittiUserId, "telegram-user");
+  assert.equal(result.resolved && result.userId, "telegram-user");
   assert.equal(result.source, "config-default");
 });
 
@@ -532,7 +532,7 @@ test("resolveChannelIdentity works with null store (identity disabled)", async (
   );
 
   assert.equal(result.resolved, true);
-  assert.equal(result.resolved && result.chittiUserId, "telegram-user");
+  assert.equal(result.resolved && result.userId, "telegram-user");
   assert.equal(result.source, "config-default");
 });
 
@@ -547,7 +547,7 @@ test("resolveChannelIdentity identity-link takes priority over config-default", 
 
   // identity-link should win over config-default
   assert.equal(result.resolved, true);
-  assert.equal(result.resolved && result.chittiUserId, "alice");
+  assert.equal(result.resolved && result.userId, "alice");
   assert.equal(result.source, "identity-link");
 });
 
@@ -568,7 +568,7 @@ test("tryPairChannel creates link when valid code is sent", async () => {
   // Verify the link was created
   const link = await store.resolveByChannel("telegram", "12345");
   assert.ok(link);
-  assert.equal(link.chittiUserId, "alice");
+  assert.equal(link.userId, "alice");
   assert.equal(link.linkedVia, "pairing-code");
 });
 
@@ -652,10 +652,10 @@ test("IdentityStore.initialize is idempotent", async () => {
 
 test("re-linking a channel account to another user leaves exactly one link", async () => {
   const store = await setupStore();
-  await store.upsertLink(makeLink({ chittiUserId: "alice" }));
-  await store.upsertLink(makeLink({ chittiUserId: "bob" }));
+  await store.upsertLink(makeLink({ userId: "alice" }));
+  await store.upsertLink(makeLink({ userId: "bob" }));
 
-  assert.equal((await store.resolveByChannel("telegram", "12345"))?.chittiUserId, "bob");
+  assert.equal((await store.resolveByChannel("telegram", "12345"))?.userId, "bob");
   assert.equal((await store.getLinksForUser("alice")).length, 0);
   assert.equal((await store.getLinksForUser("bob")).length, 1);
 });
@@ -672,8 +672,8 @@ async function setupStoreAndDb(configOverrides?: Partial<IdentityConfig>) {
 test("legacy links that disagree on the owner are a conflict, and the turn is refused", async () => {
   const { store, links } = await setupStoreAndDb({ legacyLinkLookup: true });
   // Duplicates left from before the channel index existed.
-  await links.upsert(makeLink({ chittiUserId: "victim" }));
-  await links.upsert(makeLink({ chittiUserId: "attacker" }));
+  await links.upsert(makeLink({ userId: "victim" }));
+  await links.upsert(makeLink({ userId: "attacker" }));
 
   await assert.rejects(store.resolveByChannel("telegram", "12345"), IdentityConflictError);
   const resolution = await resolveChannelIdentity(store, "telegram", "12345", "owner");
@@ -682,20 +682,20 @@ test("legacy links that disagree on the owner are a conflict, and the turn is re
 
 test("a single legacy link is found once and backfilled into the index", async () => {
   const { store, links } = await setupStoreAndDb({ legacyLinkLookup: true });
-  await links.upsert(makeLink({ chittiUserId: "alice" }));
+  await links.upsert(makeLink({ userId: "alice" }));
 
-  assert.equal((await store.resolveByChannel("telegram", "12345"))?.chittiUserId, "alice");
+  assert.equal((await store.resolveByChannel("telegram", "12345"))?.userId, "alice");
   assert.equal(await store.isChannelLinked("telegram", "12345"), true);
 });
 
 test("backfillChannelIndex indexes legacy links once and skips conflicts", async () => {
   const { store, links } = await setupStoreAndDb();
-  await links.upsert(makeLink({ chittiUserId: "alice" }));
-  await links.upsert(makeLink({ chittiUserId: "carol", channelUserId: "777", id: "telegram:777" }));
-  await links.upsert(makeLink({ chittiUserId: "dave", channelUserId: "777", id: "telegram:777" }));
+  await links.upsert(makeLink({ userId: "alice" }));
+  await links.upsert(makeLink({ userId: "carol", channelUserId: "777", id: "telegram:777" }));
+  await links.upsert(makeLink({ userId: "dave", channelUserId: "777", id: "telegram:777" }));
 
   assert.deepEqual(await store.backfillChannelIndex(), { indexed: 1, alreadyIndexed: 0, conflicts: 1 });
-  assert.equal((await store.resolveByChannel("telegram", "12345"))?.chittiUserId, "alice");
+  assert.equal((await store.resolveByChannel("telegram", "12345"))?.userId, "alice");
   assert.equal(await store.resolveByChannel("telegram", "777"), null);
   assert.deepEqual(await store.backfillChannelIndex(), { indexed: 0, alreadyIndexed: 1, conflicts: 1 });
 });
@@ -716,22 +716,22 @@ test("a legacy-lookup miss is remembered, so unlinked senders don't query every 
 
 test("without legacy lookup, only the channel index resolves a sender", async () => {
   const { store, links } = await setupStoreAndDb();
-  await links.upsert(makeLink({ chittiUserId: "alice" })); // no index entry
+  await links.upsert(makeLink({ userId: "alice" })); // no index entry
   assert.equal(await store.resolveByChannel("telegram", "12345"), null);
 });
 
 test("a stale link doc left by a re-link isn't listed for its old user", async () => {
   const { store, links } = await setupStoreAndDb();
-  await store.upsertLink(makeLink({ chittiUserId: "bob" }));
+  await store.upsertLink(makeLink({ userId: "bob" }));
   // A concurrent re-link could leave alice's old doc behind.
-  await links.upsert(makeLink({ chittiUserId: "alice" }));
+  await links.upsert(makeLink({ userId: "alice" }));
   assert.deepEqual(await store.getLinksForUser("alice"), []);
   assert.equal((await store.getLinksForUser("bob")).length, 1);
 });
 
 test("deleting a link frees the channel account; another user's delete doesn't", async () => {
   const store = await setupStore();
-  await store.upsertLink(makeLink({ chittiUserId: "bob" }));
+  await store.upsertLink(makeLink({ userId: "bob" }));
   assert.equal(await store.deleteLink("telegram", "12345", "alice"), false);
   assert.equal(await store.isChannelLinked("telegram", "12345"), true);
   assert.equal(await store.deleteLink("telegram", "12345", "bob"), true);
@@ -792,7 +792,7 @@ test("words outside the code alphabet are never pairing attempts", async () => {
 
 test("linked senders' wrong codes count too: a correct guess would relink them to another account", async () => {
   const store = await setupStore({ pairingMaxFailedAttempts: 1 });
-  await store.upsertLink(makeLink({ channelUserId: "777", id: "telegram:777", chittiUserId: "alice" }));
+  await store.upsertLink(makeLink({ channelUserId: "777", id: "telegram:777", userId: "alice" }));
   await tryPairChannel(store, "telegram", "777", "THANKS");
   assert.equal(await store.isPairingLocked("telegram", "777"), true);
 });
