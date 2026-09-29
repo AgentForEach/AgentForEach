@@ -25,6 +25,13 @@ import {
 } from "./media.js";
 
 /**
+ * Telegram's shared placeholder senders: GroupAnonymousBot (anonymous
+ * admins), Channel_Bot (channel posts) and the service account that
+ * forwards linked-channel posts.
+ */
+const TELEGRAM_PLACEHOLDER_SENDERS = new Set([1087968824, 136817688, 777000]);
+
+/**
  * Parse a Telegram Update into a normalized InboundMessage.
  *
  * Returns undefined for:
@@ -32,6 +39,7 @@ import {
  *   - Messages without text or processable media (stickers, etc.)
  *   - Messages from unauthorized senders (when authorizedSenders is non-empty)
  *   - Messages without a `from` field (service messages)
+ *   - Messages sent on behalf of a chat (anonymous admins, channel posts)
  *
  * @param body - Parsed JSON body from the Telegram webhook.
  * @returns Normalized InboundMessage, or undefined to skip.
@@ -58,6 +66,11 @@ export async function parseTelegramUpdate(
 
   // Service messages or messages without a sender
   if (!from) return undefined;
+
+  // Sent on behalf of a chat: no person to identify, and every such sender
+  // shares one placeholder id, so they would all be one user (and one
+  // pairing would link every anonymous admin everywhere to that account).
+  if (msg.sender_chat || TELEGRAM_PLACEHOLDER_SENDERS.has(from.id)) return undefined;
 
   // Check authorized senders (if configured)
   const config = loadTelegramConfig();

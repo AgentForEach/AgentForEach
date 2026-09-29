@@ -6,6 +6,7 @@ Behaviour changes an operator needs to know about, newest first. Most are securi
 
 | Change | Who is affected | What to do |
 |---|---|---|
+| Telegram messages sent on behalf of a chat (anonymous group admins, channel posts, linked-channel forwards) are ignored: they all carry one shared placeholder sender, so they would act as one user | Groups whose admins post anonymously | An admin who wants to talk to the agent turns off "Remain anonymous" |
 | A scheduled job due more than 7 days ahead (`cron.cosmos.dueIndexTtlSeconds`) was dropped from the scheduler's index before it ran; index rows now live until the run time | Every deployment with reminders or jobs set more than a week out | Once, as an admin, after deploying: `POST /cron/admin/backfill-due-index`, which re-indexes every enabled job |
 
 ## Security hardening (September 2026)

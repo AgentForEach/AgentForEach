@@ -76,6 +76,12 @@ export type TelegramGetFileResponse = {
 export type TelegramMessage = {
   message_id: number;
   from?: TelegramUser;
+  /**
+   * Set when the message was sent on behalf of a chat: an anonymous group
+   * admin, a channel post, or a linked channel's automatic forward. `from`
+   * is then one of Telegram's shared placeholder accounts, not a person.
+   */
+  sender_chat?: TelegramChat;
   chat: TelegramChat;
   date: number;
   text?: string;

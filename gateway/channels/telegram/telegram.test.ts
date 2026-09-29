@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { verifyTelegramWebhook } from "./verify.js";
+import { parseTelegramUpdate } from "./inbound.js";
 import { resetTelegramConfig, telegramRegistrationBlocker } from "./config.js";
 import { resetChannelsConfig } from "../config.js";
 import { resetIdentityConfigCache } from "../../identity/index.js";
@@ -99,4 +100,22 @@ test("in the cloud the channel also needs a webhook secret", () => {
 
   useConfig({ authorizedSenders: ["123456789"], webhookSecretToken: "s3cret" });
   assert.equal(telegramRegistrationBlocker(), null);
+});
+
+test("messages sent on behalf of a chat have no sender to identify and are dropped", async () => {
+  useConfig({ authorizedSenders: [] }, { fallbackMode: "sender-passthrough" });
+  const update = (from: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
+    update_id: 1,
+    message: { message_id: 7, date: 1, text: "hi", chat: { id: -100, type: "supergroup", title: "G" }, from, ...extra },
+  });
+
+  const person = await parseTelegramUpdate(update({ id: 42, is_bot: false, first_name: "Ann" }));
+  assert.equal(person?.senderId, "42");
+
+  const anonymousAdmin = update(
+    { id: 1087968824, is_bot: true, first_name: "Group", username: "GroupAnonymousBot" },
+    { sender_chat: { id: -100, type: "supergroup", title: "G" } },
+  );
+  assert.equal(await parseTelegramUpdate(anonymousAdmin), undefined);
+  assert.equal(await parseTelegramUpdate(update({ id: 136817688, is_bot: true, first_name: "Channel" })), undefined);
 });
