@@ -209,23 +209,28 @@ function removeElements(html: string, tags: string[]): string {
 // Helpers
 // ============================================================================
 
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  nbsp: " ",
+};
+
 /**
- * Decode common HTML entities.
+ * Decode common HTML entities in one pass, so "&amp;lt;" becomes "&lt;"
+ * rather than "<".
  */
 function decodeEntities(text: string): string {
-  return text
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&apos;/g, "'")
-    .replace(/&#x27;/g, "'")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&#(\d+);/g, (_, num) => String.fromCharCode(Number(num)))
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) =>
-      String.fromCharCode(parseInt(hex as string, 16)),
-    );
+  return text.replace(
+    /&(?:#(\d+)|#x([0-9a-fA-F]+)|([a-z]+));/gi,
+    (match, dec?: string, hex?: string, name?: string) => {
+      if (name) return NAMED_ENTITIES[name.toLowerCase()] ?? match;
+      const code = dec ? Number(dec) : parseInt(hex!, 16);
+      return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : match;
+    },
+  );
 }
 
 /**

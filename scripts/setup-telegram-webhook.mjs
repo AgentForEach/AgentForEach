@@ -80,9 +80,10 @@ async function telegramApi(botToken, method, params = {}) {
 async function setWebhook(botToken, publicUrl, secret) {
   const webhookUrl = `${publicUrl.replace(/\/+$/, "")}/api/channels/telegram/webhook`;
 
-  console.log(`\n  Bot token:     ${botToken.slice(0, 8)}...${botToken.slice(-4)}`);
+  // Print no part of either secret; the bot id before the colon is public.
+  console.log(`\n  Bot id:        ${botToken.split(":")[0]}`);
   console.log(`  Webhook URL:   ${webhookUrl}`);
-  console.log(`  Secret token:  ${secret ? "***" + secret.slice(-4) : "(none)"}\n`);
+  console.log(`  Secret token:  ${secret ? "(set)" : "(none)"}\n`);
 
   const params = {
     url: webhookUrl,

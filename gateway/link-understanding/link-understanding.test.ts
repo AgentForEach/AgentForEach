@@ -364,6 +364,16 @@ test("extractContent — HTML text extraction", async (t) => {
     assert.ok(result.text.includes('Tom & Jerry <3 "cartoons"'));
   });
 
+  await t.test("decodes each entity once", () => {
+    const result = extractContent(
+      makeFetchResult({
+        body: `<html><body><p>Write &amp;lt;b&amp;gt; for bold</p></body></html>`,
+      }),
+      6000,
+    );
+    assert.ok(result.text.includes("Write &lt;b&gt; for bold"));
+  });
+
   await t.test("decodes numeric HTML entities", () => {
     const result = extractContent(
       makeFetchResult({
