@@ -6,7 +6,7 @@ import { IdentityStore } from "../identity/index.js";
 import type { IdentityConfig } from "../identity/config.js";
 import { resetIdentityStore, setIdentityStore } from "../channels/router.js";
 import { registerDeliveryAdapter, type DeliveryAdapter, type DeliveryPayload } from "./delivery.js";
-import { executeJob } from "./executor.js";
+import { executeJob, reachedUser } from "./executor.js";
 import { CronStore } from "./store.js";
 import { getSchedulerShardForUser } from "./config.js";
 import type { CronDelivery, CronJob } from "./types.js";
@@ -165,4 +165,11 @@ test("a delivery that can't be resolved (no adapter) isn't treated as a refusal"
   assert.equal(result.status, "ok");
   assert.equal(result.disableJob, undefined);
   assert.equal(pushSent.length, 0);
+});
+
+test("a reminder turn that asked the user something, or that they stopped, isn't sent again", () => {
+  assert.equal(reachedUser("completed"), true);
+  assert.equal(reachedUser("awaiting_input"), true);
+  assert.equal(reachedUser("aborted"), true);
+  assert.equal(reachedUser("failed"), false);
 });

@@ -480,7 +480,7 @@ export async function processHeartbeatQueue(
           sessionId: first.sessionId,
           text: message,
         });
-        if (response.status !== "completed") {
+        if (!reachedUser(response.status)) {
           throw new Error(response.error ?? "heartbeat flush failed");
         }
         for (const event of chunk) {
@@ -501,6 +501,16 @@ export async function processHeartbeatQueue(
   }
 
   return { processed, groups: grouped.size };
+}
+
+/**
+ * Whether a main-session turn reached the user, so its events are done. A
+ * turn that ended by asking them something (awaiting_input) or that they
+ * stopped (aborted) did; retrying it would send it again, up to
+ * heartbeat.maxAttempts times.
+ */
+export function reachedUser(status: "completed" | "failed" | "awaiting_input" | "aborted"): boolean {
+  return status !== "failed";
 }
 
 async function sendMainSessionText(args: {
