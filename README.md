@@ -1,19 +1,9 @@
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.svg">
-    <img alt="AgentForEach" src="docs/assets/logo-light.svg" width="380">
-  </picture>
-</p>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.svg">
+  <img alt="AgentForEach: the open-source brain for personal AI agents. One agent for each of your users, on a hyperscale serverless architecture." src="docs/assets/banner-light.svg">
+</picture>
 
-<h1 align="center">The open-source brain for personal AI agents.</h1>
-
-<p align="center">
-  <b>Muse, Grok and o give every user an AI agent of their own. AgentForEach is the backend to build a product like them.</b><br>
-  It runs one agent for each of your users, with memory, scheduled work, tools, a private sandbox and a chat on web, Telegram or WhatsApp,<br>
-  on a hyperscale serverless architecture where an idle user costs only storage.
-</p>
-
-<p align="center"><code>users.forEach(user =&gt; agent(user))</code></p>
+<p align="center"><b>The backend to build a personal-agent product like Muse, Grok or o.</b> Each of your users gets their own agent, and an idle one costs only storage.</p>
 
 <p align="center">
   <a href="https://github.com/agentforeach/agentforeach/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/agentforeach/agentforeach/actions/workflows/ci.yml/badge.svg"></a>
@@ -31,27 +21,16 @@
   <a href="ROADMAP.md">Roadmap</a>
 </p>
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero-dark.svg">
-  <img alt="A field of small agents, one per user. Most are grey and asleep, costing only storage; a few glow amber while they answer their user." src="docs/assets/hero-light.svg">
-</picture>
-
-<p align="center"><sub>Agents sleep in storage and wake per message. You pay for the amber ones.</sub></p>
-
-> **Status: preview.** The architecture is load-tested, the security model reviewed and the code has 1,100+ tests, but it hasn't run in many production deployments yet. Read [SECURITY.md](SECURITY.md) before exposing it to users.
-
 ## What it is
 
-A personal AI agent product is much more than a model and a chat window. Behind an app like Muse, every user has an agent that remembers them, keeps working on a schedule while they're away, uses tools, runs code, asks before it acts and answers on whichever channel they use. The company behind it runs all of those agents at once, for every user, without a server for each.
+A personal AI agent product is much more than a model and a chat window. Behind an app like Muse, every user has an agent that remembers them, works on a schedule while they're away, uses tools, runs code, asks before it acts and answers on whichever channel they use. The company runs all of those agents at once, for every user, without a server for each.
 
-AgentForEach is that backend, open source. You build the product; it runs the agents.
+**AgentForEach is that backend, open source. You build the product; it runs the agents.**
 
-| You build | AgentForEach runs |
-|---|---|
-| Your app, brand and onboarding | One agent per user: sessions, history, long-term memory, prompt documents |
-| Your agent's personality, skills and knowledge | The tool loop, model failover and streaming replies to every device |
-| Sign-in, with your identity provider | Reminders, recurring jobs and heartbeats on a sharded scheduler |
-| Your pricing and your users | Approvals, per-user sandboxes, Telegram and WhatsApp, tenant isolation, and the whole Azure stack as code |
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/stack-dark.svg">
+  <img alt="Three layers. You build your product: app and brand, onboarding and sign-in, the agent's personality, skills and knowledge, pricing, your users. AgentForEach runs the brain: one agent per user, sessions and history, long-term memory, reminders and heartbeats, the tool loop, model failover, streaming to every device, approvals, per-user sandboxes, web, Telegram and WhatsApp, and tenant isolation. It runs on Azure serverless services created by one Pulumi program: Functions, Durable Functions, Cosmos DB, Web PubSub, Container Apps, AI Search and Key Vault." src="docs/assets/stack-light.svg">
+</picture>
 
 ## Who it's for
 
@@ -63,14 +42,39 @@ It also runs in **single-user mode** for one person's own agent ([setup](docs/Id
 
 ## How it's different
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/day-dark.svg">
+  <img alt="One user's day. A machine per user is billed for all 24 hours. With AgentForEach the agent wakes only for a scheduled reminder and a handful of messages, each about 0.7 seconds of platform work plus model tokens; in between it costs only storage." src="docs/assets/day-light.svg">
+</picture>
+
+The usual way to give each user an agent is a machine or container per user: simple at a hundred users, a fleet to run at a million, and billed while every user sleeps. AgentForEach keeps nothing in memory between turns. Each turn loads what it needs from Cosmos DB, calls the model and streams the reply, so every agent shares **one serverless deployment** that scales to zero and back out.
+
 | | Self-hosted personal agents | Agent frameworks | AgentForEach |
 |---|---|---|---|
 | Built for | One person running their own agent | Developers writing agent logic | Companies running an agent for every user |
 | Users per deployment | One owner | Whatever you build | Any number, on one deployment |
 | An idle user costs | A machine that stays on | Whatever you build | Storage only |
-| Per-user memory, schedules and sandboxes | For the one owner | Build it yourself | Built in and isolated per user |
+| 1M users means | 1M machines to run, patch and monitor | Whatever you build | The same deployment, scaled out |
+| Per-user memory, schedules and sandboxes | For the one owner | Build it yourself | Built in, isolated per tenant in every data path |
+| Always-on work (reminders, heartbeats) | A process per user | Build it yourself | A sharded scheduler on Durable Functions |
 | Channels and identity linking | The owner's own accounts | Build it yourself | Web and apps, Telegram and WhatsApp, with pairing |
 | Infrastructure | A machine or container | Bring your own | One Pulumi program, fully serverless |
+
+## Built to scale, and measured
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/stats-dark.svg">
+  <img alt="3,000 of 3,000 turns completed with 1,000 users arriving in 3 minutes; 0.12 s to accept a message; about $2 model cost per 1,000 turns with GPT-5.6 Luna; zero servers per user." src="docs/assets/stats-light.svg">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/scale-dark.svg">
+  <img alt="Load tests at 50, 200, 500 and 1,000 users. Throughput rose from 220 to 866 turns per minute (491 at 500 users, a run before the fixes). Time to accept a message stayed flat: p50 122, 110, 110 and 115 ms; p95 318, 206, 225 and 325 ms. Turns completed: 250 of 250, 1,000 of 1,000, 2,497 of 2,500 and 3,000 of 3,000." src="docs/assets/scale-light.svg">
+</picture>
+
+- **Real model:** 4,799 of 4,800 turns completed with GPT-5.6 Luna (chat, memory, reminders); first text in 4.8 s p50 / 11.1 s p95; ≈ $1.72–2.19 model cost per 1,000 turns.
+- **Platform work per turn:** ≈ 0.7 s (session, memory recall, prompt, persistence). At 1,000 users a reply completed in 5.8 s p50 / 12.6 s p95, including 3.2 s of simulated generation.
+- **Not yet measured:** sandboxes, channels, more than a few hundred users active at once, multi-region. Method and raw results: [Benchmarks](docs/Benchmarks.md).
 
 ## What companies build with it
 
@@ -100,33 +104,6 @@ It also runs in **single-user mode** for one person's own agent ([setup](docs/Id
     </td>
   </tr>
 </table>
-
-## Why serverless
-
-The usual way to give each user an agent is one machine or container per user. That is simple at a hundred users and a fleet to run at a million, and you pay for every machine while its user sleeps. AgentForEach runs every user's agent on **one shared serverless platform** instead:
-
-| | One machine (or container) per user | AgentForEach |
-|---|---|---|
-| Idle user | A VM or container you pay for 24/7 | Storage only |
-| 1M users | 1M machines to run, patch and monitor | The same deployment, scaled out |
-| Isolation | Per machine | Per tenant in every data path (partition keys, ownership checks), plus per-user sandboxes when code runs |
-| Always-on work (reminders, heartbeats) | A process per user | Sharded scheduler (Durable Functions) |
-
-The platform keeps nothing in memory between turns. Every turn loads what it needs (session, history, memories, prompt documents) from Cosmos DB, calls the model and streams the reply over Web PubSub. That is what lets it scale to zero and back out again.
-
-## Measured
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/stats-dark.svg">
-  <img alt="3,000 of 3,000 turns completed with 1,000 users arriving in 3 minutes; 0.12 s to accept a message; about $2 model cost per 1,000 turns with GPT-5.6 Luna; zero servers per user." src="docs/assets/stats-light.svg">
-</picture>
-
-On a fresh stack in Central India. Load-tested at 1,000 users so far; the method and every run's raw results are in [Benchmarks](docs/Benchmarks.md).
-
-- **Platform:** 1,000 users arriving over 3 minutes (≈150 active at a time) sent 3,000 turns with a mock model. All 3,000 completed at 866 turns/min; reply complete in 5.8 s p50 / 12.6 s p95, including 3.2 s of simulated generation.
-- **Real model:** 4,799 of 4,800 turns completed with GPT-5.6 Luna (chat, memory, reminders); first text in 4.8 s p50 / 11.1 s p95; ≈ $1.72–2.19 model cost per 1,000 turns.
-- **Platform work per turn:** ≈ 0.7 s (session, memory recall, prompt, persistence).
-- **Not yet measured:** sandboxes, channels, more than a few hundred users active at once, multi-region.
 
 ## What's in the box
 
@@ -183,6 +160,8 @@ A chat message is accepted in the HTTP request (auth, validation, rate limit) an
 More: [Architecture](docs/Architecture.md) · [Sessions](docs/Session-management.md) · [Scheduler](docs/Crons.md) · [Human in the loop](docs/HITL.md) · [Identity](docs/Identity.md) · [Channels](docs/Channel.md) · [Sandboxes](docs/Sandbox.md) · [Knowledge](docs/Knowledge.md)
 
 ## Quick start
+
+> **Status: preview.** The architecture is load-tested, the security model reviewed and the code has 1,100+ tests, but it hasn't run in many production deployments yet. Read [SECURITY.md](SECURITY.md) before exposing it to users.
 
 You need Node 22, [Azure Functions Core Tools](https://learn.microsoft.com/azure/azure-functions/functions-run-local) 4, the Azure CLI and [Pulumi](https://www.pulumi.com/docs/install/).
 
