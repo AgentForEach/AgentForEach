@@ -63,12 +63,20 @@ test("a run past its deadline fails with a timeout, and the provider call is abo
   } as unknown as Provider;
   const { deps } = makeDeps(provider);
 
-  const res = await runAgentTurn(
-    { userId: "u1", sessionId: "s1", message: "hi", deadlineAt: Date.now() + 150 } as never,
-    deps,
-  );
-  assert.equal(res.status, "failed");
-  assert.match(String(res.error), /timed out/);
+  // The deadline timer is unref'd (it must never hold a process open), and
+  // nothing else is pending here; a host always keeps the loop alive, so
+  // the test does too. Without this, Node 22 ends the test early.
+  const keepAlive = setInterval(() => {}, 1_000);
+  try {
+    const res = await runAgentTurn(
+      { userId: "u1", sessionId: "s1", message: "hi", deadlineAt: Date.now() + 150 } as never,
+      deps,
+    );
+    assert.equal(res.status, "failed");
+    assert.match(String(res.error), /timed out/);
+  } finally {
+    clearInterval(keepAlive);
+  }
 });
 
 test("a run within its deadline is unaffected", async () => {
