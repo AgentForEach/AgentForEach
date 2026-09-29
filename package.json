@@ -15,14 +15,15 @@
   "author": "Mohit Garg",
   "type": "module",
   "workspaces": [
-    "packages/*"
+    "gateway",
+    "infra"
   ],
   "directories": {
     "doc": "docs"
   },
   "scripts": {
-    "build": "tsc",
-    "build:infra": "cd packages/infra && tsc",
+    "build": "npm run build --workspace @agentforeach/gateway",
+    "build:infra": "npm run build --workspace agentforeach-infra",
     "test:cron-heartbeat:e2e": "node ./scripts/test-cron-heartbeat-e2e.mjs",
     "test:multi-user": "node ./scripts/test-multi-user-smoke.mjs",
     "test": "npm test --workspace @agentforeach/gateway"

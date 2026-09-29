@@ -2,7 +2,7 @@
 
 Messaging channels let users reach their agent from outside the app. AgentForEach ships two: **Telegram** and **WhatsApp** (Cloud API). The app and web clients don't use this path; they talk to `POST /api/chat` and receive replies over Web PubSub (see [Architecture](Architecture.md)).
 
-Code: `packages/gateway/channels/` (framework, `telegram/`, `whatsapp/`) and `packages/gateway/handlers/channel-webhook.ts`. WhatsApp specifics are in [Channel-WhatsApp](Channel-WhatsApp.md); identity linking and pairing in [Identity](Identity.md).
+Code: `gateway/channels/` (framework, `telegram/`, `whatsapp/`) and `gateway/handlers/channel-webhook.ts`. WhatsApp specifics are in [Channel-WhatsApp](Channel-WhatsApp.md); identity linking and pairing in [Identity](Identity.md).
 
 ## One webhook for every channel
 
@@ -63,7 +63,7 @@ Pairing codes are 6 characters from an alphabet without look-alike characters, e
 
 ## Configuration
 
-Channels are configured under `channels` in `packages/gateway/config/agentforeach.json`. A channel registers only when its block exists, `enabled` isn't `false`, and its required credentials resolve. Values of the form `"$NAME"` are read from the app setting `NAME`; keep secrets there, never literally in the config file.
+Channels are configured under `channels` in `gateway/config/agentforeach.json`. A channel registers only when its block exists, `enabled` isn't `false`, and its required credentials resolve. Values of the form `"$NAME"` are read from the app setting `NAME`; keep secrets there, never literally in the config file.
 
 ```json
 "channels": {

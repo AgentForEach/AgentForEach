@@ -2,7 +2,7 @@
 
 A skill is a `SKILL.md` instruction file that teaches the agent how to do something (call an API, run a script). There is no per-skill TypeScript: the agent reads the file with `skill_read` and follows it using two general tools, `http_fetch` for HTTP calls and `sandbox_exec` for everything else. Per-user settings and credentials live in Cosmos DB; the credentials are substituted by the server, not written into prompts.
 
-Code: `packages/gateway/skills/`. Sandbox details: [Sandbox.md](Sandbox.md).
+Code: `gateway/skills/`. Sandbox details: [Sandbox.md](Sandbox.md).
 
 ## Where skills live
 
@@ -10,13 +10,13 @@ Code: `packages/gateway/skills/`. Sandbox details: [Sandbox.md](Sandbox.md).
 |---|---|
 | Skill files | Blob container `skills` (`skills.storageContainerName`) in the Function App's storage account, created by Pulumi. One folder per skill: `<skillId>/SKILL.md`, optionally `<skillId>/skill.zip` |
 | Per-user state | Cosmos container `user-skills` (`skills.containerId`), partition key `/userId`. One document per user and skill (`{userId}:{skillId}`: `enabled`, `credentials`), plus audit entries |
-| Example skill | `packages/gateway/skills/skill-files/weather/SKILL.md` |
+| Example skill | `gateway/skills/skill-files/weather/SKILL.md` |
 
 Skill files are not deployed by the gateway deployment; upload each skill folder to the `skills` container yourself (your identity needs a blob data role on the account):
 
 ```bash
 az storage blob upload-batch --auth-mode login --account-name <storage-account> \
-  -d skills -s packages/gateway/skills/skill-files
+  -d skills -s gateway/skills/skill-files
 ```
 
 Skill and sandbox tools are offered only when the gateway can reach this storage account (`AzureWebJobsStorage`, or `AzureWebJobsStorage__accountName` with a managed identity); otherwise it logs `[skills] ... skills and sandboxes are off`. The gateway lists the container, parses every `*/SKILL.md` and caches the manifests in memory for 5 minutes (`skills.blobStore.cacheTtlMs`). Files over 256 KB (`maxSkillFileBytes`) and zips over 10 MB (`maxZipFileBytes`) are refused; a malformed `SKILL.md` is skipped.
@@ -89,7 +89,7 @@ Credential values are excluded from the `user-skills` indexing policy. `http_fet
 
 ## Configuration
 
-`skills` in `packages/gateway/config/agentforeach.json`:
+`skills` in `gateway/config/agentforeach.json`:
 
 | Key | Default | |
 |---|---|---|
@@ -104,5 +104,5 @@ Credential values are excluded from the `user-skills` indexing policy. `http_fet
 
 ## Related
 
-- MCP servers (`mcp` in `agentforeach.json`, `packages/gateway/mcp/`) are a separate source of tools and don't use this mechanism.
+- MCP servers (`mcp` in `agentforeach.json`, `gateway/mcp/`) are a separate source of tools and don't use this mechanism.
 - `skills/exec/` (a local `execFile` runner with a binary allowlist) is not wired into the runner; code runs only in sandboxes.

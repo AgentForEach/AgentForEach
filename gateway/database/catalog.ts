@@ -4,7 +4,7 @@
  * Every container the runtime uses, as the runtime itself defines it:
  * each store is initialised against a recording provider that captures its
  * ContainerOptions. `npm run db:catalog` writes the result to
- * packages/infra/cosmos-containers.json, which Pulumi provisions, and
+ * infra/cosmos-containers.json, which Pulumi provisions, and
  * database/catalog.test.ts fails when that file falls behind the code. So the
  * code stays the single source of truth for partition keys, TTLs and
  * indexing/vector policies.
@@ -30,7 +30,7 @@ import { UsageStore } from "../usage/store.js";
 import { RateLimiter } from "../ratelimit/index.js";
 
 /**
- * packages/infra/cosmos-containers.json, found by walking up from this file
+ * infra/cosmos-containers.json, found by walking up from this file
  * (it runs from source under tsx and from dist/ under node).
  */
 export function iacCatalogPath(): string {
@@ -39,7 +39,7 @@ export function iacCatalogPath(): string {
     const candidate = join(dir, "infra", "cosmos-containers.json");
     if (existsSync(join(dir, "infra", "package.json"))) return candidate;
     const parent = dirname(dir);
-    if (parent === dir) throw new Error("packages/infra not found above " + fileURLToPath(import.meta.url));
+    if (parent === dir) throw new Error("infra/ not found above " + fileURLToPath(import.meta.url));
     dir = parent;
   }
 }

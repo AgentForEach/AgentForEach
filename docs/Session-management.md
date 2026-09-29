@@ -2,7 +2,7 @@
 
 How AgentForEach stores conversations, keeps each user's messages private, and compacts long histories.
 
-Code: `packages/gateway/sessions/`. Tests: `sessions/*.test.ts`.
+Code: `gateway/sessions/`. Tests: `sessions/*.test.ts`.
 
 ## Data model
 

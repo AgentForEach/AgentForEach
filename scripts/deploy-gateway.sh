@@ -11,14 +11,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-GATEWAY_DIR="$ROOT_DIR/packages/gateway"
+GATEWAY_DIR="$ROOT_DIR/gateway"
 STAGING_DIR="$ROOT_DIR/.deploy-staging"
 
 if [[ "${1:-}" == "--app" ]]; then
   APP_NAME="${2:?usage: deploy-gateway.sh --app <function-app-name>}"
 else
   STACK="${1:?usage: deploy-gateway.sh <pulumi-stack> | --app <function-app-name>}"
-  APP_NAME="$(cd "$ROOT_DIR/packages/infra" && pulumi stack output functionAppName --stack "$STACK")"
+  APP_NAME="$(cd "$ROOT_DIR/infra" && pulumi stack output functionAppName --stack "$STACK")"
 fi
 
 echo "==> Deploying the gateway to ${APP_NAME}"

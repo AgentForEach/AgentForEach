@@ -7,7 +7,7 @@
  * hard failure. These tests pin the corrected request shape so a regression
  * cannot reintroduce the dead leg.
  *
- *   npx tsx --test packages/gateway/llms/providers/anthropic.test.ts
+ *   npx tsx --test gateway/llms/providers/anthropic.test.ts
  */
 import test from "node:test";
 import assert from "node:assert/strict";

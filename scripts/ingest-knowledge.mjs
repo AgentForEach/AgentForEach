@@ -52,7 +52,7 @@ import process from "node:process";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = resolve(
   __dirname,
-  "../packages/gateway/config/agentforeach.json",
+  "../gateway/config/agentforeach.json",
 );
 
 // ============================================================================

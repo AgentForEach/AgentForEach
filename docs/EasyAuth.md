@@ -1,6 +1,6 @@
 # App Service Authentication (Easy Auth)
 
-AgentForEach can use Azure App Service Authentication ("Easy Auth") on the Function App to sign users in. It is one of the providers in `auth.providers` in `packages/gateway/config/agentforeach.json` (with JWT, API keys and a trusted proxy); providers are tried in order and the first match wins.
+AgentForEach can use Azure App Service Authentication ("Easy Auth") on the Function App to sign users in. It is one of the providers in `auth.providers` in `gateway/config/agentforeach.json` (with JWT, API keys and a trusted proxy); providers are tried in order and the first match wins.
 
 ## How identity is resolved
 
@@ -19,7 +19,7 @@ The `insecure-header` provider lets a request name its user with an `x-user-id` 
 
 ## Pulumi config
 
-Set these in your `packages/infra` stack:
+Set these in your `infra` stack:
 
 ```bash
 pulumi config set agentforeach:easyAuthEnabled true

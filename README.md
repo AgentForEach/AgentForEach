@@ -82,7 +82,7 @@ Prerequisites: Node 22, [Azure Functions Core Tools](https://learn.microsoft.com
 ```bash
 npm ci
 az login
-cd packages/infra
+cd infra
 pulumi stack init dev
 pulumi config set azure-native:location eastus
 pulumi config set agentforeach:nameSuffix $(openssl rand -hex 3)   # makes the global resource names yours
@@ -92,7 +92,7 @@ cd ../..
 ./scripts/deploy-gateway.sh dev
 ```
 
-To use Azure OpenAI (Foundry) instead of OpenAI, set `llms.providers.openai.baseUrl` in `packages/gateway/config/agentforeach.json` to `https://<resource>.openai.azure.com/openai/v1/`, and use the deployment name as the model name.
+To use Azure OpenAI (Foundry) instead of OpenAI, set `llms.providers.openai.baseUrl` in `gateway/config/agentforeach.json` to `https://<resource>.openai.azure.com/openai/v1/`, and use the deployment name as the model name.
 
 Then configure how users sign in: `auth.providers` in `agentforeach.json` (App Service authentication, JWT, API keys or a trusted proxy). **Until you do, every API call returns 401**; a fresh stack trusts no one. Channels ([Telegram and WhatsApp](docs/Channel.md)) are off until configured too.
 
@@ -105,10 +105,10 @@ docker run -d -p 10000-10002:10000-10002 mcr.microsoft.com/azure-storage/azurite
 az cosmosdb create -g <rg> -n <account> --capabilities EnableServerless EnableNoSQLVectorSearch
 
 npm ci
-cp packages/gateway/local.settings.example.json packages/gateway/local.settings.json
+cp gateway/local.settings.example.json gateway/local.settings.json
 # set COSMOS_ENDPOINT and COSMOS_KEY (az cosmosdb keys list -g <rg> -n <account>),
 # OPENAI_API_KEY, and AUTH_ALLOW_INSECURE_USER_ID_HEADER=true
-cd packages/gateway
+cd gateway
 npm start                                   # builds, then starts the Functions host on :7071
 curl -X POST localhost:7071/api/chat -H 'x-user-id: me' -H 'content-type: application/json' -d '{"message":"hi"}'
 ```
@@ -126,7 +126,7 @@ npm test --workspace @agentforeach/gateway          # unit and integration tests
 
 ## Configuration
 
-Runtime behaviour lives in [`packages/gateway/config/agentforeach.json`](packages/gateway/config/agentforeach.json) (models, memory, prompts, channels, rate limits, cron, sandboxes); secrets come from app settings, which the Pulumi program stores in Key Vault. Infrastructure settings are in [`packages/infra/Pulumi.example.yaml`](packages/infra/Pulumi.example.yaml).
+Runtime behaviour lives in [`gateway/config/agentforeach.json`](gateway/config/agentforeach.json) (models, memory, prompts, channels, rate limits, cron, sandboxes); secrets come from app settings, which the Pulumi program stores in Key Vault. Infrastructure settings are in [`infra/Pulumi.example.yaml`](infra/Pulumi.example.yaml).
 
 ## Contributing and security
 

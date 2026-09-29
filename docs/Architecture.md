@@ -15,7 +15,7 @@ AgentForEach is one stateless Function App in front of Cosmos DB. Every turn loa
 | Secrets | Key Vault | Referenced from app settings by version |
 | Telemetry | Application Insights, Log Analytics | Sampled logs, alerts |
 
-The Pulumi program in `packages/infra` creates all of it.
+The Pulumi program in `infra` creates all of it.
 
 ## A chat turn
 
@@ -37,7 +37,7 @@ A client calls `GET /negotiate` (authenticated like any API call) and gets `{ ur
 | `{ type: "abort" }` | Stop the running turn |
 | `{ type: "ping" }` | Keep-alive; answered with `pong` |
 
-The server pushes frames `{ type: "event", event: "chat", payload }` to every connection of the user, where `payload.state` is one of `thinking`, `delta` (with `offset`), `reasoning_delta`, `tool_start` / `tool_delta` / `tool_done`, `input_request` / `input_expired`, `final`, `aborted` or `error`, and carries the `runId` and `sessionId`. Handlers live in `packages/gateway/handlers/ws-*.ts`; frame types in `packages/gateway/websocket/types.ts`.
+The server pushes frames `{ type: "event", event: "chat", payload }` to every connection of the user, where `payload.state` is one of `thinking`, `delta` (with `offset`), `reasoning_delta`, `tool_start` / `tool_delta` / `tool_done`, `input_request` / `input_expired`, `final`, `aborted` or `error`, and carries the `runId` and `sessionId`. Handlers live in `gateway/handlers/ws-*.ts`; frame types in `gateway/websocket/types.ts`.
 
 ### Failure handling
 
@@ -50,7 +50,7 @@ The server pushes frames `{ type: "event", event: "chat", payload }` to every co
 
 ## Data model
 
-Every container is defined by the code that uses it and recorded in `packages/infra/cosmos-containers.json`, which Pulumi provisions (see [CONTRIBUTING](../CONTRIBUTING.md)).
+Every container is defined by the code that uses it and recorded in `infra/cosmos-containers.json`, which Pulumi provisions (see [CONTRIBUTING](../CONTRIBUTING.md)).
 
 | Container | Partition key | TTL | Holds |
 |---|---|---|---|

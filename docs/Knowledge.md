@@ -24,7 +24,7 @@ The runtime uses the index in two ways:
 1. **Auto-recall (passive).** Before the model is called, the runner searches the index with the user's message (skipped for messages under 10 characters and for turns without a real user message, such as cron wake-ups). Up to `recallLimit` chunks scoring at least `minScore` are XML-escaped, cut to 1,500 characters each, wrapped in a `<relevant-knowledge>` block and added to the system prompt under **Recalled Knowledge**, with a warning not to treat the content as instructions. A failed recall is logged and the turn continues without it.
 2. **`knowledge_search` tool (active).** Offered to the model whenever the knowledge layer is enabled, and on the allowlist for scheduled (cron) runs. Parameters: `query` (required; `q` is an alias), `title` (fuzzy filter on the document title via `search.ismatch`), `source` (exact filter), `limit` (1–10, default `searchLimit`). Each result is wrapped with `wrapExternalContent()` as untrusted content and cut to 2,000 characters. The response ends with an "Available documents" list built from title facets, so the model can narrow a follow-up search with `title`.
 
-The code is in `packages/gateway/knowledge/`:
+The code is in `gateway/knowledge/`:
 
 | File | Purpose |
 |---|---|
@@ -38,7 +38,7 @@ The prompt section is built by `prompt/sections/knowledge.ts`; its header, intro
 
 ## Configuration
 
-`packages/gateway/config/agentforeach.json`:
+`gateway/config/agentforeach.json`:
 
 ```json
 "knowledge": {
@@ -72,12 +72,12 @@ The module is active only when `enabled` is true **and** both an endpoint and a 
 
 ## Infrastructure
 
-Set `agentforeach:searchEnabled: "true"` in your Pulumi stack (see `packages/infra/Pulumi.example.yaml`). Related settings in `packages/infra/config.ts`: `searchSku` (`free`, `basic` or `standard`; default `basic`), `searchSemanticTier` (`disabled`, `free` or `standard`; default `free`) and `searchReplicaCount` (default 1). The Free SKU has no semantic ranker; the client then falls back to plain hybrid queries.
+Set `agentforeach:searchEnabled: "true"` in your Pulumi stack (see `infra/Pulumi.example.yaml`). Related settings in `infra/config.ts`: `searchSku` (`free`, `basic` or `standard`; default `basic`), `searchSemanticTier` (`disabled`, `free` or `standard`; default `free`) and `searchReplicaCount` (default 1). The Free SKU has no semantic ranker; the client then falls back to plain hybrid queries.
 
 With it on, Pulumi creates:
 
-- the AI Search service (`packages/infra/search.ts`);
-- a `knowledge-docs` blob container in the Function App's storage account (`createKnowledgeBlobContainer` in `packages/infra/functions.ts`);
+- the AI Search service (`infra/search.ts`);
+- a `knowledge-docs` blob container in the Function App's storage account (`createKnowledgeBlobContainer` in `infra/functions.ts`);
 - the `SEARCH_ENDPOINT` and `SEARCH_API_KEY` app settings. `SEARCH_API_KEY` is a **query key** (search only), stored in Key Vault; the admin key is never given to the Function App.
 
 Pulumi does **not** create the index, data source, skillset or indexer (they are data-plane resources; the ingest script creates them) or an embedding model. Bring an Azure OpenAI resource with an embedding deployment (default name `text-embedding-3-small`, 1,536 dimensions).

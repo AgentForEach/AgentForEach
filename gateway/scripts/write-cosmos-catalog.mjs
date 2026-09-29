@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Write packages/infra/cosmos-containers.json from the runtime's own
+ * Write infra/cosmos-containers.json from the runtime's own
  * container definitions (database/catalog.ts). Run after changing a store's
  * container, a container id or TTL in agentforeach.json:
  *

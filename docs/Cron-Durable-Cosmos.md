@@ -30,20 +30,20 @@ Important:
 
 Core modules:
 
-- `packages/gateway/cron/config.ts`
-- `packages/gateway/cron/types.ts`
-- `packages/gateway/cron/schedule.ts`
-- `packages/gateway/cron/store.ts`
-- `packages/gateway/cron/executor.ts`
-- `packages/gateway/cron/delivery.ts`
-- `packages/gateway/cron/orchestrator.ts`
-- `packages/gateway/cron/api.ts`
-- `packages/gateway/cron/tools.ts`
-- `packages/gateway/websocket/push-adapter.ts`
+- `gateway/cron/config.ts`
+- `gateway/cron/types.ts`
+- `gateway/cron/schedule.ts`
+- `gateway/cron/store.ts`
+- `gateway/cron/executor.ts`
+- `gateway/cron/delivery.ts`
+- `gateway/cron/orchestrator.ts`
+- `gateway/cron/api.ts`
+- `gateway/cron/tools.ts`
+- `gateway/websocket/push-adapter.ts`
 
 Runtime registrations:
 
-- `packages/gateway/index.ts`
+- `gateway/index.ts`
 
 ## 3. Data Model in Cosmos
 
@@ -107,8 +107,8 @@ Write consistency note:
 
 Mutation signal paths:
 
-- HTTP cron API (`packages/gateway/cron/api.ts`)
-- LLM cron tool handler via `onCronMutation` callback (`packages/gateway/cron/tools.ts`, `packages/gateway/client/runner.ts`, gateway handlers)
+- HTTP cron API (`gateway/cron/api.ts`)
+- LLM cron tool handler via `onCronMutation` callback (`gateway/cron/tools.ts`, `gateway/client/runner.ts`, gateway handlers)
 
 ### 4.2 Execution loop
 
@@ -236,7 +236,7 @@ Delivery modes:
 
 ## 8.2 Channel/announce adapters
 
-- Routed via adapter registry (`packages/gateway/cron/delivery.ts`)
+- Routed via adapter registry (`gateway/cron/delivery.ts`)
 - Current built-in adapter: `push` via Azure Web PubSub
 - Push adapter checks user online status before sending
 

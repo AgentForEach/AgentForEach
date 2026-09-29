@@ -7,7 +7,7 @@
  * runner: one model-visible convergence note at the soft threshold, and the
  * existing `maxToolRounds` hard stop unchanged.
  *
- *   npx tsx --test packages/gateway/client/tool-budget.test.ts
+ *   npx tsx --test gateway/client/tool-budget.test.ts
  */
 import test from "node:test";
 import assert from "node:assert/strict";

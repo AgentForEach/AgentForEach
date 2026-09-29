@@ -1,6 +1,6 @@
 # WhatsApp channel
 
-A WhatsApp Cloud API channel built on the same plugin contract as Telegram (see [Channels](Channel.md) for the shared webhook, security model and identity resolution). Code: `packages/gateway/channels/whatsapp/`. It calls the Graph API with native `fetch`; there is no SDK dependency.
+A WhatsApp Cloud API channel built on the same plugin contract as Telegram (see [Channels](Channel.md) for the shared webhook, security model and identity resolution). Code: `gateway/channels/whatsapp/`. It calls the Graph API with native `fetch`; there is no SDK dependency.
 
 ## Setup
 

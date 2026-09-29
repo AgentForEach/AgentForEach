@@ -19,9 +19,9 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Typecheck gateway
-        run: npx tsc --noEmit -p packages/gateway
+        run: npx tsc --noEmit -p gateway
       - name: Typecheck infra
-        run: npx tsc --noEmit -p packages/infra
+        run: npx tsc --noEmit -p infra
       - name: Test
         run: npm test --workspace @agentforeach/gateway
 

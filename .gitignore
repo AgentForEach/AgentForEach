@@ -22,8 +22,8 @@ __queuestorage__/
 __azurite_db_*
 
 # Product-specific configs and deploy scripts live in private repos
-packages/gateway/config/*.json
-!packages/gateway/config/agentforeach.json
+gateway/config/*.json
+!gateway/config/agentforeach.json
 deploy-*.sh
 !scripts/deploy-gateway.sh
 
@@ -40,11 +40,11 @@ open-source-plan.md
 typescript
 
 # Load-test config (scripts/load-test/make-config.mjs)
-packages/gateway/config/agentforeach.loadtest.json
+gateway/config/agentforeach.loadtest.json
 
-# Stack configs are per deployment; see packages/infra/Pulumi.example.yaml
-packages/infra/Pulumi.*.yaml
-!packages/infra/Pulumi.example.yaml
+# Stack configs are per deployment; see infra/Pulumi.example.yaml
+infra/Pulumi.*.yaml
+!infra/Pulumi.example.yaml
 
 # Deploy staging area (scripts/deploy-gateway.sh)
 .deploy-staging/

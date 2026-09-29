@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Write packages/gateway/config/agentforeach.loadtest.json: agentforeach.json with
+ * Write gateway/config/agentforeach.loadtest.json: agentforeach.json with
  * HS256 JWT auth (the secret is read from LOADTEST_JWT_SECRET at runtime), so
  * run.mjs can act as any number of users. Deploy it with the app and set
  * CONFIG_FILE_JSON=agentforeach.loadtest.json and LOADTEST_JWT_SECRET on the
@@ -21,7 +21,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-const dir = fileURLToPath(new URL("../../packages/gateway/config/", import.meta.url));
+const dir = fileURLToPath(new URL("../../gateway/config/", import.meta.url));
 const config = JSON.parse(readFileSync(`${dir}agentforeach.json`, "utf8"));
 
 config.auth = {

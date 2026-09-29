@@ -25,9 +25,9 @@ The message mix is configurable (`--mix chat=80,memory=15,cron=5,sandbox=0`): pl
 1. Deploy a scratch stack (never a real one: the load-test config accepts self-signed tokens).
 
    ```bash
-   node scripts/load-test/make-config.mjs         # writes packages/gateway/config/agentforeach.loadtest.json (gitignored)
+   node scripts/load-test/make-config.mjs         # writes gateway/config/agentforeach.loadtest.json (gitignored)
    export LOADTEST_JWT_SECRET=$(openssl rand -hex 32)
-   cd packages/infra
+   cd infra
    pulumi stack init loadtest
    pulumi config set azure-native:location centralindia
    pulumi config set agentforeach:nameSuffix $(openssl rand -hex 3)

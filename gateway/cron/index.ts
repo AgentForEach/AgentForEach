@@ -110,7 +110,7 @@ export {
 // — Function registrations —
 // NOTE: The actual Azure Functions registrations (df.app.*, app.*)
 // are triggered via side-effect imports in the entry point
-// (packages/src/index.ts), which imports:
+// (gateway/index.ts), which imports:
 //   - ./orchestrator.js  (activities, orchestrator, health check timer)
 //   - ./api.js           (cron HTTP API endpoints)
 // This barrel file re-exports types and functions for library consumers.

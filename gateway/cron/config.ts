@@ -3,7 +3,7 @@
 /**
  * AgentForEach Cron System — Configuration & Constants
  *
- * Defaults are loaded from `packages/config/agentforeach.json`.
+ * Defaults are loaded from `gateway/config/agentforeach.json`.
  * Environment variables override JSON values at runtime.
  *
  * Ported from OpenClaw's cron constants, adapted for Azure Durable Functions.

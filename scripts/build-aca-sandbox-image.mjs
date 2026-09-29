@@ -3,7 +3,7 @@
  * Build AgentForEach's ACA Sandboxes disk image, with no container registry.
  *
  * Starts a build sandbox from the public "ubuntu" image with egress open,
- * runs packages/gateway/sandbox-container/provision-aca.sh in it, commits
+ * runs gateway/sandbox-container/provision-aca.sh in it, commits
  * the sandbox to a private disk image in the group, waits until the image is
  * Ready, checks it by booting a sandbox from it, and cleans up.
  *
@@ -24,8 +24,8 @@ import {
   AcaSandboxesClient,
   ACA_SANDBOXES_API_VERSION,
   labelHash,
-} from "../packages/gateway/dist/gateway/skills/sandbox/aca-sandboxes-client.js";
-import { createDefaultTokenProvider } from "../packages/gateway/dist/gateway/utils/azure-token.js";
+} from "../gateway/dist/gateway/skills/sandbox/aca-sandboxes-client.js";
+import { createDefaultTokenProvider } from "../gateway/dist/gateway/utils/azure-token.js";
 
 const env = (k) => {
   if (!process.env[k]) {
@@ -111,7 +111,7 @@ let imageId;
 
 try {
   console.log("Provisioning build sandbox…");
-  const script = readFileSync(new URL("../packages/gateway/sandbox-container/provision-aca.sh", import.meta.url), "utf8");
+  const script = readFileSync(new URL("../gateway/sandbox-container/provision-aca.sh", import.meta.url), "utf8");
   await builder.fileWrite({ filename: "provision-aca.sh", content: script }, ident);
   const full = process.env.SANDBOX_IMAGE_FULL === "1" ? "SANDBOX_IMAGE_FULL=1 " : "";
   // apt can take a while; run in the background and poll so no single call nears the HTTP limit.

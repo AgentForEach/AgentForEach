@@ -12,7 +12,7 @@ test("the IaC provisions exactly the containers the runtime defines", async () =
   assert.deepEqual(
     iac,
     runtime,
-    "packages/infra/cosmos-containers.json is out of date: run `npm run db:catalog --workspace @agentforeach/gateway`",
+    "infra/cosmos-containers.json is out of date: run `npm run db:catalog --workspace @agentforeach/gateway`",
   );
 });
 

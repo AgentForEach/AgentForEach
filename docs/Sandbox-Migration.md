@@ -103,7 +103,7 @@ Everything in this table is from Microsoft's [overview](https://learn.microsoft.
 - **Fallback:** the IaC sets `SANDBOX_PROVIDER`, which overrides `agentforeach.json`. If the provider is `aca-sandboxes` but no sandbox group is configured while a session pool is, AgentForEach logs a warning and uses Dynamic Sessions with *its* own timeouts.
 - **Account deletion:** `AcaSandboxesClient.deleteUserSandboxes(userId)` removes all of a user's sandboxes, and with them their snapshots and files, across every conversation. Erasing a user's data (`DELETE /api/me/data` or the admin route, `account/erase.ts`) calls it.
 
-Code: `packages/gateway/skills/sandbox/aca-sandboxes-client.ts`, `factory.ts`, `token.ts`, `shared.ts`. Tests: `aca-sandboxes-client.test.ts`, `factory.test.ts`.
+Code: `gateway/skills/sandbox/aca-sandboxes-client.ts`, `factory.ts`, `token.ts`, `shared.ts`. Tests: `aca-sandboxes-client.test.ts`, `factory.test.ts`.
 
 ## Verified on a real sandbox group
 
@@ -192,7 +192,7 @@ Azure's Retail Prices API had no Sandboxes-specific meters on 29 Sept 2026. If S
 
 No container registry is needed. `scripts/build-aca-sandbox-image.mjs`:
 1. starts a build sandbox from the public `ubuntu` image, with egress open;
-2. runs `packages/gateway/sandbox-container/provision-aca.sh` (Python with pip, Node, git, jq, zip/unzip and build tools; `SANDBOX_IMAGE_FULL=1` adds Java, PHP, Ruby and Go);
+2. runs `gateway/sandbox-container/provision-aca.sh` (Python with pip, Node, git, jq, zip/unzip and build tools; `SANDBOX_IMAGE_FULL=1` adds Java, PHP, Ruby and Go);
 3. **commits** the sandbox to a private disk image;
 4. boots a verification sandbox from the image at production size with egress denied, and checks every tool;
 5. prints the image id.

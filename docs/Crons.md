@@ -16,7 +16,7 @@ AgentForEach keeps OpenClaw's cron concepts (at/every/cron schedules, one-shot b
 
 ### 2.1 Durable Components
 
-- `CronScheduler` orchestration (`packages/gateway/cron/orchestrator.ts`) — one instance per shard
+- `CronScheduler` orchestration (`gateway/cron/orchestrator.ts`) — one instance per shard
 - Activities:
   - `GetDueJobs`
   - `ExecuteAndRecordJob`
@@ -66,7 +66,7 @@ AgentForEach cron jobs now use OpenClaw-like core semantics:
   - `announce`/`channel` (alias)
   - `webhook`
 
-Store-level invariants are enforced in `packages/gateway/cron/store.ts`:
+Store-level invariants are enforced in `gateway/cron/store.ts`:
 
 - `main` requires `payload.kind = systemEvent`
 - `isolated` requires `payload.kind = agentTurn`
@@ -104,7 +104,7 @@ Any cron mutation should wake scheduler promptly.
 
 ### 6.1 HTTP cron API path
 
-`packages/gateway/cron/api.ts` raises Durable external event `jobsChanged` after create/update/delete and force-run state updates.
+`gateway/cron/api.ts` raises Durable external event `jobsChanged` after create/update/delete and force-run state updates.
 
 ### 6.2 Tool path (LLM function tools)
 
@@ -112,9 +112,9 @@ Any cron mutation should wake scheduler promptly.
 
 Wired in:
 
-- `packages/gateway/handlers/chat-turn.ts`
-- `packages/gateway/handlers/channel-webhook.ts`
-- `packages/gateway/client/runner.ts`
+- `gateway/handlers/chat-turn.ts`
+- `gateway/handlers/channel-webhook.ts`
+- `gateway/client/runner.ts`
 
 ## 7. Force-Run Semantics
 
@@ -157,14 +157,14 @@ This reduces orchestration-wide failure risk from a single job failure.
 
 ## 10. Key Files
 
-- `packages/gateway/cron/types.ts`
-- `packages/gateway/cron/store.ts`
-- `packages/gateway/cron/schedule.ts`
-- `packages/gateway/cron/executor.ts`
-- `packages/gateway/cron/orchestrator.ts`
-- `packages/gateway/cron/api.ts`
-- `packages/gateway/cron/tools.ts`
-- `packages/gateway/handlers/cron-signal.ts`
+- `gateway/cron/types.ts`
+- `gateway/cron/store.ts`
+- `gateway/cron/schedule.ts`
+- `gateway/cron/executor.ts`
+- `gateway/cron/orchestrator.ts`
+- `gateway/cron/api.ts`
+- `gateway/cron/tools.ts`
+- `gateway/handlers/cron-signal.ts`
 
 ## 11. Operational Notes
 

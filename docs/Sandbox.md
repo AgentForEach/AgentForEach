@@ -90,10 +90,10 @@ For local development, `az login`, give your user the same role on the group, an
 
 ### Building the disk image
 
-No container registry is involved. `scripts/build-aca-sandbox-image.mjs` starts a build sandbox from the public `ubuntu` image with egress open, runs `packages/gateway/sandbox-container/provision-aca.sh` in it (Python with pip, Node and npm, git, jq, zip, compilers; `SANDBOX_IMAGE_FULL=1` adds Java, PHP, Ruby and Go), commits it to a private disk image, boots a verification sandbox from the image at production size with egress denied, and prints the image id.
+No container registry is involved. `scripts/build-aca-sandbox-image.mjs` starts a build sandbox from the public `ubuntu` image with egress open, runs `gateway/sandbox-container/provision-aca.sh` in it (Python with pip, Node and npm, git, jq, zip, compilers; `SANDBOX_IMAGE_FULL=1` adds Java, PHP, Ruby and Go), commits it to a private disk image, boots a verification sandbox from the image at production size with egress denied, and prints the image id.
 
 ```bash
-npx tsc -p packages/gateway     # the script imports the compiled client
+npx tsc -p gateway     # the script imports the compiled client
 ACA_SANDBOX_SUBSCRIPTION_ID=<subscription-id> ACA_SANDBOX_RESOURCE_GROUP=<resource-group> \
 ACA_SANDBOX_GROUP=<sandbox-group> ACA_SANDBOX_REGION=<region> \
   node scripts/build-aca-sandbox-image.mjs
@@ -108,7 +108,7 @@ Build at production size (`ACA_SANDBOX_CPU`, `ACA_SANDBOX_MEMORY`, `ACA_SANDBOX_
 
 Set `agentforeach:sandboxProvider aca-sessions` to use a session pool instead. `pulumi up` then creates a Container Apps environment and a session pool, gives the Function App the built-in **Azure ContainerApps Session Executor** role (`0fb8eba5-a2bb-4abe-b1c1-49dfad359bb0`) on it, and sets `ACA_POOL_MANAGEMENT_ENDPOINT`.
 
-- `agentforeach:sandboxContainerType` — `PythonLTS` (default; Azure's Python code interpreter, no image) or `CustomContainer` (the multi-runtime image from `packages/gateway/sandbox-container/Dockerfile`, which serves `/exec` and `/files` from `server.mjs`). `CustomContainer` also creates a container registry and needs a workload-profile environment, which carries a fixed monthly management fee.
+- `agentforeach:sandboxContainerType` — `PythonLTS` (default; Azure's Python code interpreter, no image) or `CustomContainer` (the multi-runtime image from `gateway/sandbox-container/Dockerfile`, which serves `/exec` and `/files` from `server.mjs`). `CustomContainer` also creates a container registry and needs a workload-profile environment, which carries a fixed monthly management fee.
 - `agentforeach:sandboxContainerImage`, `sandboxContainerCpu`, `sandboxContainerMemory`, `sandboxContainerPort` — CustomContainer only.
 - `agentforeach:sandboxMaxConcurrentSessions` (10), `sandboxReadyInstances` (0), `sandboxCooldownSec` (600), `sandboxNetworkStatus` (`EgressDisabled`).
 
@@ -116,4 +116,4 @@ Runtime settings are in `skills.sandbox.aca` in `agentforeach.json` (timeouts de
 
 ## Code
 
-`packages/gateway/skills/sandbox/`: `factory.ts` (backend choice), `aca-sandboxes-client.ts` (primary), `client.ts` (Dynamic Sessions), `handler.ts` (tools and credential injection), `export-store.ts` (download links). Infrastructure: `packages/infra/sandbox.ts`. Live test against a real group: `scripts/test-aca-sandboxes-live.mjs`.
+`gateway/skills/sandbox/`: `factory.ts` (backend choice), `aca-sandboxes-client.ts` (primary), `client.ts` (Dynamic Sessions), `handler.ts` (tools and credential injection), `export-store.ts` (download links). Infrastructure: `infra/sandbox.ts`. Live test against a real group: `scripts/test-aca-sandboxes-live.mjs`.

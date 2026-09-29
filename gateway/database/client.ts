@@ -114,7 +114,7 @@ export class CosmosDatabase implements DatabaseProvider {
     if (cached) return cached as CosmosContainerHandle<T>;
 
     // Provisioned mode creates the container as defined; otherwise it must
-    // already exist (IaC: packages/infra/cosmos-containers.json).
+    // already exist (IaC: infra/cosmos-containers.json).
     const container = this.provision
       ? (await this.database.containers.createIfNotExists(options)).container
       : this.database.container(containerId);
