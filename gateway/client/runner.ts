@@ -1269,6 +1269,16 @@ export async function runAgentTurn(
     const providerRequest: ProviderRequest = {
       model,
       input: providerInput,
+      // If failover moves a chained turn to another provider, it gets the
+      // local history instead (see ProviderRequest.failoverInput).
+      ...(hasPreviousResponseChain && !directHitlToolOutput
+        ? {
+            failoverInput: [
+              ...boundedConversationHistory,
+              { role: "user" as const, content: userContent },
+            ],
+          }
+        : {}),
       instructions: assembled.instructions,
       tools: functionTools,
       toolChoice: "auto",
@@ -2265,6 +2275,8 @@ export async function runAgentTurn(
       currentRequest = {
         ...currentRequest,
         input: functionCallOutputs,
+        // Tool rounds continue this turn's response on the provider that made it.
+        failoverInput: undefined,
         tools: functionTools,
         reasoning: nextReasoning,
         conversation: {
@@ -2425,7 +2437,12 @@ export async function runAgentTurn(
         ? null
         : shouldPersistConversationState && (previousResponseId || containerId)
           ? { previousResponseId, containerId }
-          : undefined,
+          : shouldPersistConversationState && hasPreviousResponseChain
+            ? // The chain wasn't extended (failover answered with a provider
+              // that doesn't chain): clear it, or the next turn would chain
+              // from before this one and the model would never see it.
+              null
+            : undefined,
       channelMetadata,
       session.instanceId,
       leaseId,

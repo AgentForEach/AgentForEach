@@ -202,14 +202,14 @@ export async function withFailover(
   }
 
   // Build ordered candidate list: primary first, then chain order (skip primary if already first)
-  const candidates = buildCandidateList(primaryProviderId, config.chain);
+  const { candidates, pinned } = failoverCandidates(primaryProviderId, config, request);
   const failedProviders: Array<{ providerId: ProviderId; reason: string }> = [];
   let attempts = 0;
 
   for (const candidateId of candidates) {
     if (attempts >= config.maxRetries + 1) break;
 
-    if (isInCooldown(candidateId)) continue;
+    if (!pinned && isInCooldown(candidateId)) continue;
 
     try {
       const provider = resolveProvider(candidateId);
@@ -275,14 +275,14 @@ export async function* withFailoverStream(
     return;
   }
 
-  const candidates = buildCandidateList(primaryProviderId, config.chain);
+  const { candidates, pinned } = failoverCandidates(primaryProviderId, config, request);
   const failedProviders: Array<{ providerId: ProviderId; reason: string }> = [];
   let attempts = 0;
 
   for (const candidateId of candidates) {
     if (attempts >= config.maxRetries + 1) break;
 
-    if (isInCooldown(candidateId)) continue;
+    if (!pinned && isInCooldown(candidateId)) continue;
 
     try {
       const provider = resolveProvider(candidateId);
@@ -379,8 +379,31 @@ function adjustRequestForProvider(
   if (targetProviderId === originalProviderId) return request;
 
   // The original model won't exist on the fallback provider — use its default
-  return {
+  const adjusted: ProviderRequest = {
     ...request,
     model: resolveDefaultModel(targetProviderId),
   };
+  // The fallback can't follow the primary's response chain: send the whole
+  // conversation instead of only the new message.
+  if (request.conversation?.previousResponseId && request.failoverInput) {
+    adjusted.input = request.failoverInput;
+    adjusted.conversation = { ...request.conversation, previousResponseId: undefined };
+  }
+  return adjusted;
+}
+
+/**
+ * Providers to try, in order. A request chained to an earlier response with
+ * no `failoverInput` can't move to another provider, so only the primary is
+ * tried, even in cooldown: skipping it would fail the turn outright.
+ */
+function failoverCandidates(
+  primaryProviderId: ProviderId,
+  config: FailoverConfig,
+  request: ProviderRequest,
+): { candidates: ProviderId[]; pinned: boolean } {
+  const pinned = !!request.conversation?.previousResponseId && !request.failoverInput;
+  return pinned
+    ? { candidates: [primaryProviderId], pinned }
+    : { candidates: buildCandidateList(primaryProviderId, config.chain), pinned };
 }

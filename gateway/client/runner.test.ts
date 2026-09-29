@@ -43,6 +43,26 @@ test("a normal turn keeps the provider chain", async () => {
   assert.match(String(sessionStore.persistedStates.at(-1)?.previousResponseId), /^resp_/);
 });
 
+test("a chained turn carries its history for failover, and a reply that doesn't chain clears the chain", async () => {
+  const provider = scriptedProvider([
+    () => textResponse("first"),
+    // As if failover answered with a provider that doesn't chain (Anthropic).
+    () => textResponse("second", { providerId: "anthropic", conversationState: undefined }),
+  ]);
+  const { deps, sessionStore } = makeDeps(provider);
+
+  await send(deps, "my name is Ann");
+  assert.match(String(sessionStore.persistedStates.at(-1)?.previousResponseId), /^resp_/);
+
+  await send(deps, "what's my name?");
+  const chained = provider.requests[1]!;
+  assert.ok(chained.conversation?.previousResponseId, "the second turn is chained");
+  const history = JSON.stringify(chained.failoverInput);
+  assert.match(history, /my name is Ann/);
+  assert.match(history, /what's my name\?/);
+  assert.equal(sessionStore.persistedStates.at(-1), null, "a chain that wasn't extended is cleared");
+});
+
 // ============================================================================
 // T1-1 (HITL): resuming a form sends every output the paused response needs
 // ============================================================================

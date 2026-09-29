@@ -292,6 +292,14 @@ export interface ProviderRequest {
   toolChoice?: "auto" | "required" | "none" | { type: "function"; name: string };
   /** Multi-turn conversation state. */
   conversation?: ConversationState;
+  /**
+   * What failover sends to a different provider in place of `input` when
+   * `conversation.previousResponseId` is set: the local history plus the new
+   * message, since no other provider can follow that response chain. Without
+   * it a chained request (a tool round continuing this turn) stays on its
+   * provider.
+   */
+  failoverInput?: ConversationMessage[];
   /** Maximum output tokens. */
   maxOutputTokens?: number;
   /** Maximum number of tool calls. */
