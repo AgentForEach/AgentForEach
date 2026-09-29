@@ -46,7 +46,7 @@ test("a normal turn keeps the provider chain", async () => {
 
 test("a chained turn carries its history for failover, and a reply that doesn't chain clears the chain", async () => {
   const provider = scriptedProvider([
-    () => textResponse("first"),
+    () => textResponse("first", { conversationState: { previousResponseId: "resp_first", containerId: "cntr_1" } }),
     // As if failover answered with a provider that doesn't chain (Anthropic).
     () => textResponse("second", { providerId: "anthropic", conversationState: undefined }),
   ]);
@@ -61,7 +61,9 @@ test("a chained turn carries its history for failover, and a reply that doesn't 
   const history = JSON.stringify(chained.failoverInput);
   assert.match(history, /my name is Ann/);
   assert.match(history, /what's my name\?/);
-  assert.equal(sessionStore.persistedStates.at(-1), null, "a chain that wasn't extended is cleared");
+  const last = sessionStore.persistedStates.at(-1);
+  assert.equal(last?.previousResponseId, undefined, "a chain that wasn't extended is cleared");
+  assert.equal(last?.containerId, "cntr_1", "the code-interpreter container is kept");
 });
 
 test("a turn that fails after /new replaced its session writes nothing into the new one", async () => {

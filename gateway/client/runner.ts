@@ -2555,12 +2555,14 @@ export async function runAgentTurn(
           : shouldPersistConversationState && hasPreviousResponseChain
             ? // The chain wasn't extended (failover answered with a provider
               // that doesn't chain): clear it, or the next turn would chain
-              // from before this one and the model would never see it.
-              null
+              // from before this one and the model would never see it. The
+              // code-interpreter container is kept.
+              { previousResponseId: undefined, containerId: conversationStateForRequest?.containerId }
             : undefined,
       channelMetadata,
       session.instanceId,
       leaseId,
+      session.lastCompactedSeq ?? 0,
     );
     userMessagePersisted = true;
     markPhase("persist");

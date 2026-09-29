@@ -252,6 +252,13 @@ export class SessionStore {
      * outlived its lease can't add a second answer.
      */
     expectedLeaseId?: string,
+    /**
+     * The session's lastCompactedSeq when the caller loaded it. If a
+     * compaction has run since, a previousResponseId in `conversationState`
+     * is not saved: that chain holds the turns the summary replaced, and
+     * continuing it would undo the compaction.
+     */
+    chainFromCompactedSeq?: number,
   ): Promise<Session> {
     this.ensureInitialized();
 
@@ -316,10 +323,11 @@ export class SessionStore {
       if (conversationState === null) {
         updated.conversationState = undefined;
       } else if (conversationState) {
-        updated.conversationState = {
-          ...resource.conversationState,
-          ...conversationState,
-        };
+        const next = { ...resource.conversationState, ...conversationState };
+        if (chainFromCompactedSeq !== undefined && (resource.lastCompactedSeq ?? 0) !== chainFromCompactedSeq) {
+          delete next.previousResponseId;
+        }
+        updated.conversationState = next.previousResponseId || next.containerId ? next : undefined;
       }
 
       // Merge session metadata if provided (channel state, etc.)

@@ -1124,6 +1124,33 @@ test("compaction drops the provider chain but keeps the code-interpreter contain
   assert.deepEqual(after?.conversationState, { containerId: "cntr-1" });
 });
 
+test("a turn that was running when compaction landed can't bring the old chain back", async () => {
+  const store = await setupStore();
+  const loaded = await store.getOrCreate("u1", "default", "s1");
+  await store.appendMessages("u1", "s1", [msg("user", "q"), msg("assistant", "a")], {
+    previousResponseId: "resp-1",
+    containerId: "cntr-1",
+  });
+  // Compaction lands while the next turn is streaming from resp-1.
+  await store.updateCompaction("u1", "s1", "summary", 1);
+  await store.appendMessages(
+    "u1",
+    "s1",
+    [msg("user", "q2"), msg("assistant", "a2")],
+    { previousResponseId: "resp-2", containerId: "cntr-1" },
+    undefined,
+    undefined,
+    undefined,
+    loaded.lastCompactedSeq ?? 0,
+  );
+  assert.deepEqual((await store.get("u1", "s1"))?.conversationState, { containerId: "cntr-1" });
+
+  // The next turn, loaded after the compaction, chains again.
+  const after = (await store.get("u1", "s1"))!;
+  await store.appendMessages("u1", "s1", [msg("user", "q3")], { previousResponseId: "resp-3" }, undefined, undefined, undefined, after.lastCompactedSeq ?? 0);
+  assert.equal((await store.get("u1", "s1"))?.conversationState?.previousResponseId, "resp-3");
+});
+
 test("compaction results for a replaced instance aren't written onto the new session", async () => {
   const store = await setupStore();
   const before = await store.getOrCreate("u1", "default", "s1");
