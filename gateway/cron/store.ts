@@ -484,6 +484,18 @@ function computeJobNextRun(
   return Math.max(0, raw - DELIVERY_LEAD_TIME_MS);
 }
 
+/**
+ * A job that will never run again: past its expiry, a one-shot whose time has
+ * passed and that is off, or a job that used up its maxRuns. A paused
+ * recurring job (cron_update enabled=false) is not finished.
+ */
+function isFinishedJob(job: CronJob, nowMs: number): boolean {
+  if (typeof job.expiresAt === "number" && job.expiresAt <= nowMs) return true;
+  if (job.enabled) return false;
+  if (job.schedule.kind === "at") return Date.parse(job.schedule.at) <= nowMs;
+  return typeof job.maxRuns === "number" && job.maxRuns > 0 && (job.state.runCount ?? 0) >= job.maxRuns;
+}
+
 function resolveJobShardId(
   job: Pick<CronJob, "userId"> & { shardId?: number },
 ): number {
@@ -708,19 +720,6 @@ export class CronStore {
     await this.ensureInitialized();
     assertValidInputLengths(input);
 
-    const maxJobsPerUser = getMaxJobsPerUser();
-    if (maxJobsPerUser > 0) {
-      const existingCount = await this.countJobs(input.userId);
-      if (existingCount >= maxJobsPerUser) {
-        // Finished and disabled jobs make room, oldest first, so they can't
-        // fill the limit forever; only enabled jobs can refuse a new one.
-        const freed = await this.pruneDisabledJobs(input.userId, existingCount - maxJobsPerUser + 1);
-        if (existingCount - freed >= maxJobsPerUser) {
-          throw new Error(`cron job limit exceeded for user (${maxJobsPerUser})`);
-        }
-      }
-    }
-
     const nowMs = Date.now();
     const id = randomUUID();
     const shardId = getSchedulerShardForUser(input.userId);
@@ -791,6 +790,20 @@ export class CronStore {
     assertSupportedJobSpec(job);
     assertValidSchedule(job);
     assertValidExpiry(job, nowMs);
+
+    // Only once the new job is known to be valid: at the limit, finished jobs
+    // make room, so they can't fill it forever. Active and paused jobs count.
+    const maxJobsPerUser = getMaxJobsPerUser();
+    if (maxJobsPerUser > 0) {
+      const existingCount = await this.countJobs(input.userId);
+      if (existingCount >= maxJobsPerUser) {
+        const freed = await this.pruneFinishedJobs(input.userId, existingCount - maxJobsPerUser + 1, nowMs);
+        if (existingCount - freed >= maxJobsPerUser) {
+          throw new Error(`cron job limit exceeded for user (${maxJobsPerUser})`);
+        }
+      }
+    }
+
     const created = await this.jobs.create(job);
     await this.syncDueIndexFromJobBestEffort(created);
     return created;
@@ -1777,16 +1790,30 @@ export class CronStore {
   /**
    * Count total jobs for a user.
    */
-  /** Delete up to `count` of a user's disabled jobs, least recently updated first. */
-  private async pruneDisabledJobs(userId: string, count: number): Promise<number> {
-    const disabled = await this.jobs.queryWithParams<CronJob>(
-      "SELECT * FROM c WHERE c.userId = @userId AND c.enabled = false",
+  /**
+   * Delete up to `count` of a user's finished jobs (see isFinishedJob),
+   * least recently updated first. Each delete is etag-guarded, so a job
+   * changed since it was read (re-enabled, say) is left alone.
+   */
+  private async pruneFinishedJobs(userId: string, count: number, nowMs: number): Promise<number> {
+    const jobs = await this.jobs.queryWithParams<CronJob>(
+      "SELECT * FROM c WHERE c.userId = @userId",
       [{ name: "@userId", value: userId }],
     );
-    disabled.sort((a, b) => (a.updatedAtMs ?? 0) - (b.updatedAtMs ?? 0));
+    const finished = jobs.filter((job) => isFinishedJob(job, nowMs));
+    finished.sort((a, b) => (a.updatedAtMs ?? 0) - (b.updatedAtMs ?? 0));
+    const raw = this.jobs.getRawContainer() as Container;
     let freed = 0;
-    for (const job of disabled.slice(0, count)) {
-      if (await this.deleteJob(job.id, userId)) freed++;
+    for (const job of finished.slice(0, count)) {
+      const etag = (job as unknown as { _etag?: string })._etag;
+      try {
+        await raw.item(job.id, userId).delete(etag ? { accessCondition: { type: "IfMatch", condition: etag } } : undefined);
+      } catch (err) {
+        if (isPreconditionFailedError(err) || isNotFoundError(err)) continue;
+        throw err;
+      }
+      await this.deleteDueIndexRowsForJobBestEffort(job.id, resolveJobShardId(job));
+      freed++;
     }
     return freed;
   }

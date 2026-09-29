@@ -268,23 +268,39 @@ test("createJob enforces the per-user job limit", async (t) => {
   assert.equal(await store.countJobs("alice"), 2);
 });
 
-test("disabled jobs make room at the job limit, oldest first", async (t) => {
+test("at the job limit, finished jobs make room but paused ones never do", async (t) => {
   const clock = useClock(t);
   process.env.CRON_MAX_JOBS_PER_USER = "2";
   t.after(() => delete process.env.CRON_MAX_JOBS_PER_USER);
   const { store } = await setup();
 
-  const old = await store.createJob(everyJob("alice", { enabled: false }));
-  clock.set(T0 + MIN);
-  const active = await store.createJob(everyJob("alice"));
-  clock.set(T0 + 2 * MIN);
+  const paused = await store.createJob(everyJob("alice", { enabled: false }));
+  const reminder = await store.createJob(atJob("alice", T0 + 10 * MIN));
+  // The reminder ran and was switched off (as when it's kept after running).
+  await store.updateJob(reminder.id, "alice", { enabled: false });
+  clock.set(T0 + 20 * MIN);
+
+  // An invalid job deletes nothing.
+  await assert.rejects(store.createJob(everyJob("alice", { schedule: { kind: "every", everyMs: 1 } })));
+  assert.ok(await store.getJob(reminder.id, "alice"));
 
   const created = await store.createJob(everyJob("alice"));
-  assert.equal(await store.getJob(old.id, "alice"), null, "the disabled job was pruned");
-  assert.ok(await store.getJob(active.id, "alice"));
+  assert.equal(await store.getJob(reminder.id, "alice"), null, "the finished reminder made room");
+  assert.ok(await store.getJob(paused.id, "alice"), "the paused job is kept");
   assert.ok(await store.getJob(created.id, "alice"));
-  // Two enabled jobs fill the limit; nothing left to prune.
+  // A paused and an active job fill the limit; nothing else is finished.
   await assert.rejects(store.createJob(everyJob("alice")), /cron job limit exceeded for user \(2\)/);
+});
+
+test("a job stuck enabled past its expiry counts as finished at the limit", async (t) => {
+  const clock = useClock(t);
+  process.env.CRON_MAX_JOBS_PER_USER = "1";
+  t.after(() => delete process.env.CRON_MAX_JOBS_PER_USER);
+  const { store } = await setup();
+  const stale = await store.createJob(everyJob("alice", { expiresAt: T0 + 30 * MIN }));
+  clock.set(T0 + DAY);
+  await store.createJob(everyJob("alice"));
+  assert.equal(await store.getJob(stale.id, "alice"), null);
 });
 
 test("a recurring job with no run left before it expires is retired", async (t) => {
