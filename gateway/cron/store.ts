@@ -1976,10 +1976,12 @@ export class CronStore {
       runningToken: job.state.runningToken,
       runningAtMs: job.state.runningAtMs,
       updatedAtMs: Date.now(),
-      // TTL: Active rows are refreshed on every sync (claim, result,
-      // update) so they never expire. Only truly orphaned rows (from missed
-      // cleanups on job deletion) rely on this TTL for automatic cleanup.
-      ttl: DUE_INDEX_TTL_SECONDS,
+      // TTL: a row lives until its run time plus the grace period. A row is
+      // rewritten only when its job is created, claimed, run or edited, so a
+      // fixed TTL would expire a job due further out than the TTL (a
+      // reminder in two weeks) before it ever ran. The grace period cleans
+      // up rows orphaned by a missed delete.
+      ttl: DUE_INDEX_TTL_SECONDS + Math.max(0, Math.ceil((nextRunAtMs - Date.now()) / 1000)),
     };
   }
 

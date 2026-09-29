@@ -2,6 +2,12 @@
 
 Behaviour changes an operator needs to know about, newest first. Most are security fixes that close a default that was unsafe for a multi-tenant deployment. Each says what changed, who is affected, and what to do.
 
+## After 0.1.0
+
+| Change | Who is affected | What to do |
+|---|---|---|
+| A scheduled job due more than 7 days ahead (`cron.cosmos.dueIndexTtlSeconds`) was dropped from the scheduler's index before it ran; index rows now live until the run time | Every deployment with reminders or jobs set more than a week out | Once, as an admin, after deploying: `POST /cron/admin/backfill-due-index`, which re-indexes every enabled job |
+
 ## Security hardening (September 2026)
 
 ### Authentication

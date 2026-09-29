@@ -167,6 +167,17 @@ test("createJob defaults one-shot jobs to delete-after-run with no expiry", asyn
   assert.equal(dueRow(job)?.nextRunAtMs, job.state.nextRunAtMs);
 });
 
+test("a job due weeks or months away is still found when its time comes", async (t) => {
+  const clock = useClock(t);
+  const { store } = await setup();
+  for (const days of [14, 45, 400]) {
+    const job = await store.createJob(atJob(`far-${days}`, T0 + days * DAY));
+    clock.set(job.state.nextRunAtMs!);
+    await claim(store, job, Date.now());
+    clock.set(T0);
+  }
+});
+
 test("createJob rejects an interval below the minimum and writes nothing", async (t) => {
   useClock(t);
   const { store, jobs, dueRows } = await setup();
