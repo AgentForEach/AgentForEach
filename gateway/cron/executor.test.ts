@@ -6,7 +6,7 @@ import { IdentityStore } from "../identity/index.js";
 import type { IdentityConfig } from "../identity/config.js";
 import { resetIdentityStore, setIdentityStore } from "../channels/router.js";
 import { registerDeliveryAdapter, type DeliveryAdapter, type DeliveryPayload } from "./delivery.js";
-import { executeJob, reachedUser } from "./executor.js";
+import { CREDITS_UNAVAILABLE_RETRY_MS, executeJob, executionFailure, reachedUser } from "./executor.js";
 import { CronStore } from "./store.js";
 import { getSchedulerShardForUser } from "./config.js";
 import type { CronDelivery, CronJob } from "./types.js";
@@ -172,4 +172,12 @@ test("a reminder turn that asked the user something, or that they stopped, isn't
   assert.equal(reachedUser("awaiting_input"), true);
   assert.equal(reachedUser("aborted"), true);
   assert.equal(reachedUser("failed"), false);
+});
+
+test("a credits-service outage defers a scheduled run instead of failing it", () => {
+  const outage = executionFailure(Object.assign(new Error("reserve URL is unavailable"), { code: "CREDITS_UNAVAILABLE" }), Date.now());
+  assert.equal(outage.retryAfterMs, CREDITS_UNAVAILABLE_RETRY_MS);
+  const broke = executionFailure(Object.assign(new Error("Out of credits"), { code: "INSUFFICIENT_CREDITS" }), Date.now());
+  assert.equal(broke.status, "error");
+  assert.equal(broke.retryAfterMs, undefined);
 });

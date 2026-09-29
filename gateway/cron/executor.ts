@@ -151,15 +151,7 @@ export async function executeJob(
       ? await executeMainSessionJob(job, start)
       : await executeIsolatedJob(job, config, start);
   } catch (err) {
-    // Execution itself failed — no delivery attempted.
-    // Use DEFAULT_MODEL (not job.payload.model) since the LLM may set
-    // arbitrary model values during cron creation.
-    return {
-      status: "error",
-      error: err instanceof Error ? err.message : String(err),
-      durationMs: Date.now() - start,
-      model: DEFAULT_MODEL,
-    };
+    return executionFailure(err, start);
   }
 
   // ── Phase 2: Deliver the result (separate error boundary) ──
@@ -501,6 +493,33 @@ export async function processHeartbeatQueue(
   }
 
   return { processed, groups: grouped.size };
+}
+
+/** How long a run waits when the credits service didn't answer. */
+export const CREDITS_UNAVAILABLE_RETRY_MS = 5 * 60_000;
+
+/**
+ * The result for a job whose execution threw (no delivery was attempted).
+ * A credits-service outage is deferred, not failed: a one-shot reminder that
+ * fails is disabled for good. Running out of credits is a real failure.
+ */
+export function executionFailure(err: unknown, startMs: number): JobResult {
+  if ((err as { code?: unknown } | null)?.code === "CREDITS_UNAVAILABLE") {
+    return {
+      status: "skipped",
+      summary: "The credits service was unavailable; this run was deferred.",
+      durationMs: Date.now() - startMs,
+      retryAfterMs: CREDITS_UNAVAILABLE_RETRY_MS,
+    };
+  }
+  // Use DEFAULT_MODEL (not job.payload.model) since the LLM may set
+  // arbitrary model values during cron creation.
+  return {
+    status: "error",
+    error: err instanceof Error ? err.message : String(err),
+    durationMs: Date.now() - startMs,
+    model: DEFAULT_MODEL,
+  };
 }
 
 /**
