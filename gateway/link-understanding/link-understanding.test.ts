@@ -364,6 +364,40 @@ test("extractContent — HTML text extraction", async (t) => {
     assert.ok(result.text.includes('Tom & Jerry <3 "cartoons"'));
   });
 
+  await t.test("hostile pages extract in linear time", () => {
+    const hostile = [
+      "<meta" + ' property="og:title" content="'.repeat(20_000),
+      "<meta" + ' name="description" content="'.repeat(20_000),
+      "<script>".repeat(50_000),
+      "<p".repeat(200_000),
+      "<!--".repeat(100_000),
+      "<title>".repeat(50_000),
+      "<meta ".repeat(100_000),
+    ];
+    for (const body of hostile) {
+      const started = Date.now();
+      extractContent(makeFetchResult({ body }), 6000);
+      const ms = Date.now() - started;
+      assert.ok(ms < 1000, `${body.slice(0, 20)}… (${body.length} chars) took ${ms} ms`);
+    }
+  });
+
+  await t.test("keeps text around doctypes, stray < and > inside attributes", () => {
+    const result = extractContent(
+      makeFetchResult({
+        body:
+          `<!DOCTYPE html><html><head><meta property="og:title" content="A > B"></head>` +
+          `<body><p>1 < 2 and 3 > 2</p><SCRIPT>bad()</SCRIPT><p>after</p></body></html>`,
+      }),
+      6000,
+    );
+    assert.equal(result.title, "A > B");
+    assert.ok(!result.text.includes("DOCTYPE"));
+    assert.ok(result.text.includes("1 < 2 and 3 > 2"));
+    assert.ok(!result.text.includes("bad()"));
+    assert.ok(result.text.includes("after"));
+  });
+
   await t.test("decodes each entity once", () => {
     const result = extractContent(
       makeFetchResult({

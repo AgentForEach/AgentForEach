@@ -1,15 +1,15 @@
 /**
  * AgentForEach Link Understanding — Content Extraction
  *
- * Extracts readable text from HTML using regex-based processing.
+ * Extracts readable text from HTML with small linear scanners.
  * No heavy DOM dependency (no jsdom, no cheerio) — keeps the
  * serverless bundle small.
  *
  * Steps:
  *   1. Extract metadata (title, description, og:tags)
- *   2. Remove non-content elements (script, style, nav, footer, etc.)
- *   3. Strip HTML tags
- *   4. Normalize whitespace
+ *   2. Remove comments and non-content elements (script, style, nav, …)
+ *   3. Strip the remaining tags, block elements becoming newlines
+ *   4. Decode entities and normalize whitespace
  *   5. Truncate to maxContentChars
  */
 
@@ -57,8 +57,9 @@ export function extractContent(
   }
 
   // HTML — extract metadata and content
-  const title = extractTitle(body) || extractDomainTitle(url);
-  const description = extractDescription(body);
+  const metas = parseMetaTags(body);
+  const title = extractTitle(body, metas) || extractDomainTitle(url);
+  const description = extractDescription(metas);
   const text = extractTextFromHtml(body, maxContentChars);
 
   return { url, title, description, text };
@@ -67,142 +68,225 @@ export function extractContent(
 // ============================================================================
 // Metadata Extraction
 // ============================================================================
+//
+// Every scan below is linear in the page size. Fetched pages are attacker
+// controlled (up to 1 MB), and a backtracking regex over them blocks the
+// shared worker for every user on the instance.
 
 /**
  * Extract the page title from HTML.
  * Tries (in order): og:title, <title> tag.
  */
-function extractTitle(html: string): string {
-  // og:title
-  const ogTitle = extractMetaContent(html, "og:title");
+function extractTitle(html: string, metas: MetaTag[]): string {
+  const ogTitle = metaContent(metas, "property", "og:title");
   if (ogTitle) return decodeEntities(ogTitle);
 
-  // <title> tag
-  const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-  if (titleMatch?.[1]) return decodeEntities(titleMatch[1].trim());
-
-  return "";
+  const open = indexOfTag(html, "title", 0);
+  if (open === -1) return "";
+  const openEnd = html.indexOf(">", open);
+  if (openEnd === -1) return "";
+  const close = indexOfCI(html, "</title", openEnd + 1);
+  if (close === -1) return "";
+  return decodeEntities(html.slice(openEnd + 1, close).trim());
 }
 
 /**
  * Extract the page description from HTML.
  * Tries: og:description, meta description.
  */
-function extractDescription(html: string): string {
-  const ogDesc = extractMetaContent(html, "og:description");
-  if (ogDesc) return decodeEntities(ogDesc);
+function extractDescription(metas: MetaTag[]): string {
+  const desc =
+    metaContent(metas, "property", "og:description") ||
+    metaContent(metas, "name", "description");
+  return desc ? decodeEntities(desc) : "";
+}
 
-  const descMatch = html.match(
-    /<meta[^>]+name\s*=\s*["']description["'][^>]+content\s*=\s*["']([\s\S]*?)["'][^>]*>/i,
-  );
-  if (descMatch?.[1]) return decodeEntities(descMatch[1].trim());
+type MetaTag = Map<string, string>;
 
-  // Try reversed attribute order: content before name
-  const descMatch2 = html.match(
-    /<meta[^>]+content\s*=\s*["']([\s\S]*?)["'][^>]+name\s*=\s*["']description["'][^>]*>/i,
-  );
-  if (descMatch2?.[1]) return decodeEntities(descMatch2[1].trim());
+/** The attributes of every <meta> tag, in document order. */
+function parseMetaTags(html: string): MetaTag[] {
+  const tags: MetaTag[] = [];
+  let i = 0;
+  while ((i = indexOfTag(html, "meta", i)) !== -1) {
+    const end = findTagEnd(html, i + 5);
+    // An unterminated tag runs to the end of the page; nothing after it is a tag.
+    if (end === -1) break;
+    tags.push(parseAttributes(html.slice(i + 5, end)));
+    i = end + 1;
+  }
+  return tags;
+}
 
+function metaContent(metas: MetaTag[], key: string, value: string): string {
+  for (const attrs of metas) {
+    if (attrs.get(key)?.toLowerCase() === value) return attrs.get("content")?.trim() ?? "";
+  }
   return "";
 }
 
-/**
- * Extract content attribute from an Open Graph meta tag.
- */
-function extractMetaContent(html: string, property: string): string {
-  // property="og:..." content="..."
-  const pattern1 = new RegExp(
-    `<meta[^>]+property\\s*=\\s*["']${escapeRegex(property)}["'][^>]+content\\s*=\\s*["']([\\s\\S]*?)["'][^>]*>`,
-    "i",
-  );
-  const match1 = html.match(pattern1);
-  if (match1?.[1]) return match1[1].trim();
+/** Index of the ">" that ends a tag, skipping quoted attribute values; -1 if none. */
+function findTagEnd(html: string, from: number): number {
+  let quote = "";
+  for (let i = from; i < html.length; i++) {
+    const c = html[i];
+    if (quote) {
+      if (c === quote) quote = "";
+    } else if (c === '"' || c === "'") {
+      quote = c;
+    } else if (c === ">") {
+      return i;
+    }
+  }
+  return -1;
+}
 
-  // content="..." property="og:..."
-  const pattern2 = new RegExp(
-    `<meta[^>]+content\\s*=\\s*["']([\\s\\S]*?)["'][^>]+property\\s*=\\s*["']${escapeRegex(property)}["'][^>]*>`,
-    "i",
-  );
-  const match2 = html.match(pattern2);
-  if (match2?.[1]) return match2[1].trim();
-
-  return "";
+/** Parse `name="value" name='value' name=value name` into a map (first wins). */
+function parseAttributes(source: string): Map<string, string> {
+  const attrs = new Map<string, string>();
+  const n = source.length;
+  let i = 0;
+  while (i < n) {
+    while (i < n && (isSpace(source[i]!) || source[i] === "/")) i++;
+    const nameStart = i;
+    while (i < n && !isSpace(source[i]!) && source[i] !== "=" && source[i] !== "/") i++;
+    const name = source.slice(nameStart, i).toLowerCase();
+    while (i < n && isSpace(source[i]!)) i++;
+    let value = "";
+    if (source[i] === "=") {
+      i++;
+      while (i < n && isSpace(source[i]!)) i++;
+      const quote = source[i];
+      if (quote === '"' || quote === "'") {
+        const close = source.indexOf(quote, i + 1);
+        const stop = close === -1 ? n : close;
+        value = source.slice(i + 1, stop);
+        i = stop + 1;
+      } else {
+        const valueStart = i;
+        while (i < n && !isSpace(source[i]!)) i++;
+        value = source.slice(valueStart, i);
+      }
+    }
+    if (name && !attrs.has(name)) attrs.set(name, value);
+  }
+  return attrs;
 }
 
 // ============================================================================
 // Text Extraction
 // ============================================================================
 
+/** Elements whose content is never readable text. */
+const SKIPPED_ELEMENTS = new Set([
+  "script", "style", "noscript", "iframe", "svg", "canvas",
+  "nav", "footer", "header", "aside", "form",
+]);
+
+/** Elements that start a new line. */
+const BLOCK_ELEMENTS = new Set([
+  "p", "div", "br", "h1", "h2", "h3", "h4", "h5", "h6", "li", "tr",
+  "blockquote", "pre", "hr", "section", "article", "main", "dd", "dt",
+]);
+
 /**
- * Extract readable text from HTML.
- *
- * Strategy:
- *   1. Remove non-content elements entirely
- *   2. Convert block elements to newlines
- *   3. Strip all remaining HTML tags
- *   4. Decode HTML entities
- *   5. Normalize whitespace
- *   6. Truncate
+ * Extract readable text from HTML in one pass: drop comments, doctypes and
+ * non-content elements, turn block elements into newlines and other tags
+ * into spaces; then decode entities, normalise whitespace and truncate.
  */
 function extractTextFromHtml(html: string, maxChars: number): string {
-  let text = html;
+  const parts: string[] = [];
+  const n = html.length;
+  let i = 0;
+  while (i < n) {
+    const lt = html.indexOf("<", i);
+    if (lt === -1) {
+      parts.push(html.slice(i));
+      break;
+    }
+    parts.push(html.slice(i, lt));
 
-  // Remove elements that don't contain readable content
-  text = removeElements(text, [
-    "script",
-    "style",
-    "noscript",
-    "iframe",
-    "svg",
-    "canvas",
-    "nav",
-    "footer",
-    "header",
-    "aside",
-    "form",
-  ]);
+    if (html.startsWith("<!--", lt)) {
+      const end = html.indexOf("-->", lt + 4);
+      if (end === -1) break; // an unclosed comment hides the rest, as in a browser
+      i = end + 3;
+      continue;
+    }
 
-  // Remove HTML comments
-  text = text.replace(/<!--[\s\S]*?-->/g, "");
+    const next = html[lt + 1] ?? "";
+    if (next === "!" || next === "?") {
+      const end = html.indexOf(">", lt);
+      if (end === -1) break;
+      i = end + 1;
+      continue;
+    }
 
-  // Convert block elements to newlines for readability
-  text = text.replace(
-    /<\/?(?:p|div|br|h[1-6]|li|tr|blockquote|pre|hr|section|article|main|dd|dt)\b[^>]*>/gi,
-    "\n",
-  );
+    const closing = next === "/";
+    const nameStart = closing ? lt + 2 : lt + 1;
+    let nameEnd = nameStart;
+    while (nameEnd < n && isTagNameChar(html[nameEnd]!, nameEnd === nameStart)) nameEnd++;
+    if (nameEnd === nameStart) {
+      // "<" not followed by a tag name is text ("1 < 2").
+      parts.push("<");
+      i = lt + 1;
+      continue;
+    }
+    const name = html.slice(nameStart, nameEnd).toLowerCase();
+    const end = findTagEnd(html, nameEnd);
+    if (end === -1) break; // an unterminated tag runs to the end of the page
 
-  // Strip all remaining HTML tags
-  text = text.replace(/<[^>]+>/g, " ");
+    if (!closing && SKIPPED_ELEMENTS.has(name)) {
+      const close = indexOfCI(html, `</${name}`, end + 1);
+      if (close === -1) break; // unclosed: the element swallows the rest
+      const closeEnd = html.indexOf(">", close);
+      if (closeEnd === -1) break;
+      parts.push(" ");
+      i = closeEnd + 1;
+      continue;
+    }
 
-  // Decode HTML entities
-  text = decodeEntities(text);
+    parts.push(BLOCK_ELEMENTS.has(name) ? "\n" : " ");
+    i = end + 1;
+  }
 
-  // Normalize whitespace
-  text = text
+  const text = decodeEntities(parts.join(""))
     .split("\n")
     .map((line) => line.replace(/\s+/g, " ").trim())
     .filter((line) => line.length > 0)
     .join("\n");
 
-  // Collapse multiple blank lines
-  text = text.replace(/\n{3,}/g, "\n\n");
-
   return truncate(text.trim(), maxChars);
 }
 
-/**
- * Remove specified HTML elements and their content.
- */
-function removeElements(html: string, tags: string[]): string {
-  let result = html;
-  for (const tag of tags) {
-    const pattern = new RegExp(
-      `<${tag}\\b[^>]*>[\\s\\S]*?<\\/${tag}>`,
-      "gi",
-    );
-    result = result.replace(pattern, "");
+// ============================================================================
+// Scanning
+// ============================================================================
+
+function isSpace(c: string): boolean {
+  return c === " " || c === "\t" || c === "\n" || c === "\r" || c === "\f";
+}
+
+function isTagNameChar(c: string, first: boolean): boolean {
+  const code = c.charCodeAt(0) | 0x20; // ASCII lower case
+  if (code >= 0x61 && code <= 0x7a) return true;
+  return !first && ((c >= "0" && c <= "9") || c === "-");
+}
+
+/** Case-insensitive indexOf for an ASCII needle (a literal search, so linear). */
+function indexOfCI(haystack: string, needle: string, from: number): number {
+  const pattern = new RegExp(escapeRegex(needle), "gi");
+  pattern.lastIndex = from;
+  return pattern.exec(haystack)?.index ?? -1;
+}
+
+/** Index of the next `<name` start tag at or after `from` (not `<names...`). */
+function indexOfTag(html: string, name: string, from: number): number {
+  let i = from;
+  while ((i = indexOfCI(html, `<${name}`, i)) !== -1) {
+    const after = html[i + name.length + 1] ?? "";
+    if (after === "" || after === ">" || after === "/" || isSpace(after)) return i;
+    i += name.length + 1;
   }
-  return result;
+  return -1;
 }
 
 // ============================================================================
