@@ -119,3 +119,14 @@ test("messages sent on behalf of a chat have no sender to identify and are dropp
   assert.equal(await parseTelegramUpdate(anonymousAdmin), undefined);
   assert.equal(await parseTelegramUpdate(update({ id: 136817688, is_bot: true, first_name: "Channel" })), undefined);
 });
+
+test("authorizedSenders matches numeric ids, never usernames", async () => {
+  useConfig({ authorizedSenders: ["42", "@alice"] });
+  const update = (from: Record<string, unknown>) => ({
+    update_id: 1,
+    message: { message_id: 7, date: 1, text: "hi", chat: { id: 5, type: "private" }, from },
+  });
+  assert.equal((await parseTelegramUpdate(update({ id: 42, is_bot: false, first_name: "A" })))?.senderId, "42");
+  // Whoever holds the username "alice" now is not who the operator listed.
+  assert.equal(await parseTelegramUpdate(update({ id: 99, is_bot: false, first_name: "B", username: "alice" })), undefined);
+});

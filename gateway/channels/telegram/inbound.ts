@@ -74,16 +74,10 @@ export async function parseTelegramUpdate(
 
   // Check authorized senders (if configured)
   const config = loadTelegramConfig();
+  // Numeric ids only: a username can be dropped and claimed by someone else.
   if (config.authorizedSenders.length > 0) {
     const senderId = String(from.id);
-    const senderUsername = from.username?.toLowerCase();
-
-    const isAuthorized = config.authorizedSenders.some((allowed) => {
-      const normalized = allowed.toLowerCase().replace(/^@/, "");
-      return normalized === senderId || normalized === senderUsername;
-    });
-
-    if (!isAuthorized) return undefined;
+    if (!config.authorizedSenders.some((allowed) => String(allowed).trim() === senderId)) return undefined;
   }
 
   const isGroupChat = chat.type === "group" || chat.type === "supergroup";
