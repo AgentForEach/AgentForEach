@@ -259,10 +259,22 @@ export class DynamicSessionsClient implements SandboxBackend {
     args: SandboxFileReadArgs,
     sessionIdentifier: string,
   ): Promise<SandboxFileReadResult> {
-    if (this.config.containerType === "CustomContainer") {
-      return this.fileReadCustomContainer(args, sessionIdentifier);
+    try {
+      if (this.config.containerType === "CustomContainer") {
+        return await this.fileReadCustomContainer(args, sessionIdentifier);
+      }
+      return await this.fileReadPythonLTS(args, sessionIdentifier);
+    } catch (err) {
+      // The custom container returns the whole file; past the response cap
+      // it can't be truncated here, so say how to read part of it.
+      if (err instanceof ResponseTooLargeError) {
+        throw new Error(
+          `${args.filename} is too large to read whole. Read part of it with sandbox_exec ` +
+            `(for example: head -c 100000 "/mnt/data/${safeRelativePath(args.filename)}").`,
+        );
+      }
+      throw err;
     }
-    return this.fileReadPythonLTS(args, sessionIdentifier);
   }
 
   /** CustomContainer file read — POST /files/read */
@@ -388,11 +400,17 @@ export class DynamicSessionsClient implements SandboxBackend {
     args: SandboxFileReadArgs,
     sessionIdentifier: string,
   ): Promise<SandboxFileReadBinaryResult> {
+    const { maxExportBytes } = sandboxReadLimits(this.config);
     try {
-      if (this.config.containerType === "CustomContainer") {
-        return await this.fileReadBinaryCustomContainer(args, sessionIdentifier);
+      const result =
+        this.config.containerType === "CustomContainer"
+          ? await this.fileReadBinaryCustomContainer(args, sessionIdentifier)
+          : await this.fileReadBinaryPythonLTS(args, sessionIdentifier);
+      // The response cap allows for JSON overhead; hold the file to the limit.
+      if (Math.floor((result.contentBase64.length * 3) / 4) > maxExportBytes) {
+        throw exportTooLargeError(maxExportBytes);
       }
-      return await this.fileReadBinaryPythonLTS(args, sessionIdentifier);
+      return result;
     } catch (err) {
       if (err instanceof ResponseTooLargeError) {
         throw exportTooLargeError(sandboxReadLimits(this.config).maxExportBytes);
