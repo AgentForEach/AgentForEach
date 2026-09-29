@@ -24,7 +24,8 @@ import {
 } from "./tools.js";
 import type { EpisodeDocument } from "./types.js";
 import type { EpisodeConfig } from "./config.js";
-import type { EpisodeStore } from "./store.js";
+import { EpisodeStore } from "./store.js";
+import { InMemoryCosmosDatabase } from "../database/testing/in-memory-cosmos.js";
 
 // ============================================================================
 // Helpers
@@ -809,4 +810,22 @@ test("EpisodeToolHandler — memory consolidation on conclusion", async () => {
   const summaryCalls = memoryStoreCalls.filter((c) => c.text.includes("Summary:"));
   assert.equal(summaryCalls.length, 1);
   assert.equal((summaryCalls[0].opts as any).importance, 0.9);
+});
+
+test("semantic search scores the closest episode highest", async () => {
+  const store = new EpisodeStore(new InMemoryCosmosDatabase());
+  await store.initialize();
+  // Cosmos returns cosine VectorDistance as a similarity, closest first.
+  const rows = [
+    { id: "near", userId: "u1", theme: "Trip to Goa", summary: "", distance: 0.93 },
+    { id: "far", userId: "u1", theme: "Tax filing", summary: "", distance: 0.12 },
+  ];
+  (store as unknown as { container: { getRawContainer(): unknown } }).container.getRawContainer = () => ({
+    items: { query: () => ({ fetchAll: async () => ({ resources: rows }) }) },
+  });
+
+  const results = await store.semanticSearch([0.1, 0.2], "u1");
+  assert.deepEqual(results.map((r) => r.episode.id), ["near", "far"]);
+  assert.equal(results[0]!.score, 0.93);
+  assert.ok(results[0]!.score > results[1]!.score);
 });

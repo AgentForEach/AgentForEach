@@ -27,6 +27,7 @@ import type {
   ContainerOptions,
 } from "../database/index.js";
 import type { EpisodeDocument } from "./types.js";
+import { similarityFromVectorDistance } from "../database/vector.js";
 
 // ============================================================================
 // Episode Search Result
@@ -212,8 +213,7 @@ export class EpisodeStore {
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - maxAgeDays);
 
-    // VectorDistance returns distance (lower = more similar for cosine).
-    // Convert to similarity: score = 1 - distance.
+    // VectorDistance with cosine returns a similarity (higher = closer).
     const query: SqlQuerySpec = {
       query: `
         SELECT TOP @limit
@@ -258,7 +258,7 @@ export class EpisodeStore {
         createdAt: doc.createdAt,
         updatedAt: doc.updatedAt,
       },
-      score: 1 - (doc.distance ?? 0), // Convert distance to similarity
+      score: similarityFromVectorDistance(doc.distance),
     }));
   }
 

@@ -38,21 +38,15 @@ import type {
   ContainerHandle,
   ContainerOptions,
 } from "../../database/index.js";
+import { similarityFromVectorDistance } from "../../database/vector.js";
 
 // ============================================================================
 // Cosmos DB Memory Store
 // ============================================================================
 
-/**
- * Cosmos `VectorDistance` with the cosine function returns a SIMILARITY
- * (-1..1, higher is closer; ORDER BY VectorDistance already lists the closest
- * first), not a distance. Clamp it to 0..1 for the thresholds downstream
- * (duplicate detection, memory_forget). Treating it as a distance inverted
- * every score, so forget deleted the least related memories.
- */
-export function similarityFromVectorDistance(value: number): number {
-  return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
-}
+// Used for duplicate detection and memory_forget thresholds; treating it as
+// a distance once made forget delete the least related memories.
+export { similarityFromVectorDistance } from "../../database/vector.js";
 
 export class CosmosMemoryStore implements MemoryStoreProvider {
   readonly name = "cosmosdb";
