@@ -5,8 +5,6 @@
  * Allows switching providers, models, and API keys via config instead
  * of environment variables.
  *
- * Inspired by OpenClaw's ModelsConfig / ModelProviderConfig pattern.
- *
  * Env vars still work as overrides — config is the base, env vars win.
  */
 

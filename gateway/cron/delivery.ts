@@ -4,7 +4,7 @@
  * This is the abstraction boundary between the cron system and
  * channel-specific delivery implementations.
  *
- * Architecture mirrors OpenClaw's approach:
+ * Architecture:
  *   - Cron system defines the interface (this file)
  *   - Channel plugins register concrete adapters
  *   - Executor dispatches through the registry at runtime
@@ -15,8 +15,6 @@
  *   2. Call registerDeliveryAdapter("your-channel", adapter)
  *   3. Users can now set delivery.mode = "channel", delivery.channelId = "your-channel"
  *
- * @see OpenClaw: src/infra/outbound/deliver.ts — deliverOutboundPayloads()
- * @see OpenClaw: src/channels/registry.ts — CHAT_CHANNEL_ORDER
  */
 
 import type { CronJob, DeliveryTarget, JobResult, ChannelId } from "./types.js";
@@ -125,9 +123,8 @@ export interface DeliveryAdapter {
 /**
  * A pluggable function that resolves the "last" channel for a user.
  *
- * Mirrors OpenClaw's resolveDeliveryTarget() which checks the session store
- * for the user's last-active channel. Register this when you have a
- * session/profile system.
+ * Checks the session store for the user's last-active channel. Register
+ * this when you have a session/profile system.
  */
 export type LastChannelResolver = (
   userId: string,

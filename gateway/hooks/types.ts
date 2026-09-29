@@ -8,9 +8,6 @@
  * Two categories of hooks:
  *   - **Void hooks** — observe-only, fire in parallel, errors caught
  *   - **Modifying hooks** — can return data, run sequentially by priority
- *
- * Equivalent to OpenClaw's internal-hooks + plugin-hooks merged into
- * one typed system (AgentForEach doesn't need directory discovery or HOOK.md).
  */
 
 import type { SendResponse } from "../client/types.js";

@@ -9,8 +9,7 @@
  * per-instance (module-level Map), which resets on Azure Functions cold
  * start — acceptable for personal assistant scale.
  *
- * Inspired by OpenClaw's auth-profiles + model-fallback system, but
- * simplified for serverless: no probe-based health checking, no
+ * Kept simple for serverless: no probe-based health checking, no
  * round-robin key rotation.
  */
 

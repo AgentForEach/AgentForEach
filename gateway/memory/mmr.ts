@@ -2,7 +2,6 @@
  * AgentForEach Memory Layer — Maximal Marginal Relevance (MMR) Re-ranking
  *
  * Diversity-aware re-ranking to reduce redundancy in search results.
- * Ported from OpenClaw's src/memory/mmr.ts.
  *
  * MMR iteratively selects items that balance relevance with novelty:
  *   MMR(d) = λ * Relevance(d) - (1-λ) * max(Similarity(d, selected))

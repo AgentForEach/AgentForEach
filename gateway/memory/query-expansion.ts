@@ -1,7 +1,6 @@
 /**
  * Query expansion for full-text search.
  *
- * Ported from OpenClaw's query expansion module and adapted for Cosmos DB.
  * Extracts meaningful keywords from conversational EN/ZH queries to improve
  * FullTextScore quality.
  */

@@ -1,11 +1,9 @@
 /**
  * AgentForEach Cron System — Types
  *
- * All type definitions for the scheduled task system.
- * Ported from OpenClaw's cron types, adapted for:
- *   - Cosmos DB storage (instead of file-backed JSON)
- *   - Azure Durable Functions execution (instead of in-process setTimeout)
- *   - AgentForEach Gateway session execution for main-target jobs
+ * All type definitions for the scheduled task system: jobs stored in
+ * Cosmos DB, run by Durable Functions, with main-target jobs running in the
+ * user's gateway session.
  */
 
 // ============================================================================
@@ -144,11 +142,9 @@ export type CronPayloadPatch =
 /**
  * Known chat channel identifiers.
  *
- * This is the equivalent of OpenClaw's ChatChannelId union. New channels
- * are added here as they're implemented. The `string & {}` arm allows
+ * New channels are added here as they're implemented. The `string & {}` arm allows
  * custom/third-party channel IDs without breaking existing types.
  *
- * @see OpenClaw: src/channels/registry.ts — CHAT_CHANNEL_ORDER
  */
 export type ChannelId =
   | "whatsapp"
@@ -175,7 +171,6 @@ export type CronDeliveryMode = "none" | "webhook" | "announce" | "channel";
  *   - **none**: Result stored in run history only.
  *   - **webhook**: HTTP POST to a URL.
  *   - **channel**: Route to a chat channel / notification channel.
- *                  This is the equivalent of OpenClaw's "announce" mode.
  *
  * The `channel` mode is designed to be extensible — new channels (Telegram,
  * WhatsApp, push notifications, email) are added by registering a
@@ -199,7 +194,7 @@ export type CronDelivery = {
    *
    * Special value "last" means "deliver to whichever channel the user
    * last interacted on" — resolved at delivery time by the delivery
-   * target resolver (similar to OpenClaw's resolveDeliveryTarget).
+   * target resolver.
    */
   channelId?: ChannelId | "last";
   /**
@@ -239,7 +234,6 @@ export type CronDeliveryPatch = Partial<CronDelivery>;
  * at execution time. Separates "what the user requested" from
  * "where we're actually sending."
  *
- * @see OpenClaw: resolveDeliveryTarget() in delivery-target.ts
  */
 export type DeliveryTarget = {
   channelId: ChannelId;

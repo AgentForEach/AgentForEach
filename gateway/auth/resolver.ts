@@ -1,9 +1,6 @@
 /**
  * AgentForEach Auth System — Resolver
  *
- * Chain-of-responsibility auth resolver inspired by OpenClaw's
- * `applyAuthChoice` pattern.
- *
  * Tries each configured auth provider in order. The first provider
  * that returns a non-null AuthContext wins.
  *

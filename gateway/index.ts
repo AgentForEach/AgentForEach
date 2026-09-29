@@ -5,7 +5,7 @@
  * The Azure Functions Node.js v4 runtime discovers functions through
  * the app.http() / app.timer() registrations in these modules.
  *
- * This mirrors the gateway pattern from @serverless-openclaw/gateway:
+ * Registered here:
  *   - WebSocket lifecycle (connect, message, disconnect)
  *   - HTTP API (chat, sessions, token generation)
  */

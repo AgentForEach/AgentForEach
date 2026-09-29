@@ -112,7 +112,6 @@ export class EmbeddingsClient {
 
 /**
  * Sanitize text before sending to the embedding API.
- * Ported from OpenClaw's embeddings.ts sanitization.
  *
  * - Trims whitespace
  * - Collapses runs of whitespace to single spaces

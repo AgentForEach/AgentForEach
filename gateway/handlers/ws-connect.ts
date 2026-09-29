@@ -8,7 +8,6 @@
  * Also provides a "negotiate" endpoint for clients to obtain a
  * Web PubSub access URL with an embedded token.
  *
- * Mirrors @serverless-openclaw/gateway ws-connect.ts pattern.
  */
 
 import {

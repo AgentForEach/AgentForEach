@@ -14,9 +14,6 @@
  *   GET  /api/usage/records     — Individual usage records
  *   POST /api/token             — Generate a WebSocket access token
  *   GET  /api/health            — Health check
- *
- * Mirrors @serverless-openclaw/gateway api-handler.ts pattern,
- * simplified for AgentForEach's personal assistant scope.
  */
 
 import {

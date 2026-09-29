@@ -4,7 +4,6 @@
  * Creates AuthProvider instances from configuration objects.
  * Maps each provider type to its corresponding factory function.
  *
- * Inspired by OpenClaw's plugin provider registration pattern.
  */
 
 import type { AuthProvider, AuthProviderConfig } from "./types.js";

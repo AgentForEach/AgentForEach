@@ -5,7 +5,7 @@
  * memories from Cosmos DB and formats them as an XML block for
  * injection into the system prompt.
  *
- * Ported from OpenClaw's auto-recall pipeline:
+ * Pipeline:
  *   user message → embed → hybrid search → temporal decay → MMR → format
  */
 

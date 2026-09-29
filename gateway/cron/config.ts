@@ -5,8 +5,6 @@
  *
  * Defaults are loaded from `gateway/config/agentforeach.json`.
  * Environment variables override JSON values at runtime.
- *
- * Ported from OpenClaw's cron constants, adapted for Azure Durable Functions.
  */
 import { createHash } from "node:crypto";
 import { loadConfigSection } from "../utils/index.js";
@@ -56,7 +54,7 @@ export const DEFAULT_PROVIDER = cfg().execution.defaultProvider;
 export const MAX_SUMMARY_LENGTH = cfg().execution.maxSummaryLength;
 
 // ============================================================================
-// Backoff (ported from OpenClaw ERROR_BACKOFF_SCHEDULE_MS)
+// Backoff
 // ============================================================================
 
 /**
@@ -79,7 +77,7 @@ export function getBackoffMs(consecutiveErrors: number): number {
 }
 
 // ============================================================================
-// Stagger (ported from OpenClaw stagger.ts)
+// Stagger
 // ============================================================================
 
 /** Default stagger window for top-of-hour cron expressions. */

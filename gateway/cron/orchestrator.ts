@@ -1,8 +1,8 @@
 /**
  * AgentForEach Cron System — Durable Functions Orchestrator & Activities
  *
- * Implements the eternal orchestration pattern that replaces OpenClaw's
- * in-process setTimeout timer loop.
+ * An eternal orchestration per scheduler shard, instead of an in-process
+ * timer loop.
  *
  * Architecture:
  *   CronScheduler (orchestrator) — eternal loop:
@@ -189,7 +189,7 @@ df.app.activity("SignalJobsChanged", {
  * 4. Sleeps until the next job is due OR a "jobsChanged" signal arrives
  * 5. Calls continueAsNew() to reset history
  *
- * Replaces OpenClaw's setTimeout(onTimer, 60s) with exact createTimer() wakes.
+ * Wakes with exact createTimer() calls, not a fixed polling interval.
  */
 df.app.orchestration("CronScheduler", function* (ctx: df.OrchestrationContext) {
   const oc = ctx.df;

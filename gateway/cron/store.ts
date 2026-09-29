@@ -1,8 +1,8 @@
 /**
  * AgentForEach Cron System — Cosmos DB Store
  *
- * CRUD operations for cron jobs and run history using the shared database layer.
- * Replaces OpenClaw's file-backed jobs.json + JSONL run logs with Cosmos DB.
+ * CRUD operations for cron jobs and run history in Cosmos DB, using the
+ * shared database layer.
  */
 
 import { randomUUID } from "node:crypto";

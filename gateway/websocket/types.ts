@@ -4,13 +4,13 @@
  * Defines the frame protocol for WebSocket communication between
  * AgentForEach's serverless backend and clients (iOS, Android, Web).
  *
- * Borrows OpenClaw's clean 3-frame discriminated union design:
+ * A 3-frame discriminated union:
  *   - RequestFrame  (client → server)
  *   - ResponseFrame (server → client)
  *   - EventFrame    (server → client, push)
  *
- * Unlike OpenClaw, AgentForEach doesn't run a self-hosted WS server.
- * Azure Web PubSub handles connection management, and frames are
+ * There is no self-hosted WS server: Azure Web PubSub handles
+ * connection management, and frames are
  * the application-level protocol on top of it.
  *
  * Protocol version is tracked to allow client/server evolution
@@ -205,7 +205,7 @@ export type FrameError = {
 /**
  * Well-known event names pushed by the server.
  *
- * Mirrors the subset of OpenClaw's GATEWAY_EVENTS that apply to AgentForEach:
+ * Event names:
  *   - agent/chat:  LLM streaming (future — when chat goes through WS)
  *   - cron:        Cron job completed / failed
  *   - presence:    Connected devices changed
@@ -239,7 +239,6 @@ export type EventName = (typeof EVENTS)[keyof typeof EVENTS];
  * Web PubSub groups for topic-based event filtering.
  *
  * Clients join groups based on what events they want to receive.
- * Replaces OpenClaw's scope-based broadcast filtering.
  *
  * Example: An iOS app joins "cron" and "chat" groups.
  * The server sends cron results to the "cron" group, chat events
@@ -291,7 +290,6 @@ export type ClientTokenClaims = {
 
 /**
  * Known client identifiers.
- * Inspired by OpenClaw's GatewayClientId.
  */
 export type ClientId =
   | "agentforeach-ios"
@@ -303,8 +301,7 @@ export type ClientId =
 /**
  * Client roles for authorization.
  *
- * Unlike OpenClaw's operator/node split, AgentForEach currently has
- * a simpler model:
+ * Two roles:
  *   - user:  standard user (chat, view cron, receive notifications)
  *   - admin: full access (config, system)
  */

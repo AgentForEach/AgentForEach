@@ -9,7 +9,6 @@ It explains:
 - Execution semantics (`main` vs `isolated`)
 - Non-duplication and reliability behavior
 - API behavior, auth, and operations
-- Differences from OpenClaw heartbeat-linked cron behavior
 
 ## 1. Executive Summary
 
@@ -150,7 +149,7 @@ Also:
 
 - Input: absolute timestamp (`schedule.at`)
 - Supports ISO and numeric epoch-like values through `parseAbsoluteTimeMs`
-- Past-due `at` remains schedulable until terminal handling (OpenClaw parity behavior)
+- Past-due `at` remains schedulable until terminal handling
 
 Terminal handling:
 
@@ -198,7 +197,7 @@ For top-of-hour expressions, AgentForEach applies deterministic staggering:
 
 - `wakeMode="now"`
   - Enqueues a heartbeat event due `now`.
-  - Attempts immediate target-scoped queue flush (same `userId`/`agentId`/`sessionId`) in the same execution path (OpenClaw-like wake-now behavior).
+  - Attempts immediate target-scoped queue flush (same `userId`/`agentId`/`sessionId`) in the same execution path.
   - Immediate flush is bounded by `CRON_WAKE_NOW_IMMEDIATE_FLUSH_LIMIT` to protect hot-path latency.
   - If target backlog is above `CRON_WAKE_NOW_BACKLOG_THRESHOLD`, runtime degrades to queued delivery (no immediate flush) to avoid burst-induced overload.
   - If flush cannot complete, event remains queued for retry (no drop).
@@ -461,26 +460,12 @@ Check:
 - `AUTH_ALLOW_INSECURE_USER_ID_HEADER` alignment with client behavior
 - CORS and cookie credential settings if using browser auth flow
 
-## 16. OpenClaw Parity Notes
+## 16. Design Notes
 
-Aligned concepts:
-
-- Schedule types (`at`, `every`, `cron`)
-- One-shot terminal behavior
-- Error backoff pattern
-- Top-of-hour stagger behavior
-- Tool-based cron UX
-
-Intentional platform change:
-
-- OpenClaw uses in-process scheduler + heartbeat wake queue
-- AgentForEach uses Durable orchestration + Cosmos state
-
-Current known functional difference:
-
-- OpenClaw heartbeat cadence/behavior is configured in-process per agent.
-- AgentForEach heartbeat queue cadence is scheduler-driven (`CRON_HEARTBEAT_INTERVAL_MS`) and shard-scoped via Durable/Cosmos.
-- OpenClaw wake-now uses in-process heartbeat wake; AgentForEach wake-now uses queue + immediate target-scoped flush with queued retry fallback.
+- Schedule types (`at`, `every`, `cron`), one-shot terminal behavior, error backoff, top-of-hour stagger, and tool-based cron UX.
+- Scheduling runs on Durable orchestrations with state in Cosmos.
+- Heartbeat queue cadence is scheduler-driven (`CRON_HEARTBEAT_INTERVAL_MS`) and shard-scoped.
+- Wake-now enqueues, then flushes the target's queue immediately, with queued retry as the fallback.
 
 ## 17. FAQ
 

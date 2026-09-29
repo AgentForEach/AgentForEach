@@ -1,7 +1,7 @@
 /**
  * AgentForEach Auth System — Type Definitions
  *
- * Modular auth system inspired by OpenClaw's multi-provider architecture.
+ * Modular auth system with multiple providers.
  * Supports multiple auth providers configured via agentforeach.json.
  *
  * Each provider implements the AuthProvider interface and is resolved
@@ -60,7 +60,6 @@ export type AuthContext = {
  * Auth provider interface — each provider implements this to participate
  * in the authentication chain.
  *
- * Inspired by OpenClaw's ProviderAuthMethod pattern.
  */
 export interface AuthProvider {
   /** Unique provider identifier. */

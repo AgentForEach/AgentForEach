@@ -1,7 +1,7 @@
 /**
  * AgentForEach Gateway — User Message Timestamp Injection
  *
- * OpenClaw-style timestamp prefixing for inbound user messages.
+ * Timestamp prefixing for inbound user messages.
  * This gives the model reliable "current time" context without adding
  * dynamic time into the system prompt (which is cache-sensitive).
  */

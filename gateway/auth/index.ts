@@ -1,7 +1,7 @@
 /**
  * AgentForEach Auth System — Public API
  *
- * Modular authentication system inspired by OpenClaw.
+ * Modular authentication: a chain of configurable providers.
  * Configure providers in config/agentforeach.json under the "auth" key.
  *
  * Usage:

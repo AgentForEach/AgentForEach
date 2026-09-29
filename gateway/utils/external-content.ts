@@ -3,9 +3,6 @@
  *
  * Wraps untrusted web content in boundary markers and strips obvious
  * prompt injection patterns before returning content to the LLM.
- *
- * Inspired by OpenClaw's security/external-content.ts but simplified
- * for AgentForEach's serverless architecture.
  */
 
 // ============================================================================

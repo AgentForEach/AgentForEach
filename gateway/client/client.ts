@@ -4,18 +4,12 @@
  * The unified entry point that wires together all subsystems and exposes
  * a clean API for sending messages and receiving responses.
  *
- * This is AgentForEach's equivalent of OpenClaw's full stack:
- *
- *   OpenClaw                          AgentForEach
- *   ─────────────────────────────     ──────────────────────────────
- *   server.impl.ts (771 lines)       createAgentClient() factory
- *   chat.ts:chat.send (1077 lines)   AgentClient.send()
- *   dispatch chain (5 files)         runner.ts:runAgentTurn()
- *   SessionManager (JSONL files)     sessions/store.ts:SessionStore (Cosmos)
- *   buildAgentSystemPrompt (708 ln)  prompt/builder.ts (already built)
- *   memory layer (tool-based)        memory/ (auto-recall + auto-capture)
- *   pi-coding-agent tool loop        OpenAI Responses API (server-side)
- *   server-ws-runtime (WS server)    realtime/ (Azure Web PubSub)
+ *   createAgentClient()   wires every store and provider from agentforeach.json
+ *   AgentClient.send()    one turn: runner.ts runAgentTurn()
+ *   sessions/             sessions and messages in Cosmos DB
+ *   prompt/               system prompt assembly
+ *   memory/               auto-recall and auto-capture
+ *   websocket/            streaming to clients over Azure Web PubSub
  *
  * Usage:
  * ```ts

@@ -11,8 +11,7 @@
  *   - User-targeted delivery via sendToUser() (userId = AgentForEach user ID)
  *   - Group-based broadcast via groups (e.g., "cron", "chat", "admin")
  *
- * This replaces OpenClaw's self-hosted `ws` WebSocketServer with a fully
- * managed Azure service — no persistent server process needed.
+ * A fully managed service: no persistent WebSocket server process.
  */
 
 import * as webpubsub from "@pulumi/azure-native/webpubsub";

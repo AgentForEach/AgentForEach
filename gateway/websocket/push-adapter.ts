@@ -2,8 +2,6 @@
  * AgentForEach Cron System — Web PubSub Delivery Adapter
  *
  * Delivers cron job results to connected clients via Azure Web PubSub.
- * This is the real-time push equivalent of OpenClaw's WebSocket broadcast
- * for cron events.
  *
  * When a cron job completes:
  *   1. Executor calls dispatchDelivery() (executor.ts)

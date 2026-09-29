@@ -4,11 +4,6 @@
  * Defines `memory_search`, `memory_store`, and `memory_forget` as
  * function-type tools for the OpenAI Responses API.
  *
- * Ported from OpenClaw's memory tool definitions in:
- *   src/tools/definitions/memory-search.ts
- *   src/tools/definitions/memory-store.ts
- *   src/tools/definitions/memory-forget.ts
- *
  * These are registered with the Responses API as `type: "function"` tools.
  * When the model calls one, the orchestration service invokes `handleToolCall()`
  * and feeds the result back as function output.

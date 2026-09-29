@@ -15,7 +15,7 @@ import { loadConfigSection } from "../utils/index.js";
 import { resolveEmbeddingConfig } from "../llms/index.js";
 
 // ============================================================================
-// Memory Categories (ported from OpenClaw memory-lancedb/config.ts)
+// Memory Categories
 // ============================================================================
 
 export const MEMORY_CATEGORIES = [
@@ -52,7 +52,7 @@ export function vectorDimsForModel(model: string): number {
 }
 
 // ============================================================================
-// Temporal Decay Config (ported from OpenClaw memory/temporal-decay.ts)
+// Temporal Decay Config
 // ============================================================================
 
 export type TemporalDecayConfig = {
@@ -67,7 +67,7 @@ export const DEFAULT_TEMPORAL_DECAY_CONFIG: TemporalDecayConfig = {
 };
 
 // ============================================================================
-// MMR Config (ported from OpenClaw memory/mmr.ts)
+// MMR Config
 // ============================================================================
 
 export type MMRConfig = {

@@ -79,9 +79,9 @@ Jobs are spread over scheduler shards (8 by default), each an eternal Durable or
 
 See [SECURITY.md](../SECURITY.md) for the model and its limits. The data-path rules: every read and write carries the authenticated user's id; channel identities resolve only through links made by pairing or an admin; the model can call only the tools offered in that turn; untrusted URLs go through an SSRF-safe client; credentials for skills are injected outside the sandbox.
 
-## Design choices that differ from OpenClaw
+## Design choices
 
-AgentForEach began as a serverless re-architecture of [OpenClaw](https://github.com/openclaw/openclaw). Where it differs, it does so on purpose:
+Choices made on purpose for a shared, serverless deployment:
 
 - **Structured documents instead of workspace files.** The agent's SOUL, USER, AGENTS and other documents are Cosmos documents with fields, not Markdown files on a disk that doesn't exist here.
 - **Static prompt mode.** Deployments can lock every document except USER, so operators control the agent's character and users control their own profile.

@@ -4,7 +4,7 @@
  * Post-response middleware: given a user message, determines whether
  * it contains memory-worthy information and stores it if appropriate.
  *
- * Ported from OpenClaw's auto-capture pipeline:
+ * Pipeline:
  *   user message → shouldCapture() → detectCategory() → embed
  *   → dedup check → store to Cosmos DB
  *

@@ -134,4 +134,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md). Report vu
 
 ## License
 
-[Apache-2.0](LICENSE). Parts of the prompt and memory design are adapted from [OpenClaw](https://github.com/openclaw/openclaw) (MIT); see [NOTICE](NOTICE).
+[Apache-2.0](LICENSE). Third-party notices are in [NOTICE](NOTICE).

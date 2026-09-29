@@ -1,16 +1,14 @@
-# AgentForEach Cron System (Azure Durable + Cosmos) — Architecture and OpenClaw Parity
+# AgentForEach Cron System (Azure Durable + Cosmos) — Architecture
 
 For an implementation + operations guide focused on Durable Functions and Cosmos usage, see:
 `docs/Cron-Durable-Cosmos.md`
 
 ## 1. Purpose
 
-This document describes **how cron jobs run in AgentForEach today** and how that maps to OpenClaw's cron model.
+This document describes **how cron jobs run in AgentForEach today**: at/every/cron schedules, one-shot behavior, backoff, run logs, delivery modes and session targets, on Azure-native components:
 
-AgentForEach keeps OpenClaw's cron concepts (at/every/cron schedules, one-shot behavior, backoff, run logs, delivery modes, session target semantics), but replaces the runtime/storage layers with Azure-native components:
-
-- Scheduler runtime: Azure Durable Functions orchestration instead of in-process `setTimeout`
-- Persistence: Cosmos DB containers instead of file-backed `jobs.json` and `*.jsonl` logs
+- Scheduler runtime: Azure Durable Functions orchestrations, not an in-process timer
+- Persistence: Cosmos DB containers for jobs, run history and the due index
 
 ## 2. Runtime Architecture
 
@@ -53,7 +51,7 @@ Non-duplicacy guard:
 
 ### 3.2 Job Semantics
 
-AgentForEach cron jobs now use OpenClaw-like core semantics:
+AgentForEach cron jobs have these core semantics:
 
 - Schedule: `at | every | cron`
 - Session target: `main | isolated`
@@ -77,11 +75,11 @@ Store-level invariants are enforced in `gateway/cron/store.ts`:
 
 ### 4.1 `every` correctness (spin-loop prevention)
 
-`every` scheduling uses a strictly-future next-run computation (OpenClaw-compatible), preventing `nextRunAtMs === now` loops.
+`every` scheduling uses a strictly-future next-run computation, preventing `nextRunAtMs === now` loops.
 
 ### 4.2 Cron stagger behavior
 
-Top-of-hour cron jobs use deterministic per-job offsets. AgentForEach now uses OpenClaw-style cursor shifting so staggered jobs do not skip the active schedule window.
+Top-of-hour cron jobs use deterministic per-job offsets, with cursor shifting so staggered jobs do not skip the active schedule window.
 
 ## 5. Execution Paths
 
@@ -125,7 +123,7 @@ Wired in:
 3. Applies normal result state transitions (`applyResult`) including next-run recomputation / one-shot cleanup
 4. Signals scheduler wake
 
-This aligns with OpenClaw's `run(..., mode="force")` behavior more closely than the prior "record-only" implementation.
+A force-run is a real run, not only a recorded one.
 
 ## 8. Error Handling and Resilience
 
@@ -136,9 +134,9 @@ This aligns with OpenClaw's `run(..., mode="force")` behavior more closely than 
 
 This reduces orchestration-wide failure risk from a single job failure.
 
-## 9. OpenClaw Parity Matrix
+## 9. Design Summary
 
-### 9.1 Aligned
+### 9.1 Behaviour
 
 - Schedule kinds: `at`, `every`, `cron`
 - Backoff progression for consecutive failures
@@ -148,12 +146,11 @@ This reduces orchestration-wide failure risk from a single job failure.
 - Session-target and payload-kind invariants
 - Durable equivalent of scheduler loop + periodic health recovery
 
-### 9.2 Intentional platform differences
+### 9.2 Platform choices
 
-- OpenClaw scheduler is in-process timer loop; AgentForEach uses Durable orchestration
-- OpenClaw persistence is local files; AgentForEach uses Cosmos containers
-
-- OpenClaw's heartbeat is a per-agent timer; AgentForEach's heartbeat queue is flushed by the shard scheduler
+- The scheduler is a set of Durable orchestrations (one per shard), not an in-process timer loop
+- State lives in Cosmos containers
+- The heartbeat queue is flushed by the shard scheduler, not a per-agent timer
 
 ## 10. Key Files
 

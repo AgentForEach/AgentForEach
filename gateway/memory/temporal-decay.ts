@@ -2,7 +2,6 @@
  * AgentForEach Memory Layer — Temporal Decay
  *
  * Recency-aware scoring: older memories decay in relevance.
- * Ported from OpenClaw's src/memory/temporal-decay.ts.
  *
  * Uses exponential decay: score * e^(-λ * ageInDays)
  * where λ = ln(2) / halfLifeDays
@@ -10,7 +9,7 @@
  * Applied client-side after Cosmos DB returns search results.
  *
  * Memories with importance >= EVERGREEN_IMPORTANCE_THRESHOLD are exempt
- * from decay (equivalent to OpenClaw's evergreen file exemption).
+ * from decay.
  */
 
 import type { MemorySearchResult } from "./types.js";
@@ -94,7 +93,7 @@ export function applyTemporalDecay(
 
   for (const result of results) {
     // Evergreen exemption: high-importance memories never decay
-    // (equivalent to OpenClaw's curated memory / non-dated entry exemption)
+    //
     if (result.entry.importance >= evergreenThreshold) {
       result.decayedScore = result.score;
       result.finalScore = result.score;

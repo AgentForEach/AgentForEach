@@ -10,7 +10,6 @@
  * Client message format (JSON):
  *   { type: "chat", message: string, sessionId?: string, model?: string }
  *
- * Mirrors @serverless-openclaw/gateway ws-message.ts pattern.
  */
 
 import {

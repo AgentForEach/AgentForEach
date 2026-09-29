@@ -2,7 +2,7 @@
  * AgentForEach Memory Layer — Cosmos DB Memory Store
  *
  * Memory-specific CRUD and hybrid search on top of the generic database layer.
- * Replaces OpenClaw's SQLite + sqlite-vec + FTS5 with Cosmos DB's native:
+ * Uses Cosmos DB's native:
  *   - VectorDistance() — cosine similarity search
  *   - FullTextScore() — BM25 full-text search
  *   - RRF()           — Reciprocal Rank Fusion for hybrid ranking
@@ -188,7 +188,6 @@ export class CosmosMemoryStore implements MemoryStoreProvider {
   /**
    * Hybrid search using Cosmos DB's native RRF(VectorDistance, FullTextScore).
    *
-   * This replaces OpenClaw's client-side weighted merge of sqlite-vec and FTS5.
    * Cosmos DB computes RRF server-side, which is efficient and consistent.
    *
    * @param queryText - The user's search query (for BM25).
@@ -228,7 +227,7 @@ export class CosmosMemoryStore implements MemoryStoreProvider {
     }
 
     // Split query into individual keywords for FullTextScore
-    // Uses OpenClaw-style query expansion to improve conversational recall quality.
+    // Query expansion improves recall for conversational queries.
     // FullTextScore(c.text, @term0, @term1, ...) — each keyword is a separate param.
     const keywords = extractKeywords(queryText).slice(0, this.maxFulltextTerms);
     const termParams: string[] = [];
@@ -239,7 +238,7 @@ export class CosmosMemoryStore implements MemoryStoreProvider {
     }
 
     // Hybrid RRF query with weighted scoring [2, 1] — vector weighted 2x over BM25
-    // (approximates OpenClaw's 0.7 vector / 0.3 FTS weight split)
+    //
     const fullTextScoreArgs =
       termParams.length > 0 ? termParams.join(", ") : "@emptyTerm";
     if (termParams.length === 0) {

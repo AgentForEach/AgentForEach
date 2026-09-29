@@ -4,8 +4,7 @@
  * Type definitions for the unified client that orchestrates
  * message handling across all subsystems.
  *
- * Maps to OpenClaw's gateway → auto-reply → agent runner pipeline,
- * simplified for Azure serverless:
+ * The pipeline, per message:
  *
  *   AgentClient.send(message)
  *     → build system prompt (prompt layer)
@@ -43,8 +42,6 @@ import type { UsageRecord, UsageSummary } from "../usage/index.js";
  * via each subsystem's config module (llms, websocket, sessions, memory,
  * database). Explicit values here override the auto-resolved config
  * (useful for tests, migration, or standalone usage).
- *
- * Equivalent to OpenClaw's server config + model config + agent config.
  */
 export interface AgentClientConfig {
   /**
@@ -139,8 +136,6 @@ export interface AgentClientConfig {
 
 /**
  * Input for sending a message to AgentForEach.
- *
- * Equivalent to OpenClaw's `chat.send({ sessionKey, message })`.
  */
 export interface SendRequest {
   /** Stable internal run id, allocated before credit reservation. */
@@ -276,8 +271,6 @@ export interface SendRequest {
 
 /**
  * Result of a completed send operation.
- *
- * Equivalent to OpenClaw's final chat event `{state: "final", message}`.
  */
 export interface SendResponse {
   /** Unique run ID for this request. */
@@ -376,19 +369,12 @@ export type { UsageRecord, UsageSummary } from "../usage/index.js";
 
 /**
  * Callback for streaming events during a send operation.
- *
- * Equivalent to OpenClaw's `subscribeEmbeddedPiSession()` event handlers
- * (onPartialReply, onBlockReply, onToolResult, onAgentEvent).
  */
 export type StreamCallback = (event: ClientStreamEvent) => void;
 
 /**
- * Events emitted during send processing.
- *
- * Maps OpenClaw's granular event types to a simpler set:
- *   - OpenClaw emitChatDelta → text_delta
- *   - OpenClaw onToolResult  → tool_start / tool_done
- *   - OpenClaw emitChatFinal → done
+ * Events emitted during send processing: text deltas, tool start/done,
+ * and the final result.
  */
 export type ClientStreamEvent =
   | { type: "run_started"; runId: string }
@@ -425,8 +411,7 @@ export type ClientStreamEvent =
 /**
  * The AgentForEach client — unified API for sending messages and receiving responses.
  *
- * This is the equivalent of OpenClaw's full gateway → auto-reply → agent pipeline,
- * compressed into a single clean interface for serverless deployment.
+ * One interface for the whole pipeline, built for serverless deployment.
  *
  * ```ts
  * const client = createAgentClient();

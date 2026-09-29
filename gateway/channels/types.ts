@@ -9,7 +9,6 @@
  *   - The router orchestrates: webhook → parseInbound → AgentClient.send() → sendOutbound
  *   - Channels self-register via the registry on import (gated by config)
  *
- * @see OpenClaw: src/channels/plugins/types.plugin.ts — ChannelPlugin
  */
 
 import type { SendRequest } from "../client/types.js";

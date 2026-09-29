@@ -4,7 +4,6 @@
  * Computes next fire times for all schedule types: at, every, cron.
  * Includes stagger logic for top-of-hour cron expressions.
  *
- * Ported from OpenClaw's src/cron/schedule.ts and src/cron/stagger.ts.
  */
 
 import { createHash } from "node:crypto";
@@ -43,13 +42,13 @@ export function computeNextRunAtMs(
 
 /**
  * Parse an absolute one-shot time.
- * For parity with OpenClaw, past timestamps remain schedulable (immediately due)
+ * Past timestamps remain schedulable (immediately due)
  * until the job is terminally handled by execution state transitions.
  */
 function computeAtNextRun(at: string, _nowMs: number): number | undefined {
   const targetMs = parseAbsoluteTimeMs(at);
   if (targetMs === undefined) return undefined;
-  // OpenClaw parity: one-shot jobs remain due until execution applies a
+  // One-shot jobs remain due until execution applies a
   // terminal result (disable/delete). Returning the raw target timestamp
   // keeps past-due one-shots runnable instead of silently unscheduling them.
   return targetMs;
@@ -132,7 +131,7 @@ function computeCronNextRun(
   let nextMs = next.getTime();
 
   // Same-second guard: if croner returns "now", advance to next whole second
-  // to prevent rescheduling loops (ported from OpenClaw)
+  // to prevent rescheduling loops
   if (nextMs <= nowMs) {
     const retryNext = cron.nextRun(new Date(nowMs + 1000));
     if (!retryNext) return undefined;
@@ -193,7 +192,7 @@ export function resolveCronTimezone(tz?: string): string {
 }
 
 // ============================================================================
-// Stagger (ported from OpenClaw src/cron/stagger.ts)
+// Stagger
 // ============================================================================
 
 /**
@@ -237,7 +236,6 @@ export function resolveCronStaggerMs(
  * Compute a deterministic per-job stagger offset using SHA-256(jobId).
  *
  * The offset is stable for a given jobId, evenly distributed within the window.
- * Ported from OpenClaw's resolveStableCronOffsetMs.
  */
 export function resolveStableCronOffsetMs(
   jobId: string,

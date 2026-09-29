@@ -4,7 +4,6 @@
  * Handles Web PubSub CloudEvents "disconnected" event — called when
  * a client closes the WebSocket connection.
  *
- * Mirrors @serverless-openclaw/gateway ws-disconnect.ts pattern.
  */
 
 import {
@@ -39,8 +38,8 @@ function handleAbuseProtection(request: HttpRequest): HttpResponseInit | null {
  * Web PubSub "disconnected" event handler — called when a client closes
  * the WebSocket. Logs the disconnection for observability.
  *
- * Unlike OpenClaw's gateway which tracks connections in Cosmos DB,
- * AgentForEach relies on Web PubSub's built-in connection tracking
+ * Connections aren't tracked in a database: AgentForEach relies on Web
+ * PubSub's built-in connection tracking
  * (userExists, sendToUser). No explicit cleanup needed.
  */
 async function wsDisconnect(

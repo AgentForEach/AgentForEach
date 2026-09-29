@@ -7,12 +7,9 @@
  * When the model calls one of these tools, the runner executes the handler
  * and feeds the result back as function output.
  *
- * Ported from OpenClaw's cron-tool.ts, adapted for:
- *   - Cosmos DB store (instead of Gateway HTTP calls)
- *   - Direct CRUD against CronStore (no proxy layer)
- *   - Simplified actions (no "wake" / "status" — those are orchestrator concerns)
+ * The tools act directly on CronStore; "wake" and "status" are orchestrator
+ * concerns and not exposed here.
  *
- * @see OpenClaw: src/agents/tools/cron-tool.ts
  */
 
 import type { ToolDefinition } from "../memory/index.js";

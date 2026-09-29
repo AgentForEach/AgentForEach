@@ -2,7 +2,6 @@
  * AgentForEach Memory Layer — Types
  *
  * Core type definitions for the Cosmos DB-backed memory system.
- * Adapted from OpenClaw's src/memory/types.ts and extensions/memory-lancedb.
  */
 
 import type { MemoryCategory } from "./config.js";

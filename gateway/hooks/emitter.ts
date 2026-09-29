@@ -12,8 +12,8 @@
  *
  * Priority: higher number = runs first. Default priority is 0.
  *
- * Equivalent to OpenClaw's HookRunner but without directory discovery,
- * HOOK.md metadata, or plugin registration — just a clean typed emitter.
+ * A typed emitter: no directory discovery, metadata files or plugin
+ * registration.
  */
 
 import type {

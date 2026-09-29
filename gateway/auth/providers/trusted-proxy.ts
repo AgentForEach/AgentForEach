@@ -4,8 +4,6 @@
  * Authenticates requests via identity headers set by a trusted reverse proxy
  * (e.g., Pomerium, Caddy with OAuth, nginx auth_request, Cloudflare Access).
  *
- * Inspired by OpenClaw's GatewayTrustedProxyConfig.
- *
  * The proxy handles the actual authentication flow and passes the
  * authenticated user identity via a configurable header, plus a shared
  * secret (`sharedSecret`) that proves the request came through it. Without

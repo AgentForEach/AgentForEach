@@ -362,7 +362,7 @@ async function executeMainSessionJob(
     };
   }
 
-  // OpenClaw-like wakeMode="now": enqueue in the heartbeat lane first,
+  // wakeMode="now": enqueue in the heartbeat lane first,
   // then attempt an immediate flush. If the main lane is busy/fails, the
   // event remains queued for a later retry instead of being dropped.
   const nowMs = Date.now();

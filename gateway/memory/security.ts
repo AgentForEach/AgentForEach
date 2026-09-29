@@ -1,7 +1,6 @@
 /**
  * AgentForEach Memory Layer — Security & Capture Utils
  *
- * Ported from OpenClaw's extensions/memory-lancedb/index.ts.
  * Handles:
  *   - Prompt injection detection
  *   - HTML/XML escaping for safe prompt embedding
@@ -15,7 +14,7 @@ import type { MemorySearchResult } from "./types.js";
 
 // ============================================================================
 // Prompt Injection Detection
-// (ported from OpenClaw PROMPT_INJECTION_PATTERNS)
+//
 // ============================================================================
 
 const PROMPT_INJECTION_PATTERNS: RegExp[] = [
@@ -38,7 +37,7 @@ export function looksLikePromptInjection(text: string): boolean {
 
 // ============================================================================
 // HTML Entity Escaping
-// (ported from OpenClaw escapeMemoryForPrompt)
+//
 // ============================================================================
 
 const ESCAPE_MAP: Record<string, string> = {
@@ -58,7 +57,7 @@ export function escapeForPrompt(text: string): string {
 
 // ============================================================================
 // Memory Capture Triggers
-// (ported from OpenClaw MEMORY_TRIGGERS)
+//
 // ============================================================================
 
 const MEMORY_TRIGGERS: RegExp[] = [
@@ -78,7 +77,7 @@ const MEMORY_TRIGGERS: RegExp[] = [
   // "my X is" / "is my" patterns (catches "my dog is Rex", etc.)
   /\bmy\s+\w+\s+is\b/i,
   /\bis\s+my\b/i,
-  // Bare emphasis keywords (OpenClaw triggers on standalone always/never/important)
+  // Bare emphasis keywords (standalone always/never/important)
   /\b(?:always|never|important)\b/i,
   // "will use" / "we decided" decision patterns
   /\b(?:will\s+use|we\s+decided)\b/i,
@@ -96,7 +95,7 @@ const MEMORY_TRIGGERS: RegExp[] = [
 
 // ============================================================================
 // Auto-Capture Eligibility
-// (ported from OpenClaw shouldCapture)
+//
 // ============================================================================
 
 /**
@@ -118,10 +117,10 @@ export function shouldCapture(text: string, maxChars: number): boolean {
   // Re-capture loop prevention
   if (text.includes("<relevant-memories>")) return false;
 
-  // XML-like content (OpenClaw's approach: starts with < and contains </)
+  // XML-like content (starts with < and contains </)
   if (text.startsWith("<") && text.includes("</")) return false;
 
-  // Agent-generated summaries: bold text + bullet lists (OpenClaw check)
+  // Agent-generated summaries: bold text + bullet lists
   if (text.includes("**") && text.includes("\n-")) return false;
 
   // Formatted Markdown (headers, tables, code fences)
@@ -144,7 +143,7 @@ export function shouldCapture(text: string, maxChars: number): boolean {
 
 // ============================================================================
 // Category Detection
-// (ported from OpenClaw detectCategory)
+//
 // ============================================================================
 
 const CATEGORY_PATTERNS: { category: MemoryCategory; patterns: RegExp[] }[] = [
@@ -193,7 +192,7 @@ const CATEGORY_PATTERNS: { category: MemoryCategory; patterns: RegExp[] }[] = [
     patterns: [
       /\b(?:remember\s+(?:that|this))\b/i,
       /\b(?:don't\s+forget|keep\s+in\s+mind|note\s+that|take\s+note)\b/i,
-      // Broad catch-all fact patterns (matches OpenClaw's is|are|has|have)
+      // Broad catch-all fact patterns
       // Placed last so preference/decision/entity take priority
       /\bis\b/i,
       /\bare\b/i,
@@ -218,7 +217,7 @@ export function detectCategory(text: string): MemoryCategory {
 
 // ============================================================================
 // Formatted Memory Context for Auto-Recall
-// (ported from OpenClaw formatRelevantMemoriesContext)
+//
 // ============================================================================
 
 /**

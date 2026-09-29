@@ -4,14 +4,8 @@
  * The core message processing pipeline. Given a SendRequest, orchestrates
  * the full flow from system prompt assembly to LLM response delivery.
  *
- * This is AgentForEach's equivalent of OpenClaw's entire dispatch chain:
- *   dispatchInboundMessage → getReplyFromConfig → runPreparedReply
- *   → runReplyAgent → runAgentTurnWithFallback → runEmbeddedPiAgent
- *   → runEmbeddedAttempt → session.prompt()
- *
- * Simplified for serverless: no steer-or-queue, no session lanes, no
- * sandbox resolution. The LLM provider handles the tool loop internally
- * (OpenAI Responses API executes shell commands server-side).
+ * Built for serverless: nothing is kept in memory between turns, one run
+ * per session at a time (run lease), and a deadline on every run.
  *
  * Pipeline:
  *   1.  Load/create session
@@ -411,16 +405,8 @@ class RunDeadlineError extends Error {
 /**
  * Execute the full message pipeline.
  *
- * This is the single function that replaces OpenClaw's ~5,000 lines of
- * dispatch → agent runner → embedded attempt code. The massive simplification
- * is possible because:
- *
- *   1. OpenAI Responses API handles the tool loop server-side (no local
- *      tool execution loop needed)
- *   2. Azure serverless means no lane/queue management
- *   3. Single provider per request (no auth profile rotation)
- *   4. Cosmos DB sessions (no JSONL file management)
- *   5. Memory recall/capture are clean middleware calls
+ * One function runs the whole turn: session and lease, prompt, the model
+ * and tool loop (with provider failover), persistence and streaming.
  */
 export async function runAgentTurn(
   request: SendRequest,
@@ -1081,8 +1067,8 @@ export async function runAgentTurn(
     );
     markPhase("prompt");
 
-    // OpenClaw-style idempotency replay: if the same request key already
-    // completed in this session, return the cached assistant turn.
+    // Idempotency replay: if the same request key already completed in this
+    // session, return the cached assistant turn.
     // A retry with the same idempotency key, or a second delivery of this
     // run that waited for the first, replays what was already answered.
     const replayedAssistant = request.idempotencyKey
@@ -2914,9 +2900,7 @@ export function classifyRunFailure(err: unknown): {
 /**
  * Map a provider StreamEvent to a ClientStreamEvent.
  *
- * Equivalent to OpenClaw's `subscribeEmbeddedPiSession()` event routing,
- * but much simpler since we don't need block chunking, typing indicators,
- * or thinking tag parsing.
+ * Kept simple: no block chunking, typing indicators or thinking-tag parsing.
  */
 function mapStreamEvent(
   event: StreamEvent,
