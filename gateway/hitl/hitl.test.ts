@@ -911,3 +911,31 @@ test("a pending request outlives its own timeout, even past an hour", async (t) 
   t.mock.timers.setTime(Date.now() + 2 * 3600 * 1000); // the user answers at the deadline
   assert.ok(await store.get("req-1", "u1"), "still there to resume");
 });
+
+test("saving sibling results never reopens a request the user already answered", async () => {
+  const store = new HitlStore(new InMemoryCosmosDatabase());
+  await store.initialize();
+  const state = {
+    requestId: "req-2",
+    orchestrationId: "hitl-req-2",
+    originalRequest: { userId: "u1", message: "book it" },
+    runId: "run-2",
+    sessionId: "s1",
+    toolRound: 1,
+    pendingToolCall: { callId: "c1", name: "book_flight", arguments: {} },
+    completedToolResults: [],
+    independentToolCalls: [],
+    createdAt: Date.now(),
+    status: "pending",
+  } as unknown as HitlRunState;
+  const siblings = [{ callId: "c2", name: "memory_search", output: "3 results" }];
+
+  // The answer and the sibling save race.
+  await store.create(state);
+  await Promise.all([store.updateStatus("req-2", "u1", "responded"), store.setCompletedToolResults("req-2", "u1", siblings)]);
+  assert.equal((await store.get("req-2", "u1"))?.status, "responded");
+
+  // A save that arrives after the answer changes nothing.
+  await store.setCompletedToolResults("req-2", "u1", siblings);
+  assert.equal((await store.get("req-2", "u1"))?.status, "responded");
+});

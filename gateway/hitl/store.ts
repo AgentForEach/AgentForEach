@@ -19,7 +19,8 @@
  * @see ../cron/store.ts — reference Cosmos DB store pattern
  */
 
-import { PartitionKeyKind } from "@azure/cosmos";
+import { PartitionKeyKind, type Container } from "@azure/cosmos";
+import { isNotFoundError, isPreconditionFailedError } from "../database/errors.js";
 import type {
   DatabaseProvider,
   ContainerHandle,
@@ -156,11 +157,30 @@ export class HitlStore {
     userId: string,
     results: HitlRunState["completedToolResults"],
   ): Promise<void> {
-    const doc = await this.container.read(requestId, userId);
-    if (!doc) return;
-    doc.state.completedToolResults = results;
-    doc.updatedAt = new Date().toISOString();
-    await this.container.replace(requestId, userId, doc);
+    // The form is already out, so the user may answer while this runs: only
+    // a still-pending request is updated, and an etag keeps this write from
+    // undoing theirs (which would reopen an answered request).
+    const raw = this.container.getRawContainer() as Container;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const { resource: doc } = await raw.item(requestId, userId).read<HitlDocument>();
+      if (!doc || doc.state.status !== "pending") return;
+      const etag = (doc as unknown as { _etag?: string })._etag;
+      const updated: HitlDocument = {
+        ...doc,
+        state: { ...doc.state, completedToolResults: results },
+        updatedAt: new Date().toISOString(),
+      };
+      try {
+        await raw
+          .item(requestId, userId)
+          .replace<HitlDocument>(updated, etag ? { accessCondition: { type: "IfMatch", condition: etag } } : undefined);
+        return;
+      } catch (err) {
+        if (isPreconditionFailedError(err)) continue;
+        if (isNotFoundError(err)) return;
+        throw err;
+      }
+    }
   }
 
   /**

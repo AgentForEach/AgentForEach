@@ -350,7 +350,8 @@ interface HitlDocument {
 ```
 
 **TTL policy:**
-- Pending requests: **1 hour** — if not resolved, something went wrong
+- Pending requests: the request's timeout plus **10 minutes**, and at least **1 hour**, so an answer (or the timeout) always finds the state
+- When a gated call pauses the run, the other calls from the same response get up to **10 seconds** to finish; their results are saved with the request and written into the history on resume or timeout
 - Resolved requests (responded/cancelled/timed_out): **24 hours** — kept for debugging
 
 ### 5.2 HitlRunState

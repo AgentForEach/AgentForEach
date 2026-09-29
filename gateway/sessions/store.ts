@@ -32,6 +32,7 @@ import type {
 import { loadSessionConfig, type SessionConfig } from "./config.js";
 import { MessageStore } from "./messages-store.js";
 import { redactId } from "../utils/redact.js";
+import { isNotFoundError, isPreconditionFailedError } from "../database/errors.js";
 
 // ============================================================================
 // Message partition key
@@ -698,16 +699,5 @@ function isConflictError(err: unknown): boolean {
   return e.code === 409 || e.code === "Conflict" || e.statusCode === 409;
 }
 
-function isPreconditionFailedError(err: unknown): boolean {
-  if (typeof err !== "object" || err === null) return false;
-  const e = err as Record<string, unknown>;
-  return (
-    e.code === 412 || e.code === "PreconditionFailed" || e.statusCode === 412
-  );
-}
 
-function isNotFoundError(err: unknown): boolean {
-  if (typeof err !== "object" || err === null) return false;
-  const e = err as Record<string, unknown>;
-  return e.code === 404 || e.code === "NotFound" || e.statusCode === 404;
-}
+

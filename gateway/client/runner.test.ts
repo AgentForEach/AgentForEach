@@ -6,7 +6,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { findSuspension, HitlSuspendSignal, runAgentTurn, type RunnerDeps } from "./runner.js";
+import { findSuspension, HitlSuspendSignal, runAgentTurn, settleToolCalls, type RunnerDeps } from "./runner.js";
 import { siblingResultMessages } from "../hitl/orchestrator.js";
 import { makeDeps, scriptedProvider, textResponse, toolCallResponse } from "./runner.test-harness.js";
 import type { Provider } from "../llms/types.js";
@@ -426,4 +426,29 @@ test("a call paused for approval keeps the results of the calls that ran beside 
   assert.deepEqual(messages.map((m) => m.content), ['[cron_create] {"ok":true,"jobId":"j1"}', "[memory_search] 3 results"]);
 
   assert.equal(findSuspension(await Promise.allSettled([Promise.resolve({ callId: "c1", output: "x" })]), [{ name: "a" }]), undefined);
+});
+
+test("after a pause for approval, a slow call beside it holds the run only for the grace period", async () => {
+  const never = new Promise<{ callId: string; output: string }>(() => {});
+  const started = Date.now();
+  const settled = await settleToolCalls(
+    [
+      Promise.resolve({ callId: "c1", output: "fast" }),
+      Promise.reject(new HitlSuspendSignal("req-1", "s1", "Approve?")),
+      never,
+    ],
+    50,
+  );
+  assert.ok(Date.now() - started < 1_000, "didn't wait for the slow call");
+  assert.equal(settled[2], undefined, "still running");
+  assert.deepEqual(findSuspension(settled, [{ name: "a" }, { name: "gated" }, { name: "slow" }])?.siblingResults, [
+    { callId: "c1", name: "a", output: "fast" },
+  ]);
+
+  // Without a pause, every call is waited for.
+  const all = await settleToolCalls([
+    new Promise((r) => setTimeout(() => r({ callId: "c1", output: "late" }), 30)),
+    Promise.resolve({ callId: "c2", output: "now" }),
+  ]);
+  assert.deepEqual(all.map((r) => r?.status), ["fulfilled", "fulfilled"]);
 });
