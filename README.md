@@ -222,6 +222,16 @@ More: [Architecture](docs/Architecture.md) · [Sessions](docs/Session-management
 
 > **Status: preview.** The architecture is load-tested, the security model reviewed and the code has 1,100+ tests, but it hasn't run in many production deployments yet. Read [SECURITY.md](SECURITY.md) before exposing it to users.
 
+**Try it in one command.** Open the repo in GitHub Codespaces, which has every tool installed, and run the quickstart. It asks for an Azure sign-in (on a subscription where you can assign roles, as below) and an OpenAI API key, deploys a trial stack and prints a login for the [web chat sample](examples/web-chat/).
+
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/AgentForEach/AgentForEach)
+
+```bash
+./scripts/quickstart.sh
+```
+
+The trial signs users in with tokens the script makes; `pulumi destroy` removes everything. To deploy step by step, or for a stack with real sign-in:
+
 You need Node 22, [Azure Functions Core Tools](https://learn.microsoft.com/azure/azure-functions/functions-run-local) 4, the Azure CLI, [Pulumi](https://www.pulumi.com/docs/install/), and an Azure subscription where you can assign roles (Owner, or Contributor plus User Access Administrator): the stack grants its own identities access to storage, Key Vault and Cosmos DB.
 
 **1. Create the Azure resources**
