@@ -712,7 +712,12 @@ export class CronStore {
     if (maxJobsPerUser > 0) {
       const existingCount = await this.countJobs(input.userId);
       if (existingCount >= maxJobsPerUser) {
-        throw new Error(`cron job limit exceeded for user (${maxJobsPerUser})`);
+        // Finished and disabled jobs make room, oldest first, so they can't
+        // fill the limit forever; only enabled jobs can refuse a new one.
+        const freed = await this.pruneDisabledJobs(input.userId, existingCount - maxJobsPerUser + 1);
+        if (existingCount - freed >= maxJobsPerUser) {
+          throw new Error(`cron job limit exceeded for user (${maxJobsPerUser})`);
+        }
       }
     }
 
@@ -1691,13 +1696,14 @@ export class CronStore {
     ) {
       return disable({ runCount });
     }
-    // Don't schedule beyond expiry
+    // No run left before expiry: retire the job now rather than leave it
+    // enabled with nothing scheduled, where it would never be retired.
     if (
       nextRunAtMs !== undefined &&
       typeof effectiveJob.expiresAt === "number" &&
       nextRunAtMs > effectiveJob.expiresAt
     ) {
-      nextRunAtMs = undefined;
+      return disable({ lastStatus: "expired", runCount });
     }
 
     await this.updateJob(effectiveJob.id, effectiveJob.userId, {
@@ -1771,6 +1777,20 @@ export class CronStore {
   /**
    * Count total jobs for a user.
    */
+  /** Delete up to `count` of a user's disabled jobs, least recently updated first. */
+  private async pruneDisabledJobs(userId: string, count: number): Promise<number> {
+    const disabled = await this.jobs.queryWithParams<CronJob>(
+      "SELECT * FROM c WHERE c.userId = @userId AND c.enabled = false",
+      [{ name: "@userId", value: userId }],
+    );
+    disabled.sort((a, b) => (a.updatedAtMs ?? 0) - (b.updatedAtMs ?? 0));
+    let freed = 0;
+    for (const job of disabled.slice(0, count)) {
+      if (await this.deleteJob(job.id, userId)) freed++;
+    }
+    return freed;
+  }
+
   async countJobs(userId: string): Promise<number> {
     await this.ensureInitialized();
     return this.jobs.count("c.userId = @userId", [

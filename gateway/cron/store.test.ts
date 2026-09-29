@@ -268,6 +268,39 @@ test("createJob enforces the per-user job limit", async (t) => {
   assert.equal(await store.countJobs("alice"), 2);
 });
 
+test("disabled jobs make room at the job limit, oldest first", async (t) => {
+  const clock = useClock(t);
+  process.env.CRON_MAX_JOBS_PER_USER = "2";
+  t.after(() => delete process.env.CRON_MAX_JOBS_PER_USER);
+  const { store } = await setup();
+
+  const old = await store.createJob(everyJob("alice", { enabled: false }));
+  clock.set(T0 + MIN);
+  const active = await store.createJob(everyJob("alice"));
+  clock.set(T0 + 2 * MIN);
+
+  const created = await store.createJob(everyJob("alice"));
+  assert.equal(await store.getJob(old.id, "alice"), null, "the disabled job was pruned");
+  assert.ok(await store.getJob(active.id, "alice"));
+  assert.ok(await store.getJob(created.id, "alice"));
+  // Two enabled jobs fill the limit; nothing left to prune.
+  await assert.rejects(store.createJob(everyJob("alice")), /cron job limit exceeded for user \(2\)/);
+});
+
+test("a recurring job with no run left before it expires is retired", async (t) => {
+  const clock = useClock(t);
+  const { store } = await setup();
+  const job = await store.createJob(everyJob("alice", { expiresAt: T0 + 7 * MIN }));
+  clock.set(job.state.nextRunAtMs!);
+  const claimed = await claim(store, job, Date.now());
+
+  clock.set(Date.now() + 1_000); // the run takes a moment
+  await store.applyResult(claimed, { status: "ok", durationMs: 1_000 }, { runningToken: claimed.state.runningToken });
+  const after = (await store.getJob(job.id, "alice"))!;
+  assert.equal(after.enabled, false);
+  assert.equal(after.state.lastStatus, "expired");
+});
+
 test("a disabled job is stored without a due-index row", async (t) => {
   useClock(t);
   const { store, dueRows } = await setup();
