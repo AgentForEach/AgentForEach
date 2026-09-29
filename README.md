@@ -3,6 +3,8 @@
   <img alt="AgentForEach: the open-source brain for personal AI agents. One agent for each of your users, on a hyperscale serverless architecture." src="docs/assets/banner-light.svg">
 </picture>
 
+<p align="center"><code>users.forEach(user =&gt; agent(user))</code></p>
+
 <p align="center"><b>The backend to build a personal-agent product like Muse, Grok or o.</b> Each of your users gets their own agent, and an idle one costs only storage.</p>
 
 <p align="center">
