@@ -5,6 +5,7 @@
 | Doc | What it covers |
 |---|---|
 | [Getting started](getting-started.md) | Deploy to Azure, sign users in, run locally |
+| [What it costs](costs.md) | Monthly cost at 10,000 to 1,000,000 users, the assumptions, and a script to run your own |
 | [Benchmarks](Benchmarks.md) | Load-test method, results and how to measure your own stack |
 | [Upgrading](UPGRADING.md) | Behaviour changes an operator needs to know about, newest first |
 

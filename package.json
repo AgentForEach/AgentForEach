@@ -1,7 +1,7 @@
 {
   "name": "agentforeach",
   "version": "1.0.0",
-  "description": "Run personal AI agents for millions of users. Serverless, pay per use, open source.",
+  "description": "The open-source brain for personal AI agents: one agent for each of your users, on a hyperscale serverless architecture.",
   "keywords": [
     "ai-agents",
     "personal-assistant",

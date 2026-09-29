@@ -8,8 +8,13 @@ The [benchmarks](docs/Benchmarks.md) cover chat, memory and reminders at 1,000 u
 
 - Sandboxes under load
 - Telegram and WhatsApp channels under load
-- Thousands of users active at the same time, not only arriving over a few minutes
+- 10,000 users and more, with thousands active at the same time
 - Multi-region deployments
+
+## Make it easier to start
+
+- A starter app (web and mobile) that you can rebrand as your own product
+- A short demo of an agent at work
 
 ## Harden for production
 

@@ -5,7 +5,7 @@
 
 <p align="center"><code>users.forEach(user =&gt; agent(user))</code></p>
 
-<p align="center"><b>The backend to build a personal-agent product like Muse, Grok or o.</b> Each of your users gets their own agent, and an idle one costs only storage.</p>
+<p align="center"><b>The backend to build a personal-agent product like Muse, Grok or o.</b> Each of your users gets their own agent on serverless Azure, and an idle one costs only storage.</p>
 
 <p align="center">
   <a href="https://github.com/agentforeach/agentforeach/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/agentforeach/agentforeach/actions/workflows/ci.yml/badge.svg"></a>
@@ -77,6 +77,15 @@ The usual way to give each user an agent is a machine or container per user: sim
 - **Real model:** 4,799 of 4,800 turns completed with GPT-5.6 Luna (chat, memory, reminders); first text in 4.8 s p50 / 11.1 s p95; ≈ $1.72–2.19 model cost per 1,000 turns.
 - **Platform work per turn:** ≈ 0.7 s (session, memory recall, prompt, persistence). At 1,000 users a reply completed in 5.8 s p50 / 12.6 s p95, including 3.2 s of simulated generation.
 - **Not yet measured:** sandboxes, channels, more than a few hundred users active at once, multi-region. Method and raw results: [Benchmarks](docs/Benchmarks.md).
+
+## What it costs
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/costs-dark.svg">
+  <img alt="100,000 users for a month. A machine per user: about $772,340. AgentForEach: about $14,292, of which $1,152 is the platform and the rest model tokens. Both include up to $13,140 of model tokens." src="docs/assets/costs-light.svg">
+</picture>
+
+Model tokens are most of the bill. The platform adds about 1–2¢ per user per month, and an idle user costs about $0.0008 a month of storage. The estimate for 10,000, 100,000 and 1,000,000 users, every assumption behind it and a script to run with your own numbers are in [What it costs](docs/costs.md).
 
 ## What companies build with it
 
@@ -185,9 +194,32 @@ pulumi up && cd ..
 
 [Getting started](docs/getting-started.md) covers running locally, Azure OpenAI, channels and every setting.
 
+## FAQ
+
+**Is AgentForEach a model?**
+No. It runs the agents and calls a model you choose: OpenAI (Responses API), Azure OpenAI, Anthropic or any OpenAI-compatible provider, with failover between them.
+
+**Does it include an app?**
+It is the backend. Your app talks to its HTTP API and receives replies over Web PubSub; the [web chat sample](examples/web-chat/) shows the protocol in one HTML file. Telegram and WhatsApp work without an app.
+
+**Which cloud does it run on?**
+Azure today: Functions (Flex Consumption), Durable Functions, Cosmos DB, Web PubSub and Container Apps, created by one Pulumi program.
+
+**What does it cost to run?**
+Model tokens are most of it. The platform adds a small cost per turn, and an idle user costs only storage. See [What it costs](docs/costs.md) for the estimate at 10,000, 100,000 and 1,000,000 users.
+
+**How are users kept apart?**
+Every read and write is scoped to the signed-in user (partition keys and ownership checks), channel identities resolve only through pairing, and code runs in a per-user sandbox. The model and its limits are in [SECURITY.md](SECURITY.md).
+
+**Can I run it just for myself?**
+Yes, in [single-user mode](docs/Identity.md#deployment-scenarios). It is built for many users, though.
+
+**Is it ready for production?**
+It is in preview: load-tested and security-reviewed, but not yet run in many production deployments.
+
 ## Documentation
 
-- **Start:** [Getting started](docs/getting-started.md) · [Benchmarks](docs/Benchmarks.md) · [Upgrading](docs/UPGRADING.md)
+- **Start:** [Getting started](docs/getting-started.md) · [What it costs](docs/costs.md) · [Benchmarks](docs/Benchmarks.md) · [Upgrading](docs/UPGRADING.md)
 - **How it works:** [Architecture](docs/Architecture.md) · [Sessions and messages](docs/Session-management.md) · [Identity](docs/Identity.md)
 - **Features:** [Scheduler](docs/Crons.md) · [Human in the loop](docs/HITL.md) · [Channels](docs/Channel.md) · [Skills](docs/Skills_Architecture.md) · [Sandboxes](docs/Sandbox.md) · [Knowledge](docs/Knowledge.md)
 
