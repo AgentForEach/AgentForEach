@@ -1,0 +1,32 @@
+name: Deployment report
+description: Deploying or running AgentForEach broke or confused you.
+labels: [deployment, docs]
+body:
+  - type: markdown
+    attributes:
+      value: Reports like this help us fix the docs as much as the code. Remove secrets and keys from anything you paste.
+  - type: textarea
+    id: step
+    attributes:
+      label: Where did you get stuck?
+      description: Which step of Getting started, and what you ran.
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: What you saw
+      description: The error or unexpected result.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: region
+    attributes:
+      label: Azure region
+      placeholder: e.g. eastus
+  - type: input
+    id: tools
+    attributes:
+      label: Tool versions
+      placeholder: node -v, func --version, pulumi version, az version

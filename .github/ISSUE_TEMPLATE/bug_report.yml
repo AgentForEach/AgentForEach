@@ -1,0 +1,53 @@
+name: Bug report
+description: Something in AgentForEach doesn't work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. For security issues, stop here and follow SECURITY.md instead.
+        Pseudonymise user, session and chat ids in anything you paste.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Deploy with ...
+        2. Send ...
+        3. See ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or error output
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Commit or version
+      placeholder: e.g. v0.1.0 or a commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where does it run?
+      options:
+        - Azure (deployed with the Pulumi program)
+        - Azure (other deployment)
+        - Locally
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model provider and model
+      placeholder: e.g. OpenAI gpt-5.6-luna, Azure OpenAI, Anthropic

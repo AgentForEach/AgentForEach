@@ -3,7 +3,7 @@
 Thanks for your interest. While the project is in preview we are **not accepting feature pull requests yet**: the core is still moving, and we'd rather not waste your time on changes that conflict with it. What helps most right now:
 
 - **Bug reports** with steps to reproduce, what you expected, and what happened (logs with ids pseudonymised are fine).
-- **Deployment reports**: what broke or confused you when deploying from the README.
+- **Deployment reports**: what broke or confused you when deploying from [Getting started](docs/getting-started.md).
 - **Small fixes** (typos, docs, obvious bugs) as pull requests — keep them focused.
 - **Security issues**: never in public issues; see [SECURITY.md](SECURITY.md).
 
@@ -18,7 +18,7 @@ npx tsc --noEmit -p infra
 npm test --workspace @agentforeach/gateway
 ```
 
-To run the Functions app locally, see "Run locally" in the [README](README.md).
+To run the Functions app locally, see [Run locally](docs/getting-started.md#run-locally).
 
 ## Conventions
 
