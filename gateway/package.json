@@ -1,6 +1,6 @@
 {
   "name": "@agentforeach/gateway",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "AgentForEach gateway — Azure Functions app for chat, WebSocket, and API",
   "type": "module",
   "private": true,

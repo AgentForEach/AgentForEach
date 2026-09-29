@@ -23,6 +23,8 @@
   <a href="ROADMAP.md">Roadmap</a>
 </p>
 
+<p align="center"><sub>Created by <a href="https://github.com/mohit67890">Mohit Garg</a> · <a href="https://x.com/mohitt_garg">@mohitt_garg</a></sub></p>
+
 ## What it is
 
 A personal AI agent product is much more than a model and a chat window. Behind an app like Muse, every user has an agent that remembers them, works on a schedule while they're away, uses tools, runs code, asks before it acts and answers on whichever channel they use. The company runs all of those agents at once, for every user, without a server for each.
@@ -234,6 +236,8 @@ The full index is in [docs/README.md](docs/README.md).
 
 ## License
 
-[Apache-2.0](LICENSE). Third-party notices are in [NOTICE](NOTICE).
+[Apache-2.0](LICENSE). Copyright 2026 Mohit Garg and AgentForEach contributors. Third-party notices are in [NOTICE](NOTICE).
+
+AgentForEach and the AgentForEach logo are trademarks of Mohit Garg. The license covers the code, not the name or logo (Apache-2.0, section 6): a fork or a product built on AgentForEach needs its own name.
 
 Muse, Grok and Dots are products of Meta, xAI and OpenAI. AgentForEach is an independent project and is not affiliated with them.

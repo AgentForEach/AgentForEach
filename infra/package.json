@@ -1,6 +1,6 @@
 {
   "name": "agentforeach-infra",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "AgentForEach Azure infrastructure managed by Pulumi",
   "main": "index.ts",
   "scripts": {
