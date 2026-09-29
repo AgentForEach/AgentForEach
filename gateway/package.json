@@ -53,6 +53,6 @@
     "unpdf": "^1.8.0"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0"
+    "@types/node": "^26.6.3"
   }
 }
