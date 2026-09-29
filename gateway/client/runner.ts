@@ -1806,7 +1806,13 @@ export async function runAgentTurn(
       // Extract response data
       responseText = response.text;
       responseModel = response.model;
-      const roundUsage = resolveRoundUsage(response.usage, currentRequest, response);
+      // A round the user stopped before the provider reported usage adds
+      // nothing: an estimate would bill the whole prompt for a reply they
+      // cut off before it began. Completed rounds are still billed.
+      const roundUsage =
+        response.usage || !request.abortSignal?.aborted
+          ? resolveRoundUsage(response.usage, currentRequest, response)
+          : undefined;
       if (!response.usage && roundUsage) {
         console.warn(
           `[runner] usage_estimated run=${runId} round=${round} model=${responseModel} ` +
@@ -2869,7 +2875,11 @@ export async function runAgentTurn(
       }
     }
 
-    await recordUsage(leasedSessionId ?? request.sessionId ?? "", usageSoFar, providerSoFar, modelSoFar);
+    // Not when another execution owns the run now: it records the run
+    // (one record per runId), and this one would take its place.
+    if (!(err instanceof RunLeaseLostError) && !(err instanceof SessionBusyError)) {
+      await recordUsage(leasedSessionId ?? request.sessionId ?? "", usageSoFar, providerSoFar, modelSoFar);
+    }
     await deps.hooks.emit("run_failed", {
       runId,
       userId: request.userId,

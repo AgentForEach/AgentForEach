@@ -454,3 +454,29 @@ test("after a pause for approval, a slow call beside it holds the run only for t
   ]);
   assert.deepEqual(all.map((r) => r?.status), ["fulfilled", "fulfilled"]);
 });
+
+test("pressing Stop before the first token bills and records nothing", async () => {
+  const stop = new AbortController();
+  const provider = {
+    id: "openai",
+    requests: [] as unknown[],
+    async createResponse() {
+      throw new Error("streaming only");
+    },
+    async *streamResponse() {
+      stop.abort(); // before any text arrives
+      yield { type: "text_delta", delta: "Sur" };
+    },
+  } as unknown as Provider;
+  const usageStore = usageSpy();
+  const { deps } = makeDeps(provider, { usageStore: usageStore as never });
+
+  const res = await runAgentTurn(
+    { userId: "u1", sessionId: "s1", message: "hello", abortSignal: stop.signal } as never,
+    deps,
+    () => {},
+  );
+  assert.equal(res.status, "aborted");
+  assert.equal(res.usage, undefined);
+  assert.equal(usageStore.records.length, 0);
+});
