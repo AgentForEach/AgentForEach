@@ -5,6 +5,11 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # Major versions (the OpenAI SDK, undici, croner, @types/node for the
+    # Node 22 runtime) change behaviour; upgrade those on purpose.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       minor-and-patch:
         update-types: [minor, patch]
