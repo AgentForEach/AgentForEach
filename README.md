@@ -5,7 +5,7 @@
 
 <p align="center"><code>users.forEach(user =&gt; agent(user))</code></p>
 
-<p align="center"><b>The backend to build a personal-agent product like Muse, Grok or o.</b> Each of your users gets their own agent on serverless Azure, and an idle one costs only storage.</p>
+<p align="center"><b>The backend to build a personal-agent product like Muse, Grok or Dots.</b> Each of your users gets their own agent on serverless Azure, and an idle one costs only storage.</p>
 
 <p align="center">
   <a href="https://github.com/agentforeach/agentforeach/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/agentforeach/agentforeach/actions/workflows/ci.yml/badge.svg"></a>
@@ -236,4 +236,4 @@ The full index is in [docs/README.md](docs/README.md).
 
 [Apache-2.0](LICENSE). Third-party notices are in [NOTICE](NOTICE).
 
-Muse, Grok and o are products of Meta, xAI and OpenAI. AgentForEach is an independent project and is not affiliated with them.
+Muse, Grok and Dots are products of Meta, xAI and OpenAI. AgentForEach is an independent project and is not affiliated with them.
