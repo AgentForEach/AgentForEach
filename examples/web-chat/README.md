@@ -15,6 +15,6 @@ npx serve examples/web-chat        # or: python3 -m http.server -d examples/web-
 ```
 
 - **Local gateway** (`npm start`, see [Run locally](../../docs/getting-started.md#run-locally)): URL `http://localhost:7071`, a dev user id, and `AUTH_ALLOW_INSECURE_USER_ID_HEADER=true` in `local.settings.json`. Without `WEBPUBSUB_CONNECTION_STRING` there is no live stream; replies arrive when complete.
-- **Deployed gateway**: your Function App URL and a bearer token from the auth provider you configured (JWT or API key). Add the page's origin to `agentforeach:corsAllowedOrigins` if you restricted CORS.
+- **Deployed gateway**: your Function App URL and a JWT from the JWT provider you configured. (The API-key provider reads `x-api-key`, which this page doesn't send.) Add the page's origin to `agentforeach:corsAllowedOrigins` if you restricted CORS.
 
 Replies are rendered as plain text (`textContent`), never as HTML.

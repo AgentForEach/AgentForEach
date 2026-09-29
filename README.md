@@ -222,9 +222,9 @@ More: [Architecture](docs/Architecture.md) · [Sessions](docs/Session-management
 
 > **Status: preview.** The architecture is load-tested, the security model reviewed and the code has 1,100+ tests, but it hasn't run in many production deployments yet. Read [SECURITY.md](SECURITY.md) before exposing it to users.
 
-You need Node 22, [Azure Functions Core Tools](https://learn.microsoft.com/azure/azure-functions/functions-run-local) 4, the Azure CLI and [Pulumi](https://www.pulumi.com/docs/install/).
+You need Node 22, [Azure Functions Core Tools](https://learn.microsoft.com/azure/azure-functions/functions-run-local) 4, the Azure CLI, [Pulumi](https://www.pulumi.com/docs/install/), and an Azure subscription where you can assign roles (Owner, or Contributor plus User Access Administrator): the stack grants its own identities access to storage, Key Vault and Cosmos DB.
 
-**1. Deploy the stack**
+**1. Create the Azure resources**
 
 ```bash
 npm ci && az login
@@ -233,12 +233,17 @@ pulumi config set azure-native:location eastus
 pulumi config set agentforeach:nameSuffix $(openssl rand -hex 3)
 pulumi config set --secret agentforeach:openaiApiKey sk-...
 pulumi up && cd ..
+```
+
+**2. Choose how your users sign in.** Set `auth.providers` in [`gateway/config/agentforeach.json`](gateway/config/agentforeach.json): App Service authentication, JWT, API keys or a trusted proxy. A fresh stack trusts no one, so every API call returns 401 until you do. The web chat sample sends a bearer token, so use JWT to try it; API keys suit server-to-server calls.
+
+**3. Deploy the gateway.** The config file ships with the code, so run this again whenever you change it:
+
+```bash
 ./scripts/deploy-gateway.sh dev
 ```
 
-**2. Let your users sign in.** Choose providers under `auth.providers` in [`gateway/config/agentforeach.json`](gateway/config/agentforeach.json): App Service authentication, JWT, API keys or a trusted proxy. A fresh stack trusts no one, so every API call returns 401 until you do.
-
-**3. Say hi.** Open the [web chat sample](examples/web-chat/) against your Function App URL.
+**4. Say hi.** Open the [web chat sample](examples/web-chat/) with your Function App URL and a token from the provider you chose.
 
 [Getting started](docs/getting-started.md) covers running locally, Azure OpenAI, channels and every setting.
 

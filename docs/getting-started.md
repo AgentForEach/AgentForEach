@@ -2,7 +2,7 @@
 
 Deploy AgentForEach to Azure, let users sign in, and talk to your first agent. Then run it locally for development.
 
-Prerequisites: Node 22, [Azure Functions Core Tools](https://learn.microsoft.com/azure/azure-functions/functions-run-local) 4, the Azure CLI, and [Pulumi](https://www.pulumi.com/docs/install/).
+Prerequisites: Node 22, [Azure Functions Core Tools](https://learn.microsoft.com/azure/azure-functions/functions-run-local) 4, the Azure CLI, [Pulumi](https://www.pulumi.com/docs/install/), and an Azure subscription where you can assign roles (Owner, or Contributor plus User Access Administrator). `pulumi up` creates role assignments that give the Function App's identities access to storage, Key Vault and Cosmos DB; with Contributor alone it fails with `AuthorizationFailed`.
 
 ## Deploy to Azure
 
@@ -16,7 +16,6 @@ pulumi config set agentforeach:nameSuffix $(openssl rand -hex 3)   # makes the g
 pulumi config set --secret agentforeach:openaiApiKey sk-...     # or an Azure OpenAI key; see below
 pulumi up                                                 # see Pulumi.example.yaml for every setting
 cd ..
-./scripts/deploy-gateway.sh dev
 ```
 
 One Pulumi program creates everything: the Function App (Flex Consumption), Cosmos DB, Web PubSub, Key Vault, storage and the optional sandbox and search resources. Every infrastructure setting is listed in [`infra/Pulumi.example.yaml`](../infra/Pulumi.example.yaml).
@@ -30,6 +29,14 @@ Set `llms.providers.openai.baseUrl` in [`gateway/config/agentforeach.json`](../g
 Configure `auth.providers` in `agentforeach.json`: App Service authentication ([Easy Auth](EasyAuth.md)), JWT, API keys or a trusted proxy. Providers are tried in order and the first match wins.
 
 **Until you do, every API call returns 401.** A fresh stack trusts no one.
+
+The web chat sample sends `Authorization: Bearer <token>`, which the JWT provider reads. The API-key provider reads `x-api-key`; use it for server-to-server calls.
+
+Then deploy the gateway. `agentforeach.json` is packaged with the code, so deploy again after every change to it:
+
+```bash
+./scripts/deploy-gateway.sh dev
+```
 
 ## Talk to your agent
 
