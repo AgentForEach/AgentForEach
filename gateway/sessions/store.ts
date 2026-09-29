@@ -17,7 +17,7 @@
  * session document.
  */
 
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { PartitionKeyKind, type Container } from "@azure/cosmos";
 import type {
   DatabaseProvider,
@@ -635,7 +635,7 @@ export class SessionStore {
   private generateSessionId(): string {
     // Short, human-friendly session ID: timestamp + random suffix
     const ts = Date.now().toString(36);
-    const rand = Math.random().toString(36).slice(2, 6);
+    const rand = randomBytes(4).toString("hex");
     return `${ts}-${rand}`;
   }
 
