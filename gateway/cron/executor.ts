@@ -14,6 +14,7 @@ import type {
   JobResult,
   ExecutorConfig,
 } from "./types.js";
+import { randomUUID } from "node:crypto";
 import { redactId } from "../utils/redact.js";
 import {
   DEFAULT_JOB_TIMEOUT_MS,
@@ -286,23 +287,27 @@ async function executeIsolatedJob(
     ? `azure:${process.env.WEBSITE_SITE_NAME}`
     : "local";
 
-  // Call the LLM via the provider abstraction
-  const responsePromise = provider.createResponse({
-    model,
-    input: job.payload.message,
-    instructions,
-    metadata: {
-      agentforeach_env: envLabel,
-      agentforeach_session_type: "cron",
-      cron_job_id: job.id,
-      cron_user_id: redactId(job.userId),
-      cron_session_target: job.sessionTarget,
+  // Call the LLM via the provider abstraction, metered like a chat turn:
+  // credits reserved and settled, usage recorded.
+  const input = job.payload.message;
+  const response = await agentforeachClient.runMetered(
+    { userId: job.userId, agentId, sessionId: `cron:${job.id}`, runId: randomUUID(), channelName: "cron" },
+    () => {
+      const responsePromise = provider.createResponse({
+        model,
+        input,
+        instructions,
+        metadata: {
+          agentforeach_env: envLabel,
+          agentforeach_session_type: "cron",
+          cron_job_id: job.id,
+          cron_user_id: redactId(job.userId),
+          cron_session_target: job.sessionTarget,
+        },
+      });
+      return timeoutMs > 0 ? withTimeout(responsePromise, timeoutMs) : responsePromise;
     },
-  });
-
-  const response = timeoutMs > 0
-    ? await withTimeout(responsePromise, timeoutMs)
-    : await responsePromise;
+  );
 
   const summary = response.text.slice(0, MAX_SUMMARY_LENGTH);
 

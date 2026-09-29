@@ -81,6 +81,43 @@ test("a turn that fails after /new replaced its session writes nothing into the 
   assert.deepEqual(sessionStore.persistedStates, [], "the new conversation's chain is untouched");
 });
 
+function usageSpy() {
+  const records: Array<{ runId: string; usage: unknown; model: string }> = [];
+  return { records, async record(r: { runId: string; usage: unknown; model: string }) { records.push(r); return null; } };
+}
+
+test("a stopped turn records the usage of the rounds it finished", async () => {
+  const stop = new AbortController();
+  const provider = scriptedProvider([
+    () => {
+      stop.abort(); // the user presses Stop while this round streams
+      return textResponse("partial");
+    },
+  ]);
+  const usageStore = usageSpy();
+  const { deps } = makeDeps(provider, { usageStore: usageStore as never });
+
+  const res = await send(deps, "hello", { abortSignal: stop.signal });
+  assert.equal(res.status, "aborted");
+  assert.equal(usageStore.records.length, 1);
+  assert.equal((usageStore.records[0]!.usage as { totalTokens: number }).totalTokens, 15);
+});
+
+test("a turn that fails after finishing a round records that round's usage", async () => {
+  const provider = scriptedProvider([
+    () => toolCallResponse([{ name: "memory_search", args: { query: "x" } }]),
+    () => {
+      throw Object.assign(new Error("upstream failure"), { status: 500 });
+    },
+  ]);
+  const usageStore = usageSpy();
+  const { deps } = makeDeps(provider, { usageStore: usageStore as never });
+
+  const res = await send(deps);
+  assert.equal(res.status, "failed");
+  assert.equal(usageStore.records.length, 1);
+});
+
 // ============================================================================
 // T1-1 (HITL): resuming a form sends every output the paused response needs
 // ============================================================================

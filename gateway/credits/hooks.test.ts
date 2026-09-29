@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { HookEmitter } from "../hooks/index.js";
-import { registerCreditsHooks, releaseReservationOnThrow } from "./hooks.js";
+import { registerCreditsHooks, releaseReservationOnThrow, runMetered } from "./hooks.js";
 import type { CreditProvider, CreditsConfig } from "./types.js";
 import type { UsageStore } from "../usage/index.js";
 
@@ -193,7 +193,7 @@ test("credits release reservations for runs that report no usage", async () => {
   assert.equal(usageStore.charges.length, 0);
 });
 
-test("credits release reservations for aborted runs", async () => {
+test("credits bill an aborted run for the rounds it completed", async () => {
   const hooks = new HookEmitter();
   const provider = createProvider();
   registerCreditsHooks(hooks, provider, config);
@@ -206,6 +206,20 @@ test("credits release reservations for aborted runs", async () => {
 
   assert.equal(provider.charges.length, 1);
   assert.equal(provider.charges[0].runId, "run-aborted");
+  assert.ok(provider.charges[0].amount >= config.minimumCharge);
+});
+
+test("credits release reservations for runs aborted before any model output", async () => {
+  const hooks = new HookEmitter();
+  const provider = createProvider();
+  registerCreditsHooks(hooks, provider, config);
+
+  await hooks.emit("run_completed", {
+    runId: "run-aborted-early",
+    userId: "user-1",
+    response: { ...response("completed"), status: "aborted" as const, usage: undefined },
+  });
+
   assert.equal(provider.charges[0].amount, 0);
 });
 
@@ -244,4 +258,60 @@ test("a run that throws before starting releases its reservation", async () => {
   // A run that returns is left to the run_completed/run_failed hooks.
   assert.equal(await releaseReservationOnThrow(provider, "user-1", "run-ok", async () => "done"), "done");
   assert.equal(provider.charges.length, 1);
+});
+
+const RUN = { userId: "user-1", agentId: "default", sessionId: "cron:job-1", runId: "run-cron", channelName: "cron" };
+const modelReply = () => ({
+  text: "done",
+  model: "gpt-5.4-mini",
+  providerId: "openai" as const,
+  usage: { inputTokens: 1000, outputTokens: 500, totalTokens: 1500 },
+});
+
+test("a metered run outside a turn is reserved, billed and recorded", async () => {
+  const hooks = new HookEmitter();
+  const provider = createProvider();
+  registerCreditsHooks(hooks, provider, config);
+  const recorded: unknown[] = [];
+  const usageStore = { async record(r: unknown) { recorded.push(r); return null; } };
+
+  const result = await runMetered({ hooks, usageStore: usageStore as never, creditProvider: provider }, RUN, async () => modelReply());
+
+  assert.equal(result.text, "done");
+  assert.equal(provider.charges.length, 1);
+  assert.equal(provider.charges[0].runId, "run-cron");
+  assert.ok(provider.charges[0].amount >= config.minimumCharge);
+  assert.equal(recorded.length, 1);
+});
+
+test("a metered run with no balance never calls the model", async () => {
+  const hooks = new HookEmitter();
+  const broke: CreditProvider = {
+    ...createProvider(),
+    async reserve() {
+      throw Object.assign(new Error("Out of credits"), { code: "INSUFFICIENT_CREDITS" });
+    },
+  };
+  let called = false;
+  await assert.rejects(
+    runMetered({ hooks, creditProvider: broke }, RUN, async () => {
+      called = true;
+      return modelReply();
+    }),
+    /Out of credits/,
+  );
+  assert.equal(called, false);
+});
+
+test("a metered run that fails releases its reservation", async () => {
+  const hooks = new HookEmitter();
+  const provider = createProvider();
+  registerCreditsHooks(hooks, provider, config);
+  await assert.rejects(
+    runMetered({ hooks, creditProvider: provider }, RUN, async () => {
+      throw new Error("model down");
+    }),
+    /model down/,
+  );
+  assert.deepEqual(provider.charges.map((c) => c.amount), [0]);
 });

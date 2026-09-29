@@ -12,7 +12,7 @@
  */
 
 import type { HookEmitter } from "../hooks/index.js";
-import type { UsageStats } from "../llms/index.js";
+import type { ProviderId, UsageStats } from "../llms/index.js";
 import type { UsageStore } from "../usage/index.js";
 import type { CreditsConfig, CreditProvider } from "./types.js";
 import { getModelPricing, estimateCost } from "../usage/pricing.js";
@@ -41,12 +41,13 @@ export function registerCreditsHooks(
     // user's balance hostage until the stale sweep runs, which surfaces as
     // a bogus "out of credits" on their next message.
     //
-    // Deduct for successful LLM work with usage data. `awaiting_input` means
-    // the model already spent tokens to produce a structured form request.
-    // Anything else (aborted, or a replayed/short-circuited turn that burned
-    // no tokens) settles at 0, which releases the reservation and refunds.
+    // Deduct for LLM work with usage data. `awaiting_input` means the model
+    // already spent tokens to produce a structured form request; an aborted
+    // run is billed for the rounds it completed before the stop, like a
+    // failed one. A turn that burned no tokens (a replay, a short-circuit)
+    // settles at 0, which releases the reservation and refunds.
     const billable =
-      ["completed", "awaiting_input"].includes(event.response.status) &&
+      ["completed", "awaiting_input", "aborted"].includes(event.response.status) &&
       event.response.usage !== undefined;
 
     const coins = billable
@@ -213,6 +214,73 @@ export async function releaseReservationOnThrow<T>(
     });
     throw err;
   }
+}
+
+/**
+ * Model work that runs outside a chat turn (a scheduled isolated job),
+ * metered like a turn: credits are reserved first (so an empty balance
+ * refuses it), usage is recorded, and the run is settled through the same
+ * run_completed / run_failed hooks. Without a credit provider only usage is
+ * recorded.
+ */
+export async function runMetered<
+  T extends { text: string; model: string; providerId: ProviderId; usage?: UsageStats },
+>(
+  deps: {
+    hooks: HookEmitter;
+    usageStore?: Pick<UsageStore, "record">;
+    creditProvider?: CreditProvider;
+  },
+  run: { userId: string; agentId: string; sessionId: string; runId: string; channelName?: string },
+  work: () => Promise<T>,
+): Promise<T> {
+  if (deps.creditProvider) await reserveCredits(run.userId, run.runId, deps.creditProvider);
+
+  const startedAt = Date.now();
+  let result: T;
+  try {
+    result = await work();
+  } catch (err) {
+    await deps.hooks.emit("run_failed", {
+      runId: run.runId,
+      userId: run.userId,
+      sessionId: run.sessionId,
+      error: err instanceof Error ? err : new Error(String(err)),
+    });
+    throw err;
+  }
+
+  const durationMs = Date.now() - startedAt;
+  if (result.usage && deps.usageStore) {
+    await deps.usageStore
+      .record({
+        ...run,
+        providerId: result.providerId,
+        model: result.model,
+        usage: result.usage,
+        durationMs,
+        timestamp: new Date().toISOString(),
+      })
+      .catch(() => {}); // Non-fatal
+  }
+  await deps.hooks.emit("run_completed", {
+    runId: run.runId,
+    userId: run.userId,
+    response: {
+      runId: run.runId,
+      text: result.text,
+      sessionId: run.sessionId,
+      identity: { name: "Assistant" },
+      providerId: result.providerId,
+      model: result.model,
+      usage: result.usage,
+      memoriesRecalled: 0,
+      memoryCaptured: false,
+      durationMs,
+      status: "completed",
+    },
+  });
+  return result;
 }
 
 // ============================================================================

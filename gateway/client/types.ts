@@ -478,6 +478,16 @@ export interface AgentClient {
   readonly resolveDefaultModel: (providerId?: ProviderId) => string;
 
   /**
+   * Run model work outside a chat turn (a scheduled isolated job) under the
+   * same metering as a turn: credits reserved and settled, usage recorded.
+   * See `runMetered` in credits.
+   */
+  runMetered<T extends { text: string; model: string; providerId: ProviderId; usage?: UsageStats }>(
+    run: { userId: string; agentId: string; sessionId: string; runId: string; channelName?: string },
+    work: () => Promise<T>,
+  ): Promise<T>;
+
+  /**
    * Send a message and get a response.
    *
    * Full pipeline:

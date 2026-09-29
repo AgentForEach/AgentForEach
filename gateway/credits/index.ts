@@ -12,6 +12,7 @@ export {
 	checkCreditsBalance,
 	releaseReservationOnThrow,
 	reserveCredits,
+	runMetered,
 	computeCoins,
 } from "./hooks.js";
 export type { CreditsConfig, CreditProvider } from "./types.js";

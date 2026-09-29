@@ -443,8 +443,33 @@ export async function runAgentTurn(
   // Unique to this execution (runId repeats across retries of one request).
   const leaseId = randomUUID();
   let modelSoFar: string | undefined;
+  let providerSoFar: ProviderId | undefined;
   const runId = request.runId ?? randomUUID();
   const agentId = request.agentId ?? "default";
+  // One usage record per run (its id is userId:runId), however the run
+  // ends: completed, stopped, or failed after some rounds.
+  const recordUsage = (
+    sessionId: string,
+    usageStats: UsageStats | undefined,
+    providerId: ProviderId | undefined,
+    recordModel: string | undefined,
+  ): Promise<unknown> | undefined =>
+    usageStats && providerId && recordModel
+      ? deps.usageStore
+          .record({
+            userId: request.userId,
+            sessionId,
+            agentId,
+            runId,
+            providerId,
+            model: recordModel,
+            usage: usageStats,
+            durationMs: Date.now() - startTime,
+            timestamp: new Date().toISOString(),
+            channelName: request.channelName,
+          })
+          .catch(() => {}) // Non-fatal
+      : undefined;
   const activeProvider =
     request.providerId && request.providerId !== deps.provider.id
       ? (deps.resolveProvider?.(request.providerId) ??
@@ -1729,6 +1754,7 @@ export async function runAgentTurn(
       usage = mergeUsage(usage, roundUsage);
       usageSoFar = usage;
       modelSoFar = responseModel || model;
+      providerSoFar = effectiveProviderId;
       previousResponseId = response.conversationState?.previousResponseId;
       containerId = response.conversationState?.containerId;
 
@@ -2316,6 +2342,8 @@ export async function runAgentTurn(
         durationMs: Date.now() - startTime,
         status: "aborted",
       };
+      // The rounds finished before the stop spent real tokens.
+      await recordUsage(session.sessionId, usage, effectiveProviderId, responseModel);
       // Still a terminal exit — listeners (notably credit settlement) must
       // run or the run's reservation stays open.
       await deps.hooks.emit("run_completed", {
@@ -2496,23 +2524,7 @@ export async function runAgentTurn(
     // ----------------------------------------------------------------
     // Step 8c: Record usage (fire-and-forget)
     // ----------------------------------------------------------------
-    let usageRecordPromise: Promise<unknown> | undefined;
-    if (usage) {
-      usageRecordPromise = deps.usageStore
-        .record({
-          userId: request.userId,
-          sessionId: session.sessionId,
-          agentId: session.agentId,
-          runId,
-          providerId: effectiveProviderId,
-          model: responseModel,
-          usage,
-          durationMs: Date.now() - startTime,
-          timestamp: now,
-          channelName: request.channelName,
-        })
-        .catch(() => {}); // Non-fatal — don't block the response
-    }
+    const usageRecordPromise = recordUsage(session.sessionId, usage, effectiveProviderId, responseModel);
 
     // ----------------------------------------------------------------
     // Step 9: Push final response to WebSocket clients
@@ -2771,6 +2783,7 @@ export async function runAgentTurn(
       }
     }
 
+    await recordUsage(leasedSessionId ?? request.sessionId ?? "", usageSoFar, providerSoFar, modelSoFar);
     await deps.hooks.emit("run_failed", {
       runId,
       userId: request.userId,

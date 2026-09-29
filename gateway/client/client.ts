@@ -100,6 +100,7 @@ import {
   registerCreditsHooks,
   releaseReservationOnThrow,
   reserveCredits,
+  runMetered,
 } from "../credits/index.js";
 import type {
   AgentClient,
@@ -476,6 +477,10 @@ export function createAgentClient(config: AgentClientConfig = {}): AgentClient {
     provider,
     resolveProvider,
     resolveDefaultModel,
+
+    runMetered(run, work) {
+      return runMetered({ hooks, usageStore, creditProvider }, run, work);
+    },
 
     async initialize(): Promise<void> {
       if (initialized) return;
