@@ -484,6 +484,9 @@ function computeJobNextRun(
   return Math.max(0, raw - DELIVERY_LEAD_TIME_MS);
 }
 
+/** Cosmos refuses a larger per-item ttl (2^31 - 1 seconds, about 68 years). */
+const MAX_COSMOS_TTL_SECONDS = 2_147_483_647;
+
 /**
  * A job that will never run again: past its expiry, a one-shot whose time has
  * passed and that is off, or a job that used up its maxRuns. A paused
@@ -2044,7 +2047,10 @@ export class CronStore {
       // fixed TTL would expire a job due further out than the TTL (a
       // reminder in two weeks) before it ever ran. The grace period cleans
       // up rows orphaned by a missed delete.
-      ttl: DUE_INDEX_TTL_SECONDS + Math.max(0, Math.ceil((nextRunAtMs - Date.now()) / 1000)),
+      ttl: Math.min(
+        MAX_COSMOS_TTL_SECONDS,
+        DUE_INDEX_TTL_SECONDS + Math.max(0, Math.ceil((nextRunAtMs - Date.now()) / 1000)),
+      ),
     };
   }
 
