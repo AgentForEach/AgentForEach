@@ -166,8 +166,11 @@ export interface MemoryStoreProvider {
   /** Total memories for a user. */
   count(userId: string): Promise<number>;
 
-  /** Memories for a user + source (for per-session rate limiting). */
-  countBySource(userId: string, source: string): Promise<number>;
+  /**
+   * Memories for a user + source (for per-conversation rate limiting),
+   * optionally only those created at or after `since` (ISO time).
+   */
+  countBySource(userId: string, source: string, since?: string): Promise<number>;
 
   // -- Maintenance -----------------------------------------------------------
 

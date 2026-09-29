@@ -8,7 +8,9 @@
  *   user message → shouldCapture() → detectCategory() → embed
  *   → dedup check → store to Cosmos DB
  *
- * Rate-limited per conversation via `config.captureMaxPerConversation`.
+ * Rate-limited per conversation via `config.captureMaxPerConversation`,
+ * counted over the last 24 hours: a Telegram or WhatsApp chat keeps one
+ * session id for good, so a lifetime count would stop capturing forever.
  * In serverless mode, when `source` is provided, counting is done from Cosmos
  * so limits are enforced across multiple function instances.
  */
@@ -21,6 +23,9 @@ import { shouldCapture, detectCategory } from "./security.js";
 // ============================================================================
 // Auto-Capture
 // ============================================================================
+
+/** Window the per-conversation capture limit is counted over. */
+const CAPTURE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 export class AutoCapture {
   private store: MemoryStoreProvider;
@@ -71,7 +76,7 @@ export class AutoCapture {
     const sessionKey = normalizedSource || "default";
     const fallbackKey = `${userId}:${sessionKey}`;
     const currentCount = normalizedSource
-      ? await this.store.countBySource(userId, sessionKey)
+      ? await this.store.countBySource(userId, sessionKey, new Date(Date.now() - CAPTURE_WINDOW_MS).toISOString())
       : (this.captureCounts.get(fallbackKey) ?? 0);
     if (currentCount >= this.config.captureMaxPerConversation) return null;
 

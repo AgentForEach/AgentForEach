@@ -212,7 +212,7 @@ export type MemoryConfig = {
   recallLimit: number;
   recallMinScore: number;
 
-  /** Auto-capture per-conversation limit. */
+  /** Auto-capture limit per conversation, counted over the last 24 hours. */
   captureMaxPerConversation: number;
 
   /** Duplicate detection similarity threshold. */

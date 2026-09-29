@@ -181,9 +181,9 @@ class InMemoryMemoryStore implements MemoryStoreProvider {
     return this.entries.filter((e) => e.userId === userId).length;
   }
 
-  async countBySource(userId: string, source: string): Promise<number> {
+  async countBySource(userId: string, source: string, since?: string): Promise<number> {
     return this.entries.filter(
-      (e) => e.userId === userId && e.source === source,
+      (e) => e.userId === userId && e.source === source && (!since || e.createdAt >= since),
     ).length;
   }
 
@@ -719,6 +719,13 @@ test("AutoCapture — full pipeline", async (t) => {
     assert.equal(r3, null, "should be rate-limited after 2 captures");
 
     assert.equal(store.getAll("user1").length, 2);
+
+    // A day later the same conversation (a channel chat keeps its id) captures again.
+    for (const entry of store.getAll("user1")) {
+      entry.createdAt = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+    }
+    const r4 = await capture.capture("I work remotely from Lisbon these days", "user1", "session1");
+    assert.ok(r4 !== null, "the limit counts the last 24 hours, not the chat's lifetime");
   });
 
   await t.test("respects autoCapture disabled", async () => {

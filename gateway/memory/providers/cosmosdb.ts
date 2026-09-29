@@ -451,13 +451,14 @@ export class CosmosMemoryStore implements MemoryStoreProvider {
    * Count total memories for a user + source.
    * Used by auto-capture to enforce per-session limits across serverless instances.
    */
-  async countBySource(userId: string, source: string): Promise<number> {
+  async countBySource(userId: string, source: string, since?: string): Promise<number> {
     await this.ensureInitialized();
     return this.container.count(
-      "c.userId = @userId AND c.source = @source",
+      "c.userId = @userId AND c.source = @source" + (since ? " AND c.createdAt >= @since" : ""),
       [
         { name: "@userId", value: userId },
         { name: "@source", value: source },
+        ...(since ? [{ name: "@since", value: since }] : []),
       ],
       { partitionKey: userId },
     );

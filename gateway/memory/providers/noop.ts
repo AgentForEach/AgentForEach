@@ -93,7 +93,7 @@ export class NoopMemoryStore implements MemoryStoreProvider {
     return 0;
   }
 
-  async countBySource(_userId: string, _source: string): Promise<number> {
+  async countBySource(_userId: string, _source: string, _since?: string): Promise<number> {
     return 0;
   }
 
