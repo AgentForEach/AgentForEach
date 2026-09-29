@@ -1,7 +1,7 @@
 {
   "name": "agentforeach",
   "version": "0.1.0",
-  "description": "The open-source brain for personal AI agents: one agent for each of your users, on a hyperscale serverless architecture.",
+  "description": "The open-source brain for personal AI agents: one agent for each of your users, serverless, so an idle agent costs only storage.",
   "keywords": [
     "ai-agents",
     "personal-assistant",

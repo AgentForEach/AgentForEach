@@ -4,6 +4,11 @@ What a deployment of this repo does under load, measured on a fresh stack with `
 
 > **First run:** 29 September 2026, Central India. Summaries of every run are in [`docs/benchmarks/`](benchmarks/).
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/scale-dark.svg">
+  <img alt="Load tests at 50, 200, 500 and 1,000 users. Throughput rose from 220 to 866 turns per minute (491 at 500 users, a run before the fixes). Time to accept a message stayed flat: p50 122, 110, 110 and 115 ms; p95 318, 206, 225 and 325 ms. Turns completed: 250 of 250, 1,000 of 1,000, 2,497 of 2,500 and 3,000 of 3,000." src="assets/scale-light.svg">
+</picture>
+
 ## Method
 
 Each simulated user has its own identity (an HS256 JWT), its own Web PubSub socket (negotiated like the app does) and its own chat session. A user sends a turn, waits for the reply, thinks for a few seconds, and sends the next. Users start evenly over the ramp period.
