@@ -283,6 +283,9 @@ export interface HitlRunState {
   /** Unique ID for this HITL interaction. */
   requestId: string;
 
+  /** How long the request waits for the user; the stored state outlives it. */
+  timeoutSeconds?: number;
+
   /** The Durable Functions orchestration instance ID. */
   orchestrationId: string;
 

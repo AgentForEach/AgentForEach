@@ -147,6 +147,7 @@ import {
   resolveSchema,
   resolveOptions,
   isHitlEnabled,
+  loadHitlConfig,
   HITL_ORCHESTRATION_NAME,
   HITL_INPUT_EVENT,
   isRequestUserInputTool,
@@ -1975,7 +1976,7 @@ export async function runAgentTurn(
               options: Array.isArray(args.options) ? (args.options as Array<{ label: string; value: string; description?: string }>) : undefined,
               schema: (args.schema as Record<string, unknown>) ?? undefined,
               uiHints: (args.uiHints as Record<string, unknown>) ?? undefined,
-              timeoutSeconds: 300,
+              timeoutSeconds: loadHitlConfig().defaultTimeoutSeconds,
             };
 
             // Buffer the form push — flushed AFTER the final assistant
@@ -2024,6 +2025,7 @@ export async function runAgentTurn(
                 usage: usage as Record<string, unknown> | undefined,
                 createdAt: Date.now(),
                 status: "pending",
+                timeoutSeconds: inputPayload.timeoutSeconds,
               };
               await deps.hitlStore.create(runState);
             }
@@ -2051,6 +2053,7 @@ export async function runAgentTurn(
               // The Azure Function exits; the orchestrator waits (zero cost)
               // for the user to respond, then resumes in a new invocation.
               const hitlRequestId = randomUUID();
+              const hitlTimeoutSeconds = hitlPolicy.timeoutSeconds ?? loadHitlConfig().defaultTimeoutSeconds;
               const inputRequest: InputRequest = {
                 requestId: hitlRequestId,
                 runId,
@@ -2065,7 +2068,7 @@ export async function runAgentTurn(
                 options: resolveOptions(hitlPolicy, args),
                 schema: resolveSchema(hitlPolicy, toolSchema),
                 uiHints: hitlPolicy.uiHints,
-                timeoutSeconds: hitlPolicy.timeoutSeconds ?? 300,
+                timeoutSeconds: hitlTimeoutSeconds,
               };
 
               // Persist state so it survives across function invocations
@@ -2092,6 +2095,7 @@ export async function runAgentTurn(
                 usage: usage as Record<string, unknown> | undefined,
                 createdAt: Date.now(),
                 status: "pending",
+                timeoutSeconds: hitlTimeoutSeconds,
               };
 
               await deps.hitlStore.create(runState);
@@ -2105,7 +2109,7 @@ export async function runAgentTurn(
                   inputRequest,
                   requestId: hitlRequestId,
                   userId: request.userId,
-                  timeoutSeconds: hitlPolicy.timeoutSeconds ?? 300,
+                  timeoutSeconds: hitlTimeoutSeconds,
                 },
               });
 

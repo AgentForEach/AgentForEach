@@ -19,6 +19,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resetConfigCache } from "../utils/index.js";
 import { authorizeHitlResponse } from "./authorize.js";
+import { HitlStore } from "./store.js";
+import { InMemoryCosmosDatabase } from "../database/testing/in-memory-cosmos.js";
+import type { HitlRunState } from "./types.js";
 
 import {
   loadHitlConfig,
@@ -883,4 +886,28 @@ test("authorizeHitlResponse refuses another user's request", async () => {
 
 test("authorizeHitlResponse refuses a request that was already answered", async () => {
   assert.equal(await authorizeHitlResponse(hitlStoreStub, "req-2", "alice"), false);
+});
+
+test("a pending request outlives its own timeout, even past an hour", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.UTC(2026, 0, 5) });
+  const store = new HitlStore(new InMemoryCosmosDatabase());
+  await store.initialize();
+  const state = {
+    requestId: "req-1",
+    orchestrationId: "hitl-req-1",
+    originalRequest: { userId: "u1", message: "book it" },
+    runId: "run-1",
+    sessionId: "s1",
+    toolRound: 1,
+    pendingToolCall: { callId: "c1", name: "book_flight", arguments: {} },
+    completedToolResults: [],
+    independentToolCalls: [],
+    createdAt: Date.now(),
+    status: "pending",
+    timeoutSeconds: 2 * 3600,
+  } as unknown as HitlRunState;
+  await store.create(state);
+
+  t.mock.timers.setTime(Date.now() + 2 * 3600 * 1000); // the user answers at the deadline
+  assert.ok(await store.get("req-1", "u1"), "still there to resume");
 });

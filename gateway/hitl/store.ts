@@ -50,8 +50,13 @@ interface HitlDocument {
 /** Container name. */
 const HITL_CONTAINER = "hitl-requests";
 
-/** TTL for pending requests: 1 hour — if not resolved, something went wrong. */
+/**
+ * Minimum TTL for pending requests. A request waits for the user for its own
+ * timeoutSeconds, so its state is kept that long plus a grace period, or an
+ * answer (or the timeout) after this TTL would find nothing to resume.
+ */
 const PENDING_TTL_SECONDS = 3600;
+const PENDING_GRACE_SECONDS = 600;
 
 /** TTL for resolved requests: 24 hours — kept for debugging / audit. */
 const RESOLVED_TTL_SECONDS = 86400;
@@ -106,7 +111,7 @@ export class HitlStore {
       state,
       createdAt: now,
       updatedAt: now,
-      ttl: PENDING_TTL_SECONDS,
+      ttl: Math.max(PENDING_TTL_SECONDS, (state.timeoutSeconds ?? 0) + PENDING_GRACE_SECONDS),
     };
 
     await this.container.create(doc);
