@@ -23,12 +23,13 @@ Set these in your `infra` stack:
 
 ```bash
 pulumi config set agentforeach:easyAuthEnabled true
-pulumi config set agentforeach:easyAuthRequireAuthentication true
 pulumi config set agentforeach:easyAuthGoogleClientId "<google-client-id>"
 pulumi config set --secret agentforeach:easyAuthGoogleClientSecret "<google-client-secret>"
 pulumi config set --path 'agentforeach:easyAuthAllowedAudiences[0]' "https://<your-function-app>.azurewebsites.net"
 pulumi config set --path 'agentforeach:corsAllowedOrigins[0]' "https://<your-web-app-origin>"
 ```
+
+Leave `agentforeach:easyAuthRequireAuthentication` at `false` (the default). The gateway checks sign-in on every request itself. With it `true`, App Service answers 401 before the gateway runs for anyone without an App Service session: JWT and API-key clients are refused too. Set it only when every client signs in through App Service. Channel webhooks (`/api/channels/*`), Web PubSub events (`/ws/*`) and `/api/health` are excluded either way.
 
 `agentforeach:authAllowInsecureUserIdHeader` exists and defaults to `false`; keep it that way. It has no effect on Azure in any case.
 

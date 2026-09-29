@@ -553,7 +553,10 @@ export function createFunctionAppAuthSettings(args: {
       unauthenticatedClientAction: effectiveRequireAuth
         ? "Return401"
         : "AllowAnonymous",
-      excludedPaths: ["/ws/*"],
+      // Callers that can't hold an App Service session: Web PubSub events,
+      // channel webhooks (Telegram, WhatsApp; they verify their own
+      // signatures) and the health probe.
+      excludedPaths: ["/ws/*", "/api/channels/*", "/api/health"],
     },
     login: {
       tokenStore: {
