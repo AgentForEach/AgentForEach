@@ -137,8 +137,9 @@ export async function executeJob(
   if (!limit.allowed) {
     return {
       status: "skipped",
-      summary: `Scheduled run limit reached (per ${limit.window}); this run was skipped.`,
+      summary: `Scheduled run limit reached (per ${limit.window}); this run was deferred.`,
       durationMs: Date.now() - start,
+      retryAfterMs: limit.retryAfterSeconds * 1000,
     };
   }
 

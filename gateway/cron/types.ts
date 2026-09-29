@@ -465,6 +465,11 @@ export type JobResult = {
    * isn't the owner's): disable it instead of retrying.
    */
   disableJob?: boolean;
+  /**
+   * The job didn't run (e.g. the scheduled-run limit) and should run again
+   * this many ms from now. Not a failure: nothing counts toward retries.
+   */
+  retryAfterMs?: number;
 };
 
 /**

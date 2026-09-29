@@ -178,6 +178,28 @@ test("a job due weeks or months away is still found when its time comes", async 
   }
 });
 
+test("a run deferred by the scheduled-run limit keeps a one-shot job and retries it", async (t) => {
+  const clock = useClock(t);
+  const { store } = await setup();
+  const job = await store.createJob(atJob("alice", T0 + 30 * MIN));
+  clock.set(job.state.nextRunAtMs!);
+  const claimed = await claim(store, job, Date.now());
+
+  const outcome = await store.applyResult(
+    claimed,
+    { status: "skipped", durationMs: 1, retryAfterMs: MIN },
+    { runningToken: claimed.state.runningToken },
+  );
+  assert.equal(outcome.action, "updated");
+  const after = (await store.getJob(job.id, job.userId))!;
+  assert.equal(after.enabled, true);
+  assert.equal(after.state.nextRunAtMs, Date.now() + MIN);
+  assert.equal(after.state.consecutiveErrors ?? 0, 0);
+
+  clock.set(Date.now() + MIN);
+  await claim(store, after, Date.now());
+});
+
 test("createJob rejects an interval below the minimum and writes nothing", async (t) => {
   useClock(t);
   const { store, jobs, dueRows } = await setup();

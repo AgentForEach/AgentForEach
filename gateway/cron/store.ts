@@ -1572,6 +1572,22 @@ export class CronStore {
     const isOneShot = effectiveJob.schedule.kind === "at";
     const isSuccess = result.status === "ok";
 
+    // The job didn't run: try again later, without counting a failure. A
+    // one-shot reminder would otherwise be disabled and never delivered.
+    if (typeof result.retryAfterMs === "number") {
+      await this.updateJob(effectiveJob.id, effectiveJob.userId, {
+        state: {
+          lastStatus: result.status,
+          lastError: result.summary,
+          nextRunAtMs: nowMs + result.retryAfterMs,
+          runningAtMs: undefined,
+          runningToken: undefined,
+          runningStartedAtMs: undefined,
+        },
+      });
+      return { action: "updated" };
+    }
+
     /** Turn the job off, recording this run and clearing the running claim. */
     const disable = async (state: Partial<CronJobState>) => {
       await this.updateJob(effectiveJob.id, effectiveJob.userId, {
