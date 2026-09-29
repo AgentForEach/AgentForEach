@@ -43,13 +43,25 @@ import type {
   SandboxBackend,
 } from "./types.js";
 import { createDefaultTokenProvider, type TokenProvider } from "../../utils/azure-token.js";
-import { DEFAULT_MAX_OUTPUT_CHARS, safeRelativePath } from "./shared.js";
+import {
+  DEFAULT_MAX_OUTPUT_CHARS,
+  exportTooLargeError,
+  safeRelativePath,
+  sandboxReadLimits,
+  truncate,
+} from "./shared.js";
+import { readBodyText } from "../../utils/safe-fetch.js";
 
 // ============================================================================
 // Constants
 // ============================================================================
 
 const API_VERSION = "2024-02-02-preview";
+
+/** Largest response read into memory, unless a call sets its own limit. */
+const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+
+class ResponseTooLargeError extends Error {}
 
 // ============================================================================
 // DynamicSessionsClient
@@ -268,11 +280,13 @@ export class DynamicSessionsClient implements SandboxBackend {
       },
     );
 
+    const { text, truncated } = truncate(response.content, sandboxReadLimits(this.config).maxChars);
     return {
-      content: response.content,
+      content: text,
       filename: response.filename,
       sizeBytes: response.sizeBytes,
       sessionId: sessionIdentifier,
+      ...(truncated ? { truncated: true } : {}),
     };
   }
 
@@ -282,7 +296,8 @@ export class DynamicSessionsClient implements SandboxBackend {
     sessionIdentifier: string,
   ): Promise<SandboxFileReadResult> {
     // Read via Python code execution
-    const pythonCode = buildFileReadWrapper(args.filename);
+    const { maxChars } = sandboxReadLimits(this.config);
+    const pythonCode = buildFileReadWrapper(args.filename, maxChars + 1);
 
     const body: AcaExecuteRequest = {
       properties: {
@@ -303,12 +318,13 @@ export class DynamicSessionsClient implements SandboxBackend {
       },
     );
 
-    const content = response.properties.stdout || "";
+    const { text, truncated } = truncate(response.properties.stdout || "", maxChars);
     return {
-      content,
+      content: text,
       filename: args.filename,
-      sizeBytes: Buffer.byteLength(content, "utf-8"),
+      sizeBytes: Buffer.byteLength(text, "utf-8"),
       sessionId: sessionIdentifier,
+      ...(truncated ? { truncated: true } : {}),
     };
   }
 
@@ -372,10 +388,17 @@ export class DynamicSessionsClient implements SandboxBackend {
     args: SandboxFileReadArgs,
     sessionIdentifier: string,
   ): Promise<SandboxFileReadBinaryResult> {
-    if (this.config.containerType === "CustomContainer") {
-      return this.fileReadBinaryCustomContainer(args, sessionIdentifier);
+    try {
+      if (this.config.containerType === "CustomContainer") {
+        return await this.fileReadBinaryCustomContainer(args, sessionIdentifier);
+      }
+      return await this.fileReadBinaryPythonLTS(args, sessionIdentifier);
+    } catch (err) {
+      if (err instanceof ResponseTooLargeError) {
+        throw exportTooLargeError(sandboxReadLimits(this.config).maxExportBytes);
+      }
+      throw err;
     }
-    return this.fileReadBinaryPythonLTS(args, sessionIdentifier);
   }
 
   /** CustomContainer binary read — use exec to base64-encode file content */
@@ -399,6 +422,7 @@ export class DynamicSessionsClient implements SandboxBackend {
         }),
         headers: { "Content-Type": "application/json" },
       },
+      this.exportResponseLimit(),
     );
 
     if (response.exitCode !== 0) {
@@ -449,6 +473,7 @@ print(base64.b64encode(data).decode('ascii'), end='')
         body: JSON.stringify(body),
         headers: { "Content-Type": "application/json" },
       },
+      this.exportResponseLimit(),
     );
 
     const b64 = response.properties.stdout || "";
@@ -587,6 +612,7 @@ print(base64.b64encode(data).decode('ascii'), end='')
     path: string,
     identifier: string,
     init: RequestInit,
+    maxResponseBytes = MAX_RESPONSE_BYTES,
   ): Promise<T> {
     const token = await this.tokenProvider.getToken();
 
@@ -612,7 +638,16 @@ print(base64.b64encode(data).decode('ascii'), end='')
       );
     }
 
-    return (await resp.json()) as T;
+    const { text, truncated } = await readBodyText(resp, maxResponseBytes);
+    if (truncated) {
+      throw new ResponseTooLargeError(`ACA sandbox response is larger than ${maxResponseBytes} bytes`);
+    }
+    return JSON.parse(text) as T;
+  }
+
+  /** Read limit for a response carrying a base64 file of up to maxExportBytes. */
+  private exportResponseLimit(): number {
+    return Math.ceil(sandboxReadLimits(this.config).maxExportBytes / 3) * 4 + 1024 * 1024;
   }
 }
 
@@ -704,7 +739,7 @@ function sanitizeFilename(filename: string): string {
 }
 
 /** Build Python code that reads content from /mnt/data/<filename>. */
-function buildFileReadWrapper(filename: string): string {
+function buildFileReadWrapper(filename: string, maxChars: number): string {
   const safeFilename = sanitizeFilename(filename);
 
   return `
@@ -713,7 +748,7 @@ import os
 filepath = os.path.join('/mnt/data', '${safeFilename}')
 
 with open(filepath, 'r') as f:
-    content = f.read()
+    content = f.read(${maxChars})
 
 print(content, end='')
 `.trim();

@@ -515,6 +515,26 @@ test("file write/read round-trips under /mnt/data and blocks traversal", async (
   assert.equal(Buffer.from(bin.contentBase64, "base64").toString("utf-8"), "héllo");
 });
 
+test("large files are read only up to the output and export limits", async () => {
+  const { client } = setup({ maxOutputChars: 10, maxExportBytes: 64 });
+  const identifier = client.resolveIdentifier("kate");
+  await client.fileWrite({ filename: "big.txt", content: "x".repeat(1000) }, identifier);
+
+  const read = await client.fileRead({ filename: "big.txt" }, identifier);
+  assert.equal(read.content, "x".repeat(10));
+  assert.equal(read.truncated, true);
+  assert.ok(read.sizeBytes <= 40, "reads at most 4 bytes a character");
+  await assert.rejects(
+    () => client.fileReadBinary({ filename: "big.txt" }, identifier),
+    /too large for export/,
+  );
+
+  await client.fileWrite({ filename: "small.txt", content: "tiny" }, identifier);
+  const small = await client.fileRead({ filename: "small.txt" }, identifier);
+  assert.equal(small.content, "tiny");
+  assert.equal(small.truncated, undefined);
+});
+
 test("a missing file is an error, not a lost sandbox", async () => {
   const { fake, client } = setup();
   fake.add(owner("liam"));

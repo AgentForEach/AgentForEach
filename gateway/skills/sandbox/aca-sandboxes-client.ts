@@ -49,7 +49,16 @@ import type {
   SandboxFileInfo,
 } from "./types.js";
 import { createDefaultTokenProvider, type TokenProvider } from "../../utils/azure-token.js";
-import { DATA_DIR, dataPath, DEFAULT_MAX_OUTPUT_CHARS, shellQuote, truncate } from "./shared.js";
+import {
+  DATA_DIR,
+  dataPath,
+  DEFAULT_MAX_OUTPUT_CHARS,
+  exportTooLargeError,
+  sandboxReadLimits,
+  shellQuote,
+  truncate,
+} from "./shared.js";
+import { readBodyBytes } from "../../utils/safe-fetch.js";
 
 // ============================================================================
 // Constants
@@ -281,12 +290,15 @@ export class AcaSandboxesClient implements SandboxBackend {
     args: SandboxFileReadArgs,
     sessionIdentifier: string,
   ): Promise<SandboxFileReadResult> {
-    const bytes = await this.readBytes(args.filename, sessionIdentifier);
+    const { maxChars, maxTextBytes } = sandboxReadLimits(this.config);
+    const read = await this.readBytes(args.filename, sessionIdentifier, maxTextBytes);
+    const { text, truncated } = truncate(read.bytes.toString("utf-8"), maxChars);
     return {
-      content: bytes.toString("utf-8"),
+      content: text,
       filename: args.filename,
-      sizeBytes: bytes.byteLength,
+      sizeBytes: read.bytes.byteLength,
       sessionId: sessionIdentifier,
+      ...(read.truncated || truncated ? { truncated: true } : {}),
     };
   }
 
@@ -294,7 +306,9 @@ export class AcaSandboxesClient implements SandboxBackend {
     args: SandboxFileReadArgs,
     sessionIdentifier: string,
   ): Promise<SandboxFileReadBinaryResult> {
-    const bytes = await this.readBytes(args.filename, sessionIdentifier);
+    const { maxExportBytes } = sandboxReadLimits(this.config);
+    const { bytes, truncated } = await this.readBytes(args.filename, sessionIdentifier, maxExportBytes);
+    if (truncated) throw exportTooLargeError(maxExportBytes);
     return {
       contentBase64: bytes.toString("base64"),
       filename: args.filename,
@@ -637,11 +651,16 @@ export class AcaSandboxesClient implements SandboxBackend {
     }
   }
 
-  private async readBytes(filename: string, identifier: string): Promise<Buffer> {
+  /** Download at most `maxBytes` of a file; the rest is never read. */
+  private async readBytes(
+    filename: string,
+    identifier: string,
+    maxBytes: number,
+  ): Promise<{ bytes: Buffer; truncated: boolean }> {
     const resp = await this.withSandbox(identifier, (id) =>
       this.send("GET", `/sandboxes/${id}/files`, { query: { path: dataPath(filename) } }),
     );
-    return Buffer.from(await resp.arrayBuffer());
+    return readBodyBytes(resp, maxBytes);
   }
 
   // --------------------------------------------------------------------------

@@ -261,12 +261,14 @@ export interface SandboxFileReadArgs {
 
 /** Result of a file read operation. */
 export interface SandboxFileReadResult {
-  /** File content (text). */
+  /** File content (text), at most the sandbox's maxOutputChars. */
   content: string;
   /** Filename. */
   filename: string;
-  /** File size in bytes. */
+  /** Bytes read (the whole file unless `truncated`). */
   sizeBytes: number;
+  /** True when the file was longer than the content returned. */
+  truncated?: boolean;
   /** The session identifier. */
   sessionId: string;
 }

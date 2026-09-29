@@ -29,6 +29,7 @@ import {
 import type { TokenCredential } from "@azure/core-auth";
 import { createHash, randomUUID } from "node:crypto";
 import { loadSkillsConfig } from "../config.js";
+import { DEFAULT_MAX_EXPORT_BYTES, exportTooLargeError } from "./shared.js";
 import { createAzureTokenCredential } from "../../utils/azure-token.js";
 
 /** Storage account reached with a managed identity instead of a key. */
@@ -59,8 +60,6 @@ export function resolveRuntimeStorage(connectionString?: string): string | Stora
 /** Default SAS URL expiry in hours. */
 const DEFAULT_EXPIRY_HOURS = 24;
 
-/** Maximum file size for export (50 MB) — default. */
-const DEFAULT_MAX_EXPORT_BYTES = 50 * 1024 * 1024;
 
 /** Container name for user exports — default. */
 const DEFAULT_EXPORTS_CONTAINER_NAME = "user-exports";
@@ -160,12 +159,7 @@ export class ExportBlobStore {
     content: Buffer,
     expiryHours = this.defaultExpiryHours,
   ): Promise<ExportUploadResult> {
-    if (content.length > this.maxExportBytes) {
-      throw new Error(
-        `File too large for export: ${content.length} bytes ` +
-          `(max ${this.maxExportBytes} bytes / ${this.maxExportBytes / 1024 / 1024} MB)`,
-      );
-    }
+    if (content.length > this.maxExportBytes) throw exportTooLargeError(this.maxExportBytes);
 
     // Ensure container exists (idempotent — only creates on first call)
     await this.containerClient.createIfNotExists();

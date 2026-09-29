@@ -267,34 +267,53 @@ function checkedUrl(input: string | URL, isBlocked: (ip: string) => string | nul
   return result.url;
 }
 
+/** A fetch Response from undici or Node's global fetch; only the body is used. */
+export interface ResponseWithBody {
+  body: {
+    getReader(): {
+      read(): Promise<{ done: boolean; value?: Uint8Array }>;
+      cancel(): Promise<void>;
+      releaseLock(): void;
+    };
+  } | null;
+}
+
 /**
- * Read at most `maxBytes` of a response body as text, then cancel the rest.
+ * Read at most `maxBytes` of a response body, then cancel the rest.
  * Reading with arrayBuffer() first would buffer a huge (or decompressed
  * gzip-bomb) body in memory before any truncation.
  */
-export async function readBodyText(
-  response: Response,
+export async function readBodyBytes(
+  response: ResponseWithBody,
   maxBytes: number,
-): Promise<{ text: string; truncated: boolean }> {
+): Promise<{ bytes: Buffer; truncated: boolean }> {
   const reader = response.body?.getReader();
-  if (!reader) return { text: "", truncated: false };
-  const decoder = new TextDecoder("utf-8", { fatal: false });
-  let text = "";
+  if (!reader) return { bytes: Buffer.alloc(0), truncated: false };
+  const chunks: Uint8Array[] = [];
   let total = 0;
   try {
     for (;;) {
       const { done, value } = await reader.read();
-      if (done) return { text: text + decoder.decode(), truncated: false };
+      if (done || !value) return { bytes: Buffer.concat(chunks, total), truncated: false };
       const room = maxBytes - total;
       if (value.byteLength > room) {
-        text += decoder.decode(value.subarray(0, room));
+        chunks.push(value.subarray(0, room));
         await reader.cancel().catch(() => {});
-        return { text, truncated: true };
+        return { bytes: Buffer.concat(chunks, maxBytes), truncated: true };
       }
+      chunks.push(value);
       total += value.byteLength;
-      text += decoder.decode(value, { stream: true });
     }
   } finally {
     reader.releaseLock();
   }
+}
+
+/** Read at most `maxBytes` of a response body as UTF-8 text (see readBodyBytes). */
+export async function readBodyText(
+  response: ResponseWithBody,
+  maxBytes: number,
+): Promise<{ text: string; truncated: boolean }> {
+  const { bytes, truncated } = await readBodyBytes(response, maxBytes);
+  return { text: new TextDecoder("utf-8", { fatal: false }).decode(bytes), truncated };
 }
