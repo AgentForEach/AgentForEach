@@ -377,6 +377,17 @@ export class SkillToolHandler {
     });
   }
 
+  /** Names of the user's credentials that `inputs` reference as $NAME. */
+  private credentialsReferenced(inputs: string[]): string[] {
+    const names = new Set<string>();
+    for (const input of inputs) {
+      for (const [, varName] of input.matchAll(/\$([A-Z_][A-Z0-9_]*)/g)) {
+        if (this.userCredentials[varName!]) names.add(varName!);
+      }
+    }
+    return [...names];
+  }
+
   /** Bound credentials referenced in `inputs` that may not go to `host`. */
   private credentialsBlockedFor(host: string, inputs: string[]): string[] {
     const blocked = new Set<string>();
@@ -413,16 +424,25 @@ export class SkillToolHandler {
     // Resolve the destination host with only unbound credentials, then refuse
     // to send any host-bound credential anywhere else.
     let targetHost: string;
+    let targetIsHttps: boolean;
     try {
-      targetHost = new URL(this.substituteCredentials(rawUrl)).hostname;
+      const target = new URL(this.substituteCredentials(rawUrl));
+      targetHost = target.hostname;
+      targetIsHttps = target.protocol === "https:";
     } catch {
       return JSON.stringify({ error: `Invalid URL: "${rawUrl}"` });
     }
-    const blocked = this.credentialsBlockedFor(targetHost, [
-      rawUrl,
-      ...Object.values(rawHeaders).map(String),
-      rawBody ?? "",
-    ]);
+    const inputs = [rawUrl, ...Object.values(rawHeaders).map(String), rawBody ?? ""];
+    // Credentials never travel in cleartext, whatever host they're bound to.
+    if (!targetIsHttps) {
+      const referenced = this.credentialsReferenced(inputs);
+      if (referenced.length) {
+        return JSON.stringify({
+          error: `Credentials are only sent over https: ${referenced.map((k) => `$${k}`).join(", ")}`,
+        });
+      }
+    }
+    const blocked = this.credentialsBlockedFor(targetHost, inputs);
     if (blocked.length) {
       return JSON.stringify({
         error: `Credential not allowed for host ${targetHost}: ${blocked.join("; ")}`,

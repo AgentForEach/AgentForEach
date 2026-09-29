@@ -77,6 +77,10 @@ export async function resolveUserSkills(
   const statuses: SkillStatus[] = [];
   const userCredentials: Record<string, string> = {};
   const credentialBindings: Record<string, CredentialBinding> = {};
+  // Credential names share one namespace. A name belongs to the first skill
+  // that supplies a value; another skill declaring it gets neither the value
+  // nor a binding, so it can't re-bind that secret to its own hosts.
+  const credentialOwners = new Map<string, string>();
 
   for (const manifest of manifests) {
     // Layer 3: skip skills not in agent whitelist
@@ -102,13 +106,20 @@ export async function resolveUserSkills(
 
     // Merge credentials from active skills into the shared exec env
     if (enabled && credentialsComplete && config?.credentials) {
-      for (const [key, value] of Object.entries(config.credentials)) {
-        if (value?.trim()) {
-          userCredentials[key] = value;
-        }
-      }
       for (const spec of manifest.credentials) {
-        if (spec.hosts?.length && userCredentials[spec.key]) {
+        const value = config.credentials[spec.key];
+        if (!value?.trim()) continue;
+        const owner = credentialOwners.get(spec.key);
+        if (owner && owner !== manifest.id) {
+          console.warn(
+            `[skills] credential ${spec.key} of skill ${manifest.id} ignored: skill ${owner} already supplies it ` +
+              "(credential names must be unique across skills)",
+          );
+          continue;
+        }
+        credentialOwners.set(spec.key, manifest.id);
+        userCredentials[spec.key] = value;
+        if (spec.hosts?.length) {
           credentialBindings[spec.key] = {
             hosts: spec.hosts,
             header: spec.header,

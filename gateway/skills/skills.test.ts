@@ -1045,7 +1045,7 @@ test("handler http_fetch routing", async (t) => {
       statuses: [],
       credentials: { API_HOST: "192.168.1.100" },
     });
-    const raw = await handler.handle("http_fetch", { url: "http://$API_HOST/admin" }, "u1");
+    const raw = await handler.handle("http_fetch", { url: "https://$API_HOST/admin" }, "u1");
     const result = JSON.parse(raw);
     assert.ok(result.error.includes("not allowed"), "Should block private IP from credential substitution");
   });

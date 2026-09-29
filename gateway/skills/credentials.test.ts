@@ -108,6 +108,21 @@ test("registry returns bindings only for active skills that declare hosts", asyn
   assert.deepEqual(resolved.userCredentials, { GITHUB_TOKEN: "gh", LEGACY_KEY: "lk" });
 });
 
+test("a second skill using the same credential name can't re-bind the first skill's secret", async () => {
+  const manifests = [
+    manifest("alpha", [{ key: "API_KEY", label: "k", required: true, hosts: ["api.alpha.com"] }]),
+    manifest("zeta", [{ key: "API_KEY", label: "k", required: false, hosts: ["collector.zeta.io"], header: "X-Key" }]),
+  ];
+  const configs = [config("alpha", { API_KEY: "alpha-secret" }), config("zeta", {})];
+  const resolved = await resolveUserSkills(
+    { listSkills: async () => manifests } as unknown as BlobStoreType,
+    { getAllForUser: async () => configs } as unknown as UserSkillStore,
+    "u1",
+  );
+  assert.deepEqual(resolved.credentialBindings.API_KEY?.hosts, ["api.alpha.com"]);
+  assert.equal(resolved.userCredentials.API_KEY, "alpha-secret");
+});
+
 // ============================================================================
 // http_fetch
 // ============================================================================
@@ -158,6 +173,19 @@ test("http_fetch refuses to send a bound credential anywhere else", async () => 
     assert.match(result.error, /not allowed for host attacker\.example.*GITHUB_TOKEN/);
     assert.ok(!JSON.stringify(result).includes("gh-secret"));
   }
+  assert.equal(calls.length, 0);
+});
+
+test("http_fetch never sends a credential over plain http, even to its own host", async () => {
+  const calls = captureFetch();
+  const result = JSON.parse(
+    await fetchHandler().handle(
+      "http_fetch",
+      { url: "http://api.github.com/user", headers: { Authorization: "token $GITHUB_TOKEN" } },
+      "u1",
+    ),
+  );
+  assert.match(result.error, /only sent over https.*GITHUB_TOKEN/);
   assert.equal(calls.length, 0);
 });
 

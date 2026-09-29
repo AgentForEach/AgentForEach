@@ -47,7 +47,7 @@ Call `https://api.github.com/...` with `Authorization: Bearer $GITHUB_TOKEN`.
 | `key` | Variable name the skill body refers to as `$KEY` |
 | `label`, `helpText` | Shown to the user when the skill needs setup |
 | `required` | Defaults to `true` |
-| `hosts` | Hosts the credential may be sent to (exact, or `*.example.com` for subdomains) |
+| `hosts` | Hosts the credential may be sent to (exact, or `*.example.com` for subdomains). Credential names are one namespace across skills: the first skill that supplies a value owns the name |
 | `header`, `format` | With `hosts`: the header the sandbox egress proxy sets, and its value template (`{value}` is the secret; default `{value}`) |
 
 Skill bodies may use `exec: ["curl", ...]` shorthand; the prompt tells the model to translate curl into `http_fetch` and other commands into `sandbox_exec`.
@@ -72,7 +72,7 @@ Registered when `skills.enabled` is true:
 | `skill_list` | Every skill with its status and the labels of its required credentials (never values) |
 | `skill_setup` | `enable`, `disable` or `set_credentials` for one skill. Only keys the manifest declares are accepted. Calls for the same skill are limited to one per 30 s (`skills.setupMinIntervalMs`). Each change writes an audit entry with the keys set, never the values |
 | `skill_read` | Returns a skill's `SKILL.md`; refuses skills that are not enabled or lack required credentials |
-| `http_fetch` | In-process HTTP request (GET, POST, PUT, PATCH, DELETE, HEAD; 30 s default, 120 s max; response body capped at 1 MB) through the SSRF-safe client, which checks every address and redirect |
+| `http_fetch` | In-process HTTP request (GET, POST, PUT, PATCH, DELETE, HEAD; 30 s default, 120 s max; response body capped at 1 MB) through the SSRF-safe client, which checks every address and redirect. A request that uses a credential must be https |
 
 With a sandbox configured, the sandbox tools are added: `sandbox_exec`, `sandbox_file_write`, `sandbox_file_read`, `sandbox_file_list`, `sandbox_file_export` (uploads a file to the `user-exports` container and returns a link that expires after 24 h), and `sandbox_skill_load` (unpacks `<skillId>/skill.zip` into `/mnt/data/<skillId>/`). See [Sandbox.md](Sandbox.md).
 
