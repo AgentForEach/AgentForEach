@@ -52,7 +52,7 @@ It also runs in **single-user mode** for one person's own agent ([setup](docs/Id
 
 You configure the agent and teach it skills; you don't write the platform. Three pieces:
 
-**Who the agent is.** Every new user's agent starts from these documents, and each user's copy then evolves with them (excerpt):
+**Who the agent is.** Every user's agent is built from these documents (excerpt). By default they stay as you write them, and a change reaches every user; with `"prompt": { "type": "dynamic" }` each user's agent can update its own copy. What it learns about each user lives in their own profile and memories either way:
 
 ```jsonc
 // gateway/config/agentforeach.json
@@ -235,7 +235,7 @@ pulumi config set --secret agentforeach:openaiApiKey sk-...
 pulumi up && cd ..
 ```
 
-**2. Choose how your users sign in.** Set `auth.providers` in [`gateway/config/agentforeach.json`](gateway/config/agentforeach.json): App Service authentication, JWT, API keys or a trusted proxy. A fresh stack trusts no one, so every API call returns 401 until you do. The web chat sample sends a bearer token, so use JWT to try it; API keys suit server-to-server calls.
+**2. Choose how your users sign in.** Set `auth.providers` in [`gateway/config/agentforeach.json`](gateway/config/agentforeach.json): App Service authentication, JWT, API keys or a trusted proxy. A fresh stack trusts no one, so every API call returns 401 until you do. The web chat sample sends a bearer token, so use JWT to try it ([a test token in two steps](docs/getting-started.md#try-it-with-a-test-token)); API keys suit server-to-server calls.
 
 **3. Deploy the gateway.** The config file ships with the code, so run this again whenever you change it:
 

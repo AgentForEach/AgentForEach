@@ -32,6 +32,25 @@ Configure `auth.providers` in `agentforeach.json`: App Service authentication ([
 
 The web chat sample sends `Authorization: Bearer <token>`, which the JWT provider reads. The API-key provider reads `x-api-key`; use it for server-to-server calls.
 
+### Try it with a test token
+
+To try the web chat before wiring up a real identity provider, sign tokens yourself. In `agentforeach.json`, enable the `jwt` provider with a shared secret:
+
+```json
+{ "type": "jwt", "enabled": true, "algorithm": "HS256", "secret": "$TRIAL_JWT_SECRET",
+  "issuer": "agentforeach-trial", "audience": "agentforeach", "userIdClaim": "sub" }
+```
+
+Give the Function App the secret, and mint a token for a test user (valid for a day):
+
+```bash
+export TRIAL_JWT_SECRET=$(openssl rand -hex 32)
+(cd infra && pulumi config set --secret --path 'agentforeach:extraAppSettings.TRIAL_JWT_SECRET' "$TRIAL_JWT_SECRET" && pulumi up)
+node -e 'const c=require("crypto"),b=o=>Buffer.from(JSON.stringify(o)).toString("base64url"),n=Math.floor(Date.now()/1e3);const t=b({alg:"HS256",typ:"JWT"})+"."+b({sub:"test-user",iss:"agentforeach-trial",aud:"agentforeach",iat:n,exp:n+86400});console.log(t+"."+c.createHmac("sha256",process.env.TRIAL_JWT_SECRET).update(t).digest("base64url"))'
+```
+
+Anyone with the secret can sign in as anyone, so replace this with a real identity provider before real users arrive.
+
 Then deploy the gateway. `agentforeach.json` is packaged with the code, so deploy again after every change to it:
 
 ```bash
