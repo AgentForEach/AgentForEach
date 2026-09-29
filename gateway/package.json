@@ -49,7 +49,7 @@
     "mammoth": "^1.12.0",
     "node-html-markdown": "^2.0.0",
     "openai": "^4.77.0",
-    "undici": "^6.29.0",
+    "undici": "^8.11.2",
     "unpdf": "^1.8.0"
   },
   "devDependencies": {
