@@ -107,12 +107,19 @@ export async function resolveAuthContext(
 }
 
 /**
- * App Service authentication can ride on a session cookie, and a browser
- * sends a cross-site POST with a form or text/plain body without a CORS
- * preflight. Requiring JSON forces the preflight, which CORS then governs.
+ * Sign-ins that can ride on a session cookie: App Service authentication,
+ * and a trusted proxy (oauth2-proxy, Pomerium, Cloudflare Access), which
+ * adds the user's identity to whatever the browser sends it.
+ */
+const COOKIE_AUTH_SOURCES = new Set(["easy-auth", "trusted-proxy"]);
+
+/**
+ * A browser sends a cross-site POST with a form or text/plain body without a
+ * CORS preflight, cookies included. Requiring JSON forces the preflight,
+ * which CORS then governs.
  */
 export function isCrossSiteFormPost(request: HttpRequest, auth: AuthContext): boolean {
-  if (auth.source !== "easy-auth" || request.method.toUpperCase() !== "POST") return false;
+  if (!COOKIE_AUTH_SOURCES.has(auth.source) || request.method.toUpperCase() !== "POST") return false;
   const type = (request.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
   return type !== "application/json";
 }

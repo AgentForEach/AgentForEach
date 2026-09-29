@@ -157,7 +157,7 @@ test("trusted-proxy refuses requests without the shared secret, and everything w
 
 // --- CSRF: cookie-authenticated POSTs must be JSON (forces a CORS preflight) ---
 
-test("easy-auth POSTs without a JSON content type are treated as cross-site form posts", () => {
+test("cookie-backed POSTs without a JSON content type are treated as cross-site form posts", () => {
   const post = (headers: Record<string, string>) =>
     new HttpRequest({ method: "POST", url: "https://example.test/api/chat", headers });
   const cookie = { userId: "u", roles: [], source: "easy-auth" } as never;
@@ -167,4 +167,6 @@ test("easy-auth POSTs without a JSON content type are treated as cross-site form
   assert.equal(isCrossSiteFormPost(post({ "content-type": "application/json; charset=utf-8" }), cookie), false);
   assert.equal(isCrossSiteFormPost(post({ "content-type": "text/plain" }), bearer), false, "token auth isn't sent by browsers on their own");
   assert.equal(isCrossSiteFormPost(request({}), cookie), false, "GET");
+  const proxied = { userId: "u", roles: [], source: "trusted-proxy" } as never;
+  assert.equal(isCrossSiteFormPost(post({ "content-type": "text/plain" }), proxied), true, "a proxy's session cookie too");
 });
