@@ -1,0 +1,23 @@
+{
+  "name": "AgentForEach",
+  "image": "mcr.microsoft.com/devcontainers/typescript-node:1-22-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/azure-cli:1": {}
+  },
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "remoteEnv": {
+    "PATH": "${containerEnv:PATH}:/home/node/.pulumi/bin"
+  },
+  "forwardPorts": [7071, 10000, 10001, 10002],
+  "portsAttributes": {
+    "7071": { "label": "Functions host" },
+    "10000": { "label": "Azurite blob" },
+    "10001": { "label": "Azurite queue" },
+    "10002": { "label": "Azurite table" }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-azuretools.vscode-azurefunctions", "Azurite.azurite", "pulumi.pulumi-lsp-client"]
+    }
+  }
+}
