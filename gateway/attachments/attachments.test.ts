@@ -365,6 +365,45 @@ test("rejects a docx that expands past the limit, whatever its headers claim", a
   }
 });
 
+/** Rewrite a zip's end record: entry counts and central-directory size. */
+function patchEnd(zip: Buffer, entries: number, centralSize?: number): Buffer {
+  const out = Buffer.from(zip);
+  const end = out.length - 22;
+  out.writeUInt16LE(entries, end + 8);
+  out.writeUInt16LE(entries, end + 10);
+  if (centralSize !== undefined) out.writeUInt32LE(centralSize, end + 12);
+  return out;
+}
+
+test("a docx whose end record under-counts its entries is refused, not measured", async () => {
+  // Mammoth's zip reader reads every directory record whatever the count
+  // says; a checker that trusted the count would skip the padding.
+  const bomb = buildDocx("hi", [{ name: "word/media/padding.bin", data: Buffer.alloc(48 * 1024 * 1024) }]);
+  await assert.rejects(
+    () => extractDocument(patchEnd(bomb, 3), "docx", "bomb.docx", CONFIG),
+    (error: unknown) => error instanceof DocumentExtractionError && error.code === "unreadable_docx",
+  );
+});
+
+test("a docx whose entries share bytes is refused", async () => {
+  const docx = buildDocx("hi");
+  const end = docx.length - 22;
+  const centralSize = docx.readUInt32LE(end + 12);
+  const centralOffset = docx.readUInt32LE(end + 16);
+  const firstRecordLength = 46 + docx.readUInt16LE(centralOffset + 28);
+  // A second directory record pointing at the first entry's bytes.
+  const duplicate = docx.subarray(centralOffset, centralOffset + firstRecordLength);
+  const overlapped = patchEnd(
+    Buffer.concat([docx.subarray(0, end), duplicate, docx.subarray(end)]),
+    docx.readUInt16LE(end + 10) + 1,
+    centralSize + firstRecordLength,
+  );
+  await assert.rejects(
+    () => extractDocument(overlapped, "docx", "overlap.docx", CONFIG),
+    (error: unknown) => error instanceof DocumentExtractionError && error.code === "unreadable_docx",
+  );
+});
+
 test("rejects a docx whose archive is corrupt", async () => {
   const docx = buildDocx("hi");
   const truncated = docx.subarray(0, docx.length - 30);
