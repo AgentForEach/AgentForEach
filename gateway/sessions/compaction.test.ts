@@ -287,10 +287,11 @@ test("runCompaction full flow: loads messages, generates summary, updates sessio
       sessionId: string,
       summary: string,
       lastCompactedSeq: number,
-    ): Promise<void> => {
+    ): Promise<boolean> => {
       calls.push(
         `updateCompaction(${userId}, ${sessionId}, ${JSON.stringify(summary)}, ${lastCompactedSeq})`,
       );
+      return true;
     },
   };
 
@@ -366,6 +367,7 @@ test("runCompaction skips when retainBoundary <= lastCompactedSeq", async () => 
   const mockSessionStore = {
     updateCompaction: async () => {
       calls.push("updateCompaction");
+      return true;
     },
   };
 
@@ -434,6 +436,7 @@ test("runCompaction skips when getRange returns empty array", async () => {
   const mockSessionStore = {
     updateCompaction: async () => {
       calls.push("updateCompaction");
+      return true;
     },
   };
 
@@ -466,4 +469,46 @@ test("runCompaction skips when getRange returns empty array", async () => {
   // Nothing to summarise: no LLM call, no deletes, and the marker advances
   // so the empty range isn't queried again every turn.
   assert.deepEqual(calls, ["getRange(user-1:sess:legacy, 0, 50)", "updateCompaction"]);
+});
+
+test("a compaction that lost to another one deletes no messages", async () => {
+  const calls: string[] = [];
+  const session = {
+    id: "doc-1",
+    userId: "user-1",
+    agentId: "agent-1",
+    sessionId: "sess",
+    messageSeq: 70,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  } as Session;
+  await runCompaction({
+    session,
+    provider: {
+      id: "mock-provider",
+      createResponse: async () => ({
+        providerId: "mock-provider",
+        responseId: "r",
+        model: "m",
+        text: "stale summary",
+        output: [],
+        status: "completed" as const,
+      }),
+      streamResponse: async function* () {},
+    } as any,
+    sessionStore: {
+      updateCompaction: async () => {
+        calls.push("updateCompaction");
+        return false; // another compaction finished first
+      },
+    } as any,
+    messageStore: {
+      getRange: async () => [{ seq: 0, role: "user", content: "hi" }],
+      deleteBefore: async () => {
+        calls.push("deleteBefore");
+      },
+    } as any,
+    config: { ...defaultConfig, compactionRetainCount: 20 },
+  });
+  assert.deepEqual(calls, ["updateCompaction"]);
 });

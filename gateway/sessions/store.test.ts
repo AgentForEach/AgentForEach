@@ -949,10 +949,8 @@ test("updateCompaction preserves other session fields", async () => {
   assert.equal(session.agentId, "default");
   assert.equal(session.sessionId, "sess-1");
   assert.equal(session.messageSeq, updated.messageSeq);
-  assert.equal(
-    session.conversationState?.previousResponseId,
-    "resp-1",
-  );
+  // The provider chain holds the compacted turns: it's dropped.
+  assert.equal(session.conversationState, undefined);
 });
 
 // ============================================================================
@@ -1101,6 +1099,29 @@ test("a write meant for a replaced session instance is refused (e.g. a reply fin
     SessionReplacedError,
   );
   assert.deepEqual(await store.getMessages("u1", "s1"), []);
+});
+
+test("a compaction that started before another one finished is refused", async () => {
+  const store = await setupStore();
+  await store.getOrCreate("u1", "default", "s1");
+  // Both started from lastCompactedSeq 0; the later-starting one (to 42) wins.
+  assert.equal(await store.updateCompaction("u1", "s1", "summary to 42", 42, undefined, 0), true);
+  assert.equal(await store.updateCompaction("u1", "s1", "summary to 40", 40, undefined, 0), false);
+  const after = await store.get("u1", "s1");
+  assert.equal(after?.lastCompactedSeq, 42);
+  assert.equal(after?.compactionSummary, "summary to 42");
+});
+
+test("compaction drops the provider chain but keeps the code-interpreter container", async () => {
+  const store = await setupStore();
+  await store.getOrCreate("u1", "default", "s1");
+  await store.appendMessages("u1", "s1", [msg("user", "q"), msg("assistant", "a")], {
+    previousResponseId: "resp-9",
+    containerId: "cntr-1",
+  });
+  await store.updateCompaction("u1", "s1", "summary", 1);
+  const after = await store.get("u1", "s1");
+  assert.deepEqual(after?.conversationState, { containerId: "cntr-1" });
 });
 
 test("compaction results for a replaced instance aren't written onto the new session", async () => {

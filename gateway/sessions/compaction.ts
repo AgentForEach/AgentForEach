@@ -166,6 +166,9 @@ export async function compactSession(params: {
  *
  * This function is designed to be called fire-and-forget from the runner.
  */
+/** Sessions this instance is compacting, so a burst of turns runs one summary. */
+const compactionsInFlight = new Set<string>();
+
 export async function runCompaction(params: {
   session: Session;
   provider: Provider;
@@ -176,6 +179,19 @@ export async function runCompaction(params: {
   /** Optional memory layer — if provided, the compaction summary is indexed as a searchable memory. */
   memoryLayer?: MemoryLayer;
 }): Promise<void> {
+  const { session, provider, model, sessionStore, messageStore, config } =
+    params;
+  const key = `${session.userId}:${session.sessionId}:${session.instanceId ?? ""}`;
+  if (compactionsInFlight.has(key)) return;
+  compactionsInFlight.add(key);
+  try {
+    await compact(params);
+  } finally {
+    compactionsInFlight.delete(key);
+  }
+}
+
+async function compact(params: Parameters<typeof runCompaction>[0]): Promise<void> {
   const { session, provider, model, sessionStore, messageStore, config } =
     params;
 
@@ -199,6 +215,7 @@ export async function runCompaction(params: {
       session.compactionSummary ?? "",
       retainBoundary,
       session.instanceId,
+      fromSeq,
     );
     return;
   }
@@ -213,14 +230,17 @@ export async function runCompaction(params: {
     maxOutputTokens: config.compactionMaxOutputTokens,
   });
 
-  // Update session document with compaction results
-  await sessionStore.updateCompaction(
+  // Update session document with compaction results. If another compaction
+  // got there first, this one's summary is stale: keep every message.
+  const applied = await sessionStore.updateCompaction(
     session.userId,
     session.sessionId,
     summary,
     retainBoundary,
     session.instanceId,
+    fromSeq,
   );
+  if (!applied) return;
 
   // Delete compacted messages
   await messageStore.deleteBefore(pk, retainBoundary);

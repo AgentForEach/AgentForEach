@@ -445,9 +445,16 @@ export class SessionStore {
   }
 
   /**
-   * Update the session document with compaction results.
+   * Save a compaction's result. Called by `runCompaction()` after the LLM
+   * generates a summary.
    *
-   * Called by `runCompaction()` after the LLM generates a summary.
+   * Returns false, writing nothing, when the session was replaced since
+   * (`expectedInstanceId`) or another compaction finished since this one
+   * started from `fromSeq`; the caller must then delete no messages.
+   *
+   * Also drops the provider's response chain: it still holds every turn
+   * the summary replaces, so continuing it would keep sending (and paying
+   * for) all of them. The next turn sends the summary and recent history.
    */
   async updateCompaction(
     userId: string,
@@ -456,23 +463,43 @@ export class SessionStore {
     lastCompactedSeq: number,
     /** Instance that was compacted; skipped if the session was replaced since. */
     expectedInstanceId?: string,
-  ): Promise<void> {
+    /** lastCompactedSeq this compaction started from; skipped if it moved. */
+    fromSeq?: number,
+  ): Promise<boolean> {
     this.ensureInitialized();
     const docId = this.buildDocId(userId, sessionId);
-    if (expectedInstanceId !== undefined) {
+    const raw = this.container.getRawContainer() as Container;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const { resource } = await raw.item(docId, userId).read<Session>();
+      if (!resource) return false;
       // Compaction runs for seconds; /new may have replaced the session.
-      const current = await this.container.read(docId, userId);
-      if (!current || current.instanceId !== expectedInstanceId) return;
+      if (expectedInstanceId !== undefined && resource.instanceId !== expectedInstanceId) return false;
+      if (fromSeq !== undefined && (resource.lastCompactedSeq ?? 0) !== fromSeq) return false;
+
+      const updated: Session = {
+        ...resource,
+        compactionSummary: summary,
+        lastCompactedSeq,
+        lastCompactedAt: new Date().toISOString(),
+      };
+      if (updated.conversationState?.previousResponseId) {
+        const { previousResponseId: _replaced, ...rest } = updated.conversationState;
+        if (Object.keys(rest).length > 0) updated.conversationState = rest;
+        else delete updated.conversationState;
+      }
+      const etag = (resource as unknown as { _etag?: string })._etag;
+      try {
+        await raw
+          .item(docId, userId)
+          .replace<Session>(updated, etag ? { accessCondition: { type: "IfMatch", condition: etag } } : undefined);
+        return true;
+      } catch (err) {
+        if (isPreconditionFailedError(err)) continue;
+        if (isNotFoundError(err)) return false;
+        throw err;
+      }
     }
-    await this.container.patch(docId, userId, [
-      { op: "set", path: "/compactionSummary", value: summary },
-      { op: "set", path: "/lastCompactedSeq", value: lastCompactedSeq },
-      {
-        op: "set",
-        path: "/lastCompactedAt",
-        value: new Date().toISOString(),
-      },
-    ]);
+    return false;
   }
 
   /**
