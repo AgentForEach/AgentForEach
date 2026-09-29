@@ -1,0 +1,44 @@
+# Example stack configuration. Copy to Pulumi.<stack>.yaml (gitignored) or
+# set values with `pulumi config set`. Secrets: `pulumi config set --secret`.
+config:
+  # --- Required -------------------------------------------------------------
+  azure-native:location: eastus            # region for every resource
+  agentforeach:openaiApiKey:                     # pulumi config set --secret agentforeach:openaiApiKey sk-...
+    secure: <set with --secret>
+
+  # --- Naming -----------------------------------------------------------------
+  agentforeach:environment: dev                  # part of every resource name
+  agentforeach:nameSuffix: <random>              # pulumi config set agentforeach:nameSuffix $(openssl rand -hex 3)
+
+  # --- Auth -------------------------------------------------------------------
+  agentforeach:easyAuthEnabled: "false"          # App Service Authentication (Google sign-in)
+  agentforeach:easyAuthRequireAuthentication: "false"
+  agentforeach:authAllowInsecureUserIdHeader: "false"   # never true in the cloud (ignored there anyway)
+
+  # --- Scale ------------------------------------------------------------------
+  agentforeach:webPubSubSku: Standard_S1         # Free_F1 = 20 connections, for trials only
+  agentforeach:webPubSubUnits: "1"               # 1,000 concurrent connections per unit
+  agentforeach:cronSchedulerShards: "8"          # raise with job volume; never lower on a live stack
+  agentforeach:functionMaxInstances: "100"       # Flex Consumption scale-out ceiling (max 1000)
+  agentforeach:httpPerInstanceConcurrency: "16"
+
+  # --- Data & secrets ---------------------------------------------------------
+  agentforeach:cosmosFreeTier: "false"
+  agentforeach:cosmosCapacity: serverless        # autoscale for production (fixed at account creation)
+  # agentforeach:cosmosAutoscaleMaxRu: "4000"    # with autoscale: shared by all containers
+  agentforeach:cosmosManagedIdentity: "true"     # runtime uses Entra ID, not the account key
+  agentforeach:cosmosDisableLocalAuth: "true"    # keys off entirely
+  agentforeach:keyVaultEnabled: "true"           # app settings reference Key Vault secrets
+  agentforeach:storageManagedIdentity: "true"    # AzureWebJobsStorage without the account key
+
+  # --- Observability ----------------------------------------------------------
+  agentforeach:logDailyCapGb: "5"
+  # agentforeach:alertEmail: ops@example.com
+
+  # --- Optional features ------------------------------------------------------
+  agentforeach:sandboxEnabled: "false"           # per-user code sandboxes (docs/Sandbox.md)
+  # agentforeach:sandboxProvider: aca-sandboxes
+  agentforeach:searchEnabled: "false"            # Azure AI Search knowledge base (docs/Knowledge.md)
+
+  # Settings the stack doesn't model (values go to Key Vault):
+  # pulumi config set --secret --path 'agentforeach:extraAppSettings.ANTHROPIC_API_KEY' sk-ant-...

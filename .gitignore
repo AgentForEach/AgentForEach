@@ -1,0 +1,50 @@
+node_modules/
+dist/
+.env
+.env.*
+.DS_Store
+*.log
+*.lock
+*.zip
+*.tar.gz
+*.bak
+*.tsbuildinfo
+nohup.out
+
+# Azure Functions local settings hold secrets — only the example is committed
+local.settings*.json
+!local.settings.example.json
+
+# Azurite local storage emulator data
+.azurite/
+__blobstorage__/
+__queuestorage__/
+__azurite_db_*
+
+# Product-specific configs and deploy scripts live in private repos
+packages/gateway/config/*.json
+!packages/gateway/config/agentforeach.json
+deploy-*.sh
+!scripts/deploy-gateway.sh
+
+# Flutter / Dart build output
+build/
+.dart_tool/
+Pods/
+.gradle/
+
+# Internal planning (describes live vulnerabilities)
+open-source-plan.md
+
+# Terminal session recordings (`script` command) can capture secrets
+typescript
+
+# Load-test config (scripts/load-test/make-config.mjs)
+packages/gateway/config/agentforeach.loadtest.json
+
+# Stack configs are per deployment; see packages/infra/Pulumi.example.yaml
+packages/infra/Pulumi.*.yaml
+!packages/infra/Pulumi.example.yaml
+
+# Deploy staging area (scripts/deploy-gateway.sh)
+.deploy-staging/

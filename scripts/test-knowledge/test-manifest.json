@@ -1,0 +1,18 @@
+[
+  {
+    "file": "./companies-act-sample.md",
+    "source": "Companies Act 2013",
+    "category": "act",
+    "tags": ["company-law", "MCA", "incorporation", "directors", "related-party"],
+    "language": "en",
+    "author": "Ministry of Corporate Affairs"
+  },
+  {
+    "file": "./income-tax-act-sample.md",
+    "source": "Income Tax Act 1961",
+    "category": "act",
+    "tags": ["income-tax", "CBDT", "TDS", "deductions", "presumptive-taxation"],
+    "language": "en",
+    "author": "Central Board of Direct Taxes"
+  }
+]

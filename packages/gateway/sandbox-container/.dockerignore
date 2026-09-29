@@ -1,0 +1,8 @@
+# Ignore everything we don't need in the Docker build context
+node_modules/
+dist/
+tests/
+.azurite/
+*.md
+.git/
+.gitignore

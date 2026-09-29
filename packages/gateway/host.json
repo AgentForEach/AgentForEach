@@ -1,0 +1,49 @@
+{
+  "version": "2.0",
+  "functionTimeout": "00:10:00",
+  "logging": {
+    "applicationInsights": {
+      "samplingSettings": {
+        "isEnabled": true,
+        "maxTelemetryItemsPerSecond": 20,
+        "excludedTypes": "Request;Exception"
+      }
+    },
+    "logLevel": {
+      "default": "Information",
+      "Host.Results": "Error",
+      "Function": "Information",
+      "Function.apiChat": "Information",
+      "Function.wsMessage": "Information",
+      "Host.Aggregator": "Error",
+      "Host.Triggers.DurableTask": "Warning",
+      "DurableTask.Core": "Warning",
+      "DurableTask.AzureStorage": "Error",
+      "Azure.Core": "Error",
+      "Azure.Storage": "Error",
+      "Microsoft": "Warning"
+    }
+  },
+  "extensionBundle": {
+    "id": "Microsoft.Azure.Functions.ExtensionBundle",
+    "version": "[4.*, 5.0.0)"
+  },
+  "extensions": {
+    "http": {
+      "routePrefix": ""
+    },
+    "durableTask": {
+      "storageProvider": {
+        "type": "AzureStorage",
+        "partitionCount": 16,
+        "maxQueuePollingInterval": "00:00:02",
+        "workItemQueueVisibilityTimeout": "00:01:00",
+        "controlQueueVisibilityTimeout": "00:01:00",
+        "useTablePartitionManagement": true
+      },
+      "maxConcurrentActivityFunctions": 64,
+      "maxConcurrentOrchestratorFunctions": 32,
+      "overridableExistingInstanceStates": "NonRunningStates"
+    }
+  }
+}

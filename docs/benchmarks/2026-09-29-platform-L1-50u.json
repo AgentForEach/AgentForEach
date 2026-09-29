@@ -1,0 +1,85 @@
+{
+  "options": {
+    "baseUrl": "https://afe-func-<env>-<suffix>.azurewebsites.net",
+    "auth": "jwt",
+    "jwtIssuer": "agentforeach-loadtest",
+    "jwtAudience": "agentforeach",
+    "users": 50,
+    "turns": 5,
+    "rampSeconds": 30,
+    "thinkMs": 3000,
+    "turnTimeoutMs": 180000,
+    "mix": "chat=100",
+    "out": "platform-L1-50u.json"
+  },
+  "startedAt": "2026-09-29T08:39:49.204Z",
+  "durationMinutes": 1.14,
+  "users": 50,
+  "turns": 250,
+  "completed": 250,
+  "failureRate": 0,
+  "throughputTurnsPerMinute": 219.9,
+  "acceptMs": {
+    "p50": 122,
+    "p95": 318,
+    "p99": 506,
+    "max": 560
+  },
+  "firstTextMs": {
+    "p50": 2124,
+    "p95": 3561,
+    "p99": 4070,
+    "max": 4190
+  },
+  "totalMs": {
+    "p50": 4253,
+    "p95": 5653,
+    "p99": 6245,
+    "max": 6281
+  },
+  "byScenario": {
+    "chat": {
+      "completed": 250,
+      "totalMs": {
+        "p50": 4253,
+        "p95": 5653,
+        "p99": 6245,
+        "max": 6281
+      }
+    },
+    "memory": {
+      "completed": 0,
+      "totalMs": {
+        "p50": null,
+        "p95": null,
+        "p99": null,
+        "max": null
+      }
+    },
+    "cron": {
+      "completed": 0,
+      "totalMs": {
+        "p50": null,
+        "p95": null,
+        "p99": null,
+        "max": null
+      }
+    },
+    "sandbox": {
+      "completed": 0,
+      "totalMs": {
+        "p50": null,
+        "p95": null,
+        "p99": null,
+        "max": null
+      }
+    }
+  },
+  "outcomes": {
+    "completed": 250
+  },
+  "tokens": {
+    "input": 3187980,
+    "output": 19250
+  }
+}

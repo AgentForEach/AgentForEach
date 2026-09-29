@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentForEach web chat</title>
+<style>
+  :root { --bg: #fff; --fg: #1d1d1f; --muted: #6e6e73; --line: #d2d2d7; --me: #0a64d6; --me-fg: #fff; --agent: #f2f2f5; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #111113; --fg: #f2f2f5; --muted: #a1a1a6; --line: #3a3a3c; --me: #2f7bf5; --agent: #232326; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.45 system-ui, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; height: 100dvh; }
+  fieldset { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; display: grid; gap: 8px; }
+  legend { color: var(--muted); padding: 0 4px; }
+  label { display: grid; gap: 2px; font-size: 13px; color: var(--muted); }
+  input, button { font: inherit; }
+  input { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--fg); width: 100%; }
+  button { padding: 8px 14px; border: 0; border-radius: 8px; background: var(--me); color: var(--me-fg); cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  #status { color: var(--muted); font-size: 13px; min-height: 1.4em; margin: 8px 2px; }
+  #log { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 4px 0; }
+  .msg { max-width: 85%; padding: 8px 12px; border-radius: 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .me { align-self: flex-end; background: var(--me); color: var(--me-fg); }
+  .agent { align-self: flex-start; background: var(--agent); }
+  .note { align-self: center; color: var(--muted); font-size: 13px; }
+  form#send { display: flex; gap: 8px; padding-top: 8px; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  @media (max-width: 560px) { .row { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <form id="connect">
+    <fieldset>
+      <legend>Gateway</legend>
+      <label>URL <input id="baseUrl" value="http://localhost:7071" required></label>
+      <div class="row">
+        <label>Bearer token (JWT or API key setup) <input id="token" type="password" autocomplete="off" placeholder="leave empty for local dev"></label>
+        <label>Dev user id (local only, x-user-id) <input id="devUser" value="me"></label>
+      </div>
+      <button id="connectBtn">Connect</button>
+    </fieldset>
+  </form>
+  <div id="status">Not connected.</div>
+  <div id="log" aria-live="polite"></div>
+  <form id="send">
+    <input id="message" placeholder="Message" autocomplete="off" disabled>
+    <button id="sendBtn" disabled>Send</button>
+  </form>
+</main>
+<script>
+// A minimal client for the AgentForEach gateway, no build step. The flow:
+//   1. GET /negotiate                 -> { url } for Web PubSub (per-user token)
+//   2. WebSocket to url, subprotocol json.webpubsub.azure.v1
+//   3. POST /api/chat                 -> 202 { runId, sessionId } (Azure), or
+//                                        200 with the reply (local, synchronous)
+//   4. the reply streams as { type: "event", event: "chat", payload } frames:
+//      payload.state "delta" (delta, offset), "final" (text), "error", ...
+// See docs/Architecture.md, "Real-time protocol".
+
+const $ = (id) => document.getElementById(id);
+const state = { baseUrl: "", headers: {}, sessionId: undefined, ws: undefined, bubbles: new Map() };
+
+function setStatus(text) { $("status").textContent = text; }
+
+function addBubble(kind, text) {
+  const el = document.createElement("div");
+  el.className = `msg ${kind}`;
+  el.textContent = text; // never innerHTML: replies are untrusted text
+  $("log").append(el);
+  el.scrollIntoView({ block: "end" });
+  return el;
+}
+
+function authHeaders() {
+  const token = $("token").value.trim();
+  const devUser = $("devUser").value.trim();
+  if (token) return { authorization: `Bearer ${token}` };
+  if (devUser) return { "x-user-id": devUser }; // honoured only when AUTH_ALLOW_INSECURE_USER_ID_HEADER=true, never on Azure
+  return {};
+}
+
+function onChatEvent(p) {
+  if (!p.runId) return;
+  let entry = state.bubbles.get(p.runId);
+  if (!entry) {
+    entry = { el: addBubble("agent", ""), text: "" };
+    state.bubbles.set(p.runId, entry);
+  }
+  if (p.sessionId) state.sessionId = p.sessionId;
+  switch (p.state) {
+    case "thinking": setStatus("Thinking…"); break;
+    case "tool_start": setStatus(`Using ${p.name ?? p.toolType}…`); break;
+    case "delta":
+      // A gap means a frame was missed; "final" carries the full text anyway.
+      if (p.offset === entry.text.length) entry.text += p.delta;
+      entry.el.textContent = entry.text;
+      break;
+    case "final":
+      entry.el.textContent = p.text;
+      setStatus(`Done (${p.model}, ${(p.durationMs / 1000).toFixed(1)} s).`);
+      state.bubbles.delete(p.runId);
+      break;
+    case "error":
+      entry.el.textContent = `⚠ ${p.error}`;
+      setStatus(p.code ? `Error: ${p.code}` : "Error.");
+      state.bubbles.delete(p.runId);
+      break;
+    case "aborted": setStatus("Stopped."); state.bubbles.delete(p.runId); break;
+  }
+}
+
+async function connect() {
+  state.baseUrl = $("baseUrl").value.trim().replace(/\/+$/, "");
+  state.headers = authHeaders();
+  state.ws?.close();
+  state.ws = undefined;
+  setStatus("Connecting…");
+  try {
+    const res = await fetch(`${state.baseUrl}/negotiate`, { headers: state.headers });
+    if (res.status === 401) throw new Error("401: set up sign-in (auth.providers) or use a dev user id locally");
+    if (!res.ok) throw new Error(`negotiate returned ${res.status}`);
+    const { url } = await res.json();
+    const ws = new WebSocket(url, "json.webpubsub.azure.v1");
+    await new Promise((resolve, reject) => {
+      ws.addEventListener("open", resolve, { once: true });
+      ws.addEventListener("error", () => reject(new Error("socket error")), { once: true });
+    });
+    ws.addEventListener("message", (ev) => {
+      let frame;
+      try { frame = JSON.parse(String(ev.data)); } catch { return; }
+      let data = frame.type === "message" ? frame.data : frame;
+      if (typeof data === "string") { try { data = JSON.parse(data); } catch { return; } }
+      if (data?.type === "event" && data.event === "chat" && data.payload) onChatEvent(data.payload);
+    });
+    ws.addEventListener("close", () => { if (state.ws === ws) setStatus("Disconnected. Connect again to stream replies."); });
+    state.ws = ws;
+    setStatus("Connected. Replies stream over Web PubSub.");
+  } catch (err) {
+    // Local runs without Web PubSub still work: /api/chat answers synchronously.
+    setStatus(`No live stream (${err.message}). Replies will arrive when complete.`);
+  }
+  $("message").disabled = false;
+  $("sendBtn").disabled = false;
+  $("message").focus();
+}
+
+async function send(text) {
+  addBubble("me", text);
+  $("sendBtn").disabled = true;
+  try {
+    const res = await fetch(`${state.baseUrl}/api/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...state.headers },
+      body: JSON.stringify({ message: text, sessionId: state.sessionId, idempotencyKey: crypto.randomUUID() }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (res.status === 202) {
+      state.sessionId = body.sessionId;
+      if (!state.ws) setStatus("Accepted, but there's no live stream to show the reply. Connect to Web PubSub.");
+    } else if (res.ok && typeof body.text === "string") {
+      state.sessionId = body.sessionId ?? state.sessionId;
+      addBubble("agent", body.text);
+      setStatus("Done.");
+    } else {
+      addBubble("note", body.error ?? `HTTP ${res.status}`);
+      setStatus(res.status === 429 ? "Rate limited." : "Request failed.");
+    }
+  } catch (err) {
+    addBubble("note", `Network error: ${err.message}`);
+  } finally {
+    $("sendBtn").disabled = false;
+  }
+}
+
+$("connect").addEventListener("submit", (e) => { e.preventDefault(); connect(); });
+$("send").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const text = $("message").value.trim();
+  if (!text) return;
+  $("message").value = "";
+  send(text);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,38 @@
+/**
+ * AgentForEach LLMs — tool-loop transcript
+ *
+ * Providers without server-side conversation state (Anthropic, Chat
+ * Completions) get the whole conversation on every request. Each round's
+ * response carries the transcript so far in `conversationState.messages`, so
+ * the next round (which only adds tool results) still has the user's
+ * question, the history and earlier tool results.
+ */
+
+import type {
+  ContentBlock,
+  ConversationMessage,
+  FunctionCallOutput,
+  ProviderRequest,
+} from "./types.js";
+
+/** Earlier rounds' transcript plus what this request adds, oldest first. */
+export function transcriptThroughInput(request: ProviderRequest): ConversationMessage[] {
+  const messages: ConversationMessage[] = [...(request.conversation?.messages ?? [])];
+  const input = request.input;
+  if (typeof input === "string") {
+    messages.push({ role: "user", content: input });
+  } else if (Array.isArray(input) && input.length > 0) {
+    if ((input[0] as { type?: string }).type === "function_call_output") {
+      const results: ContentBlock[] = (input as FunctionCallOutput[]).map((item) => ({
+        type: "tool_result" as const,
+        tool_use_id: item.callId,
+        content: item.output,
+      }));
+      messages.push({ role: "user", content: results });
+    } else {
+      // The runner sends history oldest first, then the new message.
+      messages.push(...(input as ConversationMessage[]));
+    }
+  }
+  return messages;
+}

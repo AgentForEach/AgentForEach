@@ -1,0 +1,86 @@
+{
+  "options": {
+    "baseUrl": "https://afe-func-<env>-<suffix>.azurewebsites.net",
+    "auth": "jwt",
+    "jwtIssuer": "agentforeach-loadtest",
+    "jwtAudience": "agentforeach",
+    "users": 120,
+    "turns": 40,
+    "rampSeconds": 60,
+    "thinkMs": 10000,
+    "turnTimeoutMs": 240000,
+    "mix": "chat=80,memory=15,cron=5",
+    "out": "luna-120u.json"
+  },
+  "startedAt": "2026-09-29T09:52:43.235Z",
+  "durationMinutes": 13.38,
+  "users": 120,
+  "turns": 4800,
+  "completed": 4799,
+  "failureRate": 0.0002,
+  "throughputTurnsPerMinute": 358.6,
+  "acceptMs": {
+    "p50": 108,
+    "p95": 287,
+    "p99": 574,
+    "max": 13251
+  },
+  "firstTextMs": {
+    "p50": 4825,
+    "p95": 11097,
+    "p99": 17659,
+    "max": 65094
+  },
+  "totalMs": {
+    "p50": 5357,
+    "p95": 11794,
+    "p99": 18631,
+    "max": 65316
+  },
+  "byScenario": {
+    "chat": {
+      "completed": 3875,
+      "totalMs": {
+        "p50": 5082,
+        "p95": 9006,
+        "p99": 14698,
+        "max": 65316
+      }
+    },
+    "memory": {
+      "completed": 703,
+      "totalMs": {
+        "p50": 8942,
+        "p95": 17590,
+        "p99": 21205,
+        "max": 40340
+      }
+    },
+    "cron": {
+      "completed": 221,
+      "totalMs": {
+        "p50": 7160,
+        "p95": 13616,
+        "p99": 16879,
+        "max": 22342
+      }
+    },
+    "sandbox": {
+      "completed": 0,
+      "totalMs": {
+        "p50": null,
+        "p95": null,
+        "p99": null,
+        "max": null
+      }
+    }
+  },
+  "outcomes": {
+    "completed": 4799,
+    "internal": 1
+  },
+  "tokens": {
+    "input": 55681841,
+    "output": 415510
+  }
+}

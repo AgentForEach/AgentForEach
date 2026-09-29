@@ -1,0 +1,54 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "FUNCTIONS_WORKER_RUNTIME": "node",
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "CONFIG_FILE_JSON": "agentforeach.json",
+
+    "COSMOS_ENDPOINT": "",
+    "COSMOS_KEY": "",
+    "COSMOS_DATABASE": "agentforeach",
+
+    "OPENAI_API_KEY": "",
+    "ANTHROPIC_API_KEY": "",
+
+    "WEBPUBSUB_CONNECTION_STRING": "",
+    "WEBPUBSUB_HUB": "agentforeach",
+    "WEBPUBSUB_UPSTREAM_SHARED_SECRET": "",
+    "LOG_REDACTION_KEY": "",
+
+    "AZURE_STORAGE_CONNECTION_STRING": "UseDevelopmentStorage=true",
+    "AUTH_ALLOW_INSECURE_USER_ID_HEADER": "",
+    "AUTH_TRUST_EASY_AUTH_HEADERS": "",
+    "ALLOW_UNSIGNED_WEBHOOKS": "",
+    "ACA_SANDBOX_SUBSCRIPTION_ID": "",
+    "ACA_SANDBOX_RESOURCE_GROUP": "",
+    "ACA_SANDBOX_GROUP": "",
+    "ACA_SANDBOX_REGION": "",
+    "ACA_SANDBOX_DISK_IMAGE_ID": "",
+    "ACA_POOL_MANAGEMENT_ENDPOINT": "",
+    "SEARCH_ENDPOINT": "",
+    "SEARCH_API_KEY": "",
+
+    "TELEGRAM_BOT_TOKEN": "",
+    "TELEGRAM_WEBHOOK_SECRET": "",
+
+    "WHATSAPP_ACCESS_TOKEN": "",
+    "WHATSAPP_APP_SECRET": "",
+    "WHATSAPP_PHONE_NUMBER_ID": "",
+    "WHATSAPP_BUSINESS_ACCOUNT_ID": "",
+    "WHATSAPP_WEBHOOK_VERIFY_TOKEN": "",
+
+    "CREDITS_BALANCE_URL": "",
+    "CREDITS_CONSUME_URL": "",
+    "CREDITS_RESERVE_URL": "",
+    "CREDITS_SETTLE_URL": "",
+    "CREDITS_SERVICE_KEY": "",
+
+    "BRAVE_SEARCH_API_KEY": "",
+    "TAVILY_API_KEY": "",
+    "EXAMPLE_MCP_URL": "",
+
+    "CRON_SCHEDULER_SHARDS": "1"
+  }
+}

@@ -1,0 +1,6 @@
+name: agentforeach
+runtime:
+  name: nodejs
+  options:
+    typescript: true
+description: AgentForEach — Azure infrastructure (Cosmos DB, OpenAI, etc.)

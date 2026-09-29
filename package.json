@@ -1,0 +1,34 @@
+{
+  "name": "agentforeach",
+  "version": "1.0.0",
+  "description": "Run personal AI agents for millions of users. Serverless, pay per use, open source.",
+  "keywords": [
+    "ai-agents",
+    "personal-assistant",
+    "serverless",
+    "azure-functions",
+    "durable-functions",
+    "cosmos-db",
+    "multi-tenant"
+  ],
+  "license": "Apache-2.0",
+  "author": "Mohit Garg",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "build": "tsc",
+    "build:infra": "cd packages/infra && tsc",
+    "test:cron-heartbeat:e2e": "node ./scripts/test-cron-heartbeat-e2e.mjs",
+    "test:multi-user": "node ./scripts/test-multi-user-smoke.mjs",
+    "test": "npm test --workspace @agentforeach/gateway"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}

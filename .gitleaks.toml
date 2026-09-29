@@ -1,0 +1,8 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Not secrets: lockfile package hashes and Azure built-in role definition ids"
+paths = ['''(^|/)Podfile\.lock$''']
+# Key Vault Secrets User — a public, fixed id of an Azure built-in role
+regexes = ['''4633458b-17de-408a-b874-0445c86b69e6''']

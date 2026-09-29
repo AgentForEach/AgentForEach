@@ -1,0 +1,92 @@
+{
+  "_readme": "Example human-in-the-loop (HITL) configuration. Copy the \"hitl\" block below (or just the parts you need) into the \"hitl\" section of packages/gateway/config/agentforeach.json. \"forms\" are named, reusable form definitions (a built-in formType plus an optional JSON Schema and layout hints) that the client renders. \"tools\" gates MCP tools by exact name or glob before they run: \"always\" shows the form every time, \"when_args_missing\" only when a required argument is missing, \"confirm_only\" asks the user to approve the proposed arguments, and \"never\" opts a tool out; {argName} placeholders in \"intent\" are filled from the tool's arguments. \"customFormTypes\" adds extra request_user_input types that your own client knows how to render (name -> description shown to the model); the built-in types (text_input, confirmation, single_select, multi_select, form) are always available. The example_* tool names are placeholders: replace them with tools your MCP servers actually expose.",
+
+  "hitl": {
+    "enabled": true,
+    "defaultTimeoutSeconds": 300,
+
+    "customFormTypes": {
+      "select_contact": "contact picker rendered by the app from the user's address book; returns contactId and name. Use it when you need a person you do not already have an id for."
+    },
+
+    "forms": {
+      "create_contact": {
+        "title": "Create Contact",
+        "description": "Enter the details for a new contact",
+        "formType": "form",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "name":    { "type": "string", "title": "Full Name" },
+            "email":   { "type": "string", "title": "Email" },
+            "phone":   { "type": "string", "title": "Phone" },
+            "company": { "type": "string", "title": "Company" },
+            "role":    { "type": "string", "title": "Role" },
+            "city":    { "type": "string", "title": "City" },
+            "country": { "type": "string", "title": "Country" },
+            "notes":   { "type": "string", "title": "Notes" }
+          },
+          "required": ["name", "email"]
+        },
+        "uiHints": {
+          "layout": "two-column",
+          "groups": [
+            { "label": "Basic Information", "fields": ["name", "email", "phone"] },
+            { "label": "Work",              "fields": ["company", "role"] },
+            { "label": "Location",          "fields": ["city", "country"] },
+            { "label": "Other",             "fields": ["notes"] }
+          ],
+          "requiredFromHuman": ["name", "email"],
+          "hiddenFields": ["userId"]
+        }
+      },
+
+      "choose_priority": {
+        "title": "Choose Priority",
+        "description": "How urgent is this?",
+        "formType": "single_select",
+        "options": [
+          { "label": "High",   "value": "high" },
+          { "label": "Medium", "value": "medium" },
+          { "label": "Low",    "value": "low" }
+        ]
+      },
+
+      "confirm_action": {
+        "title": "Confirm Action",
+        "description": "Please confirm before proceeding",
+        "formType": "confirmation"
+      }
+    },
+
+    "tools": {
+      "example_create_contact": {
+        "gate": "always",
+        "form": "create_contact",
+        "intent": "Create a new contact: {name}"
+      },
+      "example_update_record": {
+        "gate": "when_args_missing",
+        "intent": "Update record: {recordId}",
+        "uiHints": {
+          "layout": "single-column",
+          "hiddenFields": ["userId", "recordId"]
+        }
+      },
+      "example_set_priority": {
+        "gate": "confirm_only",
+        "form": "choose_priority",
+        "intent": "Set priority for task: {taskId}"
+      },
+      "example_send_email": {
+        "gate": "confirm_only",
+        "form": "confirm_action",
+        "intent": "Send this email to {to}?"
+      },
+      "example_delete_*": {
+        "gate": "confirm_only",
+        "intent": "Delete this item? This cannot be undone."
+      }
+    }
+  }
+}

@@ -1,0 +1,65 @@
+# Rebuilds the ACA Sandboxes disk image (scripts/build-aca-sandbox-image.mjs)
+# weekly, so sandboxes get current OS and runtime packages.
+#
+# Off until configured. It signs in to Azure with GitHub OIDC (no stored
+# secrets); set these repository variables:
+#   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID  — an Entra app
+#     with a federated credential for this repository's main branch and the
+#     "SandboxGroup Data Owner" role on the sandbox group
+#   ACA_SANDBOX_RESOURCE_GROUP, ACA_SANDBOX_GROUP, ACA_SANDBOX_REGION
+#   AGENTFOREACH_FUNCTION_APP (optional) — Function App whose ACA_SANDBOX_DISK_IMAGE_ID
+#     is switched to the new image (the identity then also needs
+#     Website Contributor on the app). The next `pulumi up` sets the setting
+#     back to the stack's sandboxDiskImageId, so update that too.
+name: Sandbox image
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build:
+    if: vars.ACA_SANDBOX_GROUP != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      ACA_SANDBOX_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      ACA_SANDBOX_RESOURCE_GROUP: ${{ vars.ACA_SANDBOX_RESOURCE_GROUP }}
+      ACA_SANDBOX_GROUP: ${{ vars.ACA_SANDBOX_GROUP }}
+      ACA_SANDBOX_REGION: ${{ vars.ACA_SANDBOX_REGION }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - run: npm ci
+      - run: npx tsc -p packages/gateway
+      - name: Build and verify the image
+        id: image
+        run: |
+          node scripts/build-aca-sandbox-image.mjs | tee build.log
+          id=$(grep -Eio 'disk image id: [^ ]+' build.log | tail -1 | awk '{print $4}')
+          test -n "$id"
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          echo "New sandbox disk image: \`$id\`" >> "$GITHUB_STEP_SUMMARY"
+      - name: Switch the Function App to it
+        if: vars.AGENTFOREACH_FUNCTION_APP != ''
+        env:
+          APP: ${{ vars.AGENTFOREACH_FUNCTION_APP }}
+          IMAGE_ID: ${{ steps.image.outputs.id }}
+        run: |
+          rg=$(az functionapp list --query "[?name=='$APP'].resourceGroup | [0]" -o tsv)
+          test -n "$rg"
+          az functionapp config appsettings set -g "$rg" -n "$APP" \
+            --settings "ACA_SANDBOX_DISK_IMAGE_ID=$IMAGE_ID" -o none

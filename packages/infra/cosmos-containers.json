@@ -1,0 +1,497 @@
+[
+  {
+    "id": "abort-requests",
+    "partitionKey": {
+      "paths": [
+        "/userId"
+      ],
+      "kind": "Hash",
+      "version": 2
+    },
+    "defaultTtl": 600
+  },
+  {
+    "id": "cron-due-index",
+    "partitionKey": {
+      "paths": [
+        "/shardId"
+      ],
+      "kind": "Hash",
+      "version": 2
+    },
+    "defaultTtl": 604800,
+    "indexingPolicy": {
+      "automatic": true,
+      "indexingMode": "consistent",
+      "includedPaths": [
+        {
+          "path": "/*"
+        }
+      ],
+      "excludedPaths": [
+        {
+          "path": "/\"_etag\"/?"
+        }
+      ]
+    }
+  },
+  {
+    "id": "cron-heartbeat-events",
+    "partitionKey": {
+      "paths": [
+        "/shardId"
+      ],
+      "kind": "Hash",
+      "version": 2
+    },
+    "defaultTtl": 172800,
+    "indexingPolicy": {
+      "automatic": true,
+      "indexingMode": "consistent",
+      "includedPaths": [
+        {
+          "path": "/*"
+        }
+      ],
+      "excludedPaths": [
+        {
+          "path": "/\"_etag\"/?"
+        }
+      ]
+    }
+  },
+  {
+    "id": "cron-jobs",
+    "partitionKey": {
+      "paths": [
+        "/userId"
+      ],
+      "kind": "Hash",
+      "version": 2
+    },
+    "indexingPolicy": {
+      "automatic": true,
+      "indexingMode": "consistent",
+      "includedPaths": [
+        {
+          "path": "/*"
+        }
+      ],
+      "excludedPaths": [
+        {
+          "path": "/\"_etag\"/?"
+        }
+      ]
+    }
+  },
+  {
+    "id": "cron-runs",
+    "partitionKey": {
+      "paths": [
+        "/jobId"
+      ],
+      "kind": "Hash",
+      "version": 2
+    },
+    "defaultTtl": 86400,
+    "indexingPolicy": {
+      "automatic": true,
+      "indexingMode": "consistent",
+      "includedPaths": [
+        {
+          "path": "/*"
+        }
+      ],
+      "excludedPaths": [
+        {
+          "path": "/\"_etag\"/?"
+        }
+      ]
+    }
+  },
+  {
+    "id": "episodes",
+    "partitionKey": {
+      "paths": [
+        "/userId"
+      ]
+    },
+    "indexingPolicy": {
+      "automatic": true,
+      "indexingMode": "consistent",
+      "includedPaths": [
+        {
+          "path": "/*"
+        }
+      ],
+      "excludedPaths": [
+        {
+          "path": "/vector/*"
+        },
+        {
+          "path": "/summary/*"
+        },
+        {
+          "path": "/highlights/*"
+        },
+        {
+          "path": "/\"_etag\"/?"
+        }
+      ],
+      "fullTextIndexes": [
+        {
+          "path": "/summary"
+        }
+      ],
+      "vectorIndexes": [
+        {
+          "path": "/vector",
+          "type": "diskANN"
+        }
+      ]
+    },
+    "vectorEmbeddingPolicy": {
+      "vectorEmbeddings": [
+        {
+          "path": "/vector",
+          "dataType": "float32",
+          "dimensions": 1536,
+          "distanceFunction": "cosine"
+        }
+      ]
+    },
+    "fullTextPolicy": {
+      "defaultLanguage": "en-US",
+      "fullTextPaths": [
+        {
+          "path": "/summary",
+          "language": "en-US"
+        }
+      ]
+    }
+  },
+  {
+    "id": "hitl-requests",
+    "partitionKey": {
+      "paths": [
+        "/userId"
+      ],
+      "kind": "Hash",
+      "version": 2
+    },
+    "defaultTtl": 3600,
+    "indexingPolicy": {
+      "automatic": true,
+      "indexingMode": "consistent",
+      "includedPaths": [
+        {
+          "path": "/*"
+        }
+      ],
+      "excludedPaths": [
+        {
+          "path": "/\"_etag\"/?"
+        }
+      ]
+    }
+  },
+  {
+    "id": "identity-channel-index",
+    "partitionKey": {
+      "paths": [
+        "/id"
+      ],
+      "kind": "Hash",
+      "version": 2
+    }
+  },
+  {
+    "id": "identity-links",
+    "partitionKey": {
+      "paths": [
+        "/chittiUserId"
+      ],
+      "kind": "Hash",
+      "version": 2
+    },
+    "indexingPolicy": {
+      "automatic": true,
+      "indexingMode": "consistent",
+      "includedPaths": [
+        {
+          "path": "/*"
+        }
+      ],
+      "excludedPaths": [
+        {
+          "path": "/\"_etag\"/?"
+        }
+      ]
+    }
+  },
+  {
+    "id": "identity-pairing",
+    "partitionKey": {
+      "paths": [
+        "/code"
+      ],
+      "kind": "Hash",
+      "version": 2
+    },
+    "defaultTtl": 300
+  },
+  {
+    "id": "memories",
+    "partitionKey": {
+      "paths": [
+        "/userId"
+      ]
+    },
+    "indexingPolicy": {
+      "automatic": true,
+      "indexingMode": "consistent",
+      "includedPaths": [
+        {
+          "path": "/*"
+        }
+      ],
+      "excludedPaths": [
+        {
+          "path": "/vector/*"
+        },
+        {
+          "path": "/\"_etag\"/?"
+        }
+      ],
+      "fullTextIndexes": [
+        {
+          "path": "/text"
+        }
+      ],
+      "vectorIndexes": [
+        {
+          "path": "/vector",
+          "type": "diskANN"
+        }
+      ]
+    },
+    "vectorEmbeddingPolicy": {
+      "vectorEmbeddings": [
+        {
+          "path": "/vector",
+          "dataType": "float32",
+          "dimensions": 1536,
+          "distanceFunction": "cosine"
+        }
+      ]
+    },
+    "fullTextPolicy": {
+      "defaultLanguage": "en-US",
+      "fullTextPaths": [
+        {
+          "path": "/text",
+          "language": "en-US"
+        }
+      ]
+    }
+  },
+  {
+    "id": "onboarding-state",
+    "partitionKey": {
+      "paths": [
+        "/userId"
+      ],
+      "kind": "Hash",
+      "version": 2
+    },
+    "indexingPolicy": {
+      "automatic": true,
+      "indexingMode": "consistent",
+      "includedPaths": [
+        {
+          "path": "/*"
+        }
+      ],
+      "excludedPaths": [
+        {
+          "path": "/\"_etag\"/?"
+        }
+      ]
+    }
+  },
+  {
+    "id": "prompt-documents",
+    "partitionKey": {
+      "paths": [
+        "/userId"
+      ],
+      "kind": "Hash",
+      "version": 2
+    },
+    "indexingPolicy": {
+      "automatic": true,
+      "indexingMode": "consistent",
+      "includedPaths": [
+        {
+          "path": "/*"
+        }
+      ],
+      "excludedPaths": [
+        {
+          "path": "/\"_etag\"/?"
+        }
+      ]
+    }
+  },
+  {
+    "id": "rate-limits",
+    "partitionKey": {
+      "paths": [
+        "/id"
+      ],
+      "kind": "Hash",
+      "version": 2
+    },
+    "defaultTtl": -1
+  },
+  {
+    "id": "session-digests",
+    "partitionKey": {
+      "paths": [
+        "/userId"
+      ]
+    },
+    "defaultTtl": -1,
+    "indexingPolicy": {
+      "automatic": true,
+      "indexingMode": "consistent",
+      "includedPaths": [
+        {
+          "path": "/*"
+        }
+      ],
+      "excludedPaths": [
+        {
+          "path": "/\"_etag\"/?"
+        }
+      ]
+    }
+  },
+  {
+    "id": "session-messages-v2",
+    "partitionKey": {
+      "paths": [
+        "/pk"
+      ],
+      "kind": "Hash",
+      "version": 2
+    },
+    "defaultTtl": -1,
+    "indexingPolicy": {
+      "automatic": true,
+      "indexingMode": "consistent",
+      "includedPaths": [
+        {
+          "path": "/*"
+        }
+      ],
+      "excludedPaths": [
+        {
+          "path": "/content/?"
+        },
+        {
+          "path": "/\"_etag\"/?"
+        }
+      ]
+    }
+  },
+  {
+    "id": "sessions",
+    "partitionKey": {
+      "paths": [
+        "/userId"
+      ],
+      "kind": "Hash",
+      "version": 2
+    },
+    "defaultTtl": 86400,
+    "indexingPolicy": {
+      "automatic": true,
+      "indexingMode": "consistent",
+      "includedPaths": [
+        {
+          "path": "/*"
+        }
+      ],
+      "excludedPaths": [
+        {
+          "path": "/compactionSummary/?"
+        },
+        {
+          "path": "/\"_etag\"/?"
+        }
+      ]
+    }
+  },
+  {
+    "id": "usage-records",
+    "partitionKey": {
+      "paths": [
+        "/userId"
+      ],
+      "kind": "Hash",
+      "version": 2
+    },
+    "defaultTtl": 7776000,
+    "indexingPolicy": {
+      "automatic": true,
+      "indexingMode": "consistent",
+      "includedPaths": [
+        {
+          "path": "/*"
+        }
+      ],
+      "excludedPaths": [
+        {
+          "path": "/\"_etag\"/?"
+        }
+      ]
+    }
+  },
+  {
+    "id": "user-skills",
+    "partitionKey": {
+      "paths": [
+        "/userId"
+      ]
+    },
+    "indexingPolicy": {
+      "automatic": true,
+      "indexingMode": "consistent",
+      "includedPaths": [
+        {
+          "path": "/*"
+        }
+      ],
+      "excludedPaths": [
+        {
+          "path": "/credentials/*"
+        },
+        {
+          "path": "/\"_etag\"/?"
+        }
+      ]
+    }
+  },
+  {
+    "id": "whatsapp-state",
+    "partitionKey": {
+      "paths": [
+        "/scope"
+      ],
+      "kind": "Hash",
+      "version": 2
+    },
+    "defaultTtl": -1
+  }
+]
