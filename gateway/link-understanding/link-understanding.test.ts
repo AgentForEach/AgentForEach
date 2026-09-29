@@ -373,6 +373,9 @@ test("extractContent — HTML text extraction", async (t) => {
       "<!--".repeat(100_000),
       "<title>".repeat(50_000),
       "<meta ".repeat(100_000),
+      "<nav>".repeat(200_000),
+      "<svg><p>x".repeat(100_000),
+      "<p class=x'>".repeat(100_000),
     ];
     for (const body of hostile) {
       const started = Date.now();
@@ -396,6 +399,27 @@ test("extractContent — HTML text extraction", async (t) => {
     assert.ok(result.text.includes("1 < 2 and 3 > 2"));
     assert.ok(!result.text.includes("bad()"));
     assert.ok(result.text.includes("after"));
+  });
+
+  await t.test("unclosed or self-closing layout elements don't hide the page", () => {
+    const text = (body: string) => extractContent(makeFetchResult({ body }), 6000).text;
+    assert.match(text(`<p>before</p><svg viewBox="0 0 1 1"/><p>real content</p>`), /real content/);
+    assert.match(text(`<nav><a>Home</a><p>article text</p>`), /article text/);
+    // Unclosed script still hides everything after it, as in a browser.
+    assert.doesNotMatch(text(`<p>a</p><script>var x = 1; <p>hidden</p>`), /hidden/);
+    // "</scripts>" doesn't close a script.
+    assert.doesNotMatch(text(`<script>var s = "</scripts>"; secret()</script><p>ok</p>`), /secret/);
+  });
+
+  await t.test("a quote inside an unquoted attribute value is just a character", () => {
+    const result = extractContent(
+      makeFetchResult({
+        body: `<meta property=og:title content=Bob's><p class=x'>Hello it's content</p><p>more</p>`,
+      }),
+      6000,
+    );
+    assert.equal(result.title, "Bob's");
+    assert.match(result.text, /Hello it's content/);
   });
 
   await t.test("decodes each entity once", () => {

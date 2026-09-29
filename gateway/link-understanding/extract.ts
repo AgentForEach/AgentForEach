@@ -124,18 +124,24 @@ function metaContent(metas: MetaTag[], key: string, value: string): string {
   return "";
 }
 
-/** Index of the ">" that ends a tag, skipping quoted attribute values; -1 if none. */
+/**
+ * Index of the ">" that ends a tag, skipping quoted attribute values; -1 if
+ * none. A quote opens a value only right after "=" (as in HTML): in
+ * `class=x'y` it's part of the unquoted value.
+ */
 function findTagEnd(html: string, from: number): number {
   let quote = "";
+  let afterEquals = false;
   for (let i = from; i < html.length; i++) {
-    const c = html[i];
+    const c = html[i]!;
     if (quote) {
       if (c === quote) quote = "";
-    } else if (c === '"' || c === "'") {
+    } else if ((c === '"' || c === "'") && afterEquals) {
       quote = c;
     } else if (c === ">") {
       return i;
     }
+    if (!isSpace(c)) afterEquals = c === "=";
   }
   return -1;
 }
@@ -182,6 +188,12 @@ const SKIPPED_ELEMENTS = new Set([
   "nav", "footer", "header", "aside", "form",
 ]);
 
+/**
+ * Of those, the ones whose content a browser never parses as HTML: unclosed,
+ * they run to the end of the page. Any other unclosed element is just a tag.
+ */
+const RAW_TEXT_ELEMENTS = new Set(["script", "style", "noscript", "iframe"]);
+
 /** Elements that start a new line. */
 const BLOCK_ELEMENTS = new Set([
   "p", "div", "br", "h1", "h2", "h3", "h4", "h5", "h6", "li", "tr",
@@ -197,6 +209,17 @@ function extractTextFromHtml(html: string, maxChars: number): string {
   const parts: string[] = [];
   const n = html.length;
   let i = 0;
+  // The next "</name" for each element name, from the last search (-1: none
+  // left). Searches only move forward, so thousands of unclosed tags of one
+  // name still cost one pass.
+  const nextClose = new Map<string, number>();
+  const findClose = (name: string, from: number): number => {
+    const known = nextClose.get(name);
+    if (known !== undefined && (known === -1 || known >= from)) return known;
+    const found = indexOfTag(html, `/${name}`, from);
+    nextClose.set(name, found);
+    return found;
+  };
   while (i < n) {
     const lt = html.indexOf("<", i);
     if (lt === -1) {
@@ -234,14 +257,17 @@ function extractTextFromHtml(html: string, maxChars: number): string {
     const end = findTagEnd(html, nameEnd);
     if (end === -1) break; // an unterminated tag runs to the end of the page
 
-    if (!closing && SKIPPED_ELEMENTS.has(name)) {
-      const close = indexOfCI(html, `</${name}`, end + 1);
-      if (close === -1) break; // unclosed: the element swallows the rest
-      const closeEnd = html.indexOf(">", close);
-      if (closeEnd === -1) break;
-      parts.push(" ");
-      i = closeEnd + 1;
-      continue;
+    const selfClosing = html[end - 1] === "/";
+    if (!closing && !selfClosing && SKIPPED_ELEMENTS.has(name)) {
+      const close = findClose(name, end + 1);
+      const closeEnd = close === -1 ? -1 : html.indexOf(">", close);
+      if (closeEnd !== -1) {
+        parts.push(" ");
+        i = closeEnd + 1;
+        continue;
+      }
+      // Unclosed: a script or style swallows the rest, as in a browser.
+      if (RAW_TEXT_ELEMENTS.has(name)) break;
     }
 
     parts.push(BLOCK_ELEMENTS.has(name) ? "\n" : " ");
