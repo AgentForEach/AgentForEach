@@ -5,12 +5,12 @@
   </picture>
 </p>
 
-<h1 align="center">An AI agent for each of your users.</h1>
+<h1 align="center">The open-source brain for personal AI agents.</h1>
 
 <p align="center">
-  <b>Hyperscale, serverless architecture for personal AI agents.</b><br>
-  Every user gets their own agent with memory, reminders, tools, a private sandbox and a chat on web, Telegram or WhatsApp.<br>
-  They all run on one shared serverless deployment, so an idle user costs only storage.
+  <b>Muse, Grok and o give every user an AI agent of their own. AgentForEach is the backend to build a product like them.</b><br>
+  It runs one agent for each of your users, with memory, scheduled work, tools, a private sandbox and a chat on web, Telegram or WhatsApp,<br>
+  on a hyperscale serverless architecture where an idle user costs only storage.
 </p>
 
 <p align="center"><code>users.forEach(user =&gt; agent(user))</code></p>
@@ -40,38 +40,70 @@
 
 > **Status: preview.** The architecture is load-tested, the security model reviewed and the code has 1,100+ tests, but it hasn't run in many production deployments yet. Read [SECURITY.md](SECURITY.md) before exposing it to users.
 
-## What you can build
+## What it is
+
+A personal AI agent product is much more than a model and a chat window. Behind an app like Muse, every user has an agent that remembers them, keeps working on a schedule while they're away, uses tools, runs code, asks before it acts and answers on whichever channel they use. The company behind it runs all of those agents at once, for every user, without a server for each.
+
+AgentForEach is that backend, open source. You build the product; it runs the agents.
+
+| You build | AgentForEach runs |
+|---|---|
+| Your app, brand and onboarding | One agent per user: sessions, history, long-term memory, prompt documents |
+| Your agent's personality, skills and knowledge | The tool loop, model failover and streaming replies to every device |
+| Sign-in, with your identity provider | Reminders, recurring jobs and heartbeats on a sharded scheduler |
+| Your pricing and your users | Approvals, per-user sandboxes, Telegram and WhatsApp, tenant isolation, and the whole Azure stack as code |
+
+## Who it's for
+
+- **Startups building a personal-agent product.** Your own Muse for a market, a language or a niche, without building the platform first.
+- **Companies with an audience.** Banks, telcos, retailers and schools giving every customer an agent in their app or on WhatsApp.
+- **Teams building vertical agents.** A tutor for every student or a coach for every client: your domain, one agent per user.
+
+It also runs in **single-user mode** for one person's own agent ([setup](docs/Identity.md#deployment-scenarios)). That works, but it isn't what the architecture is for: one agent doesn't need hyperscale.
+
+## How it's different
+
+| | Self-hosted personal agents | Agent frameworks | AgentForEach |
+|---|---|---|---|
+| Built for | One person running their own agent | Developers writing agent logic | Companies running an agent for every user |
+| Users per deployment | One owner | Whatever you build | Any number, on one deployment |
+| An idle user costs | A machine that stays on | Whatever you build | Storage only |
+| Per-user memory, schedules and sandboxes | For the one owner | Build it yourself | Built in and isolated per user |
+| Channels and identity linking | The owner's own accounts | Build it yourself | Web and apps, Telegram and WhatsApp, with pairing |
+| Infrastructure | A machine or container | Bring your own | One Pulumi program, fully serverless |
+
+## What companies build with it
 
 <table>
   <tr>
     <td width="50%" valign="top">
       <img src="docs/assets/icons/use-app.svg" width="56" alt=""><br>
-      <b>A personal assistant inside your app</b><br>
-      A Muse-style agent under your own brand that remembers each user, runs errands on a schedule and follows up on its own.
+      <b>Your own Muse</b><br>
+      A consumer personal-agent app under your brand. Every user's agent remembers them, works while they're away and follows up on its own.
     </td>
     <td width="50%" valign="top">
       <img src="docs/assets/icons/use-concierge.svg" width="56" alt=""><br>
-      <b>A concierge for every customer</b><br>
-      One agent per customer on WhatsApp or Telegram, with that customer's history and an approval step before anything that matters.
+      <b>An agent for every customer</b><br>
+      Give each customer of your bank, telco or store their own agent in your app or on WhatsApp, with their history and an approval step before anything that matters.
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
       <img src="docs/assets/icons/use-tutor.svg" width="56" alt=""><br>
       <b>A tutor for every student</b><br>
-      Memory of what each student knows, reminders to practise, a sandbox to run their code, and your course material as a knowledge base.
+      A vertical agent product: memory of what each student knows, reminders to practise, a sandbox to run their code and your course material as a knowledge base.
     </td>
     <td width="50%" valign="top">
       <img src="docs/assets/icons/use-team.svg" width="56" alt=""><br>
       <b>An assistant for every employee</b><br>
-      Each person's own agent, with skills that call your internal APIs. Credentials are injected by the platform and never reach the model.
+      Roll out an agent to everyone in your company, with skills that call your internal APIs. Credentials are injected by the platform and never reach the model.
     </td>
   </tr>
 </table>
 
-## Why this architecture
+## Why serverless
 
-Personal agents are usually built as one machine or container per user. That is simple at a hundred users and a fleet to run at a million, and you pay for every machine while its user sleeps. AgentForEach runs every user's agent on **one shared serverless platform** instead:
+The usual way to give each user an agent is one machine or container per user. That is simple at a hundred users and a fleet to run at a million, and you pay for every machine while its user sleeps. AgentForEach runs every user's agent on **one shared serverless platform** instead:
 
 | | One machine (or container) per user | AgentForEach |
 |---|---|---|
@@ -190,3 +222,5 @@ The full index is in [docs/README.md](docs/README.md).
 ## License
 
 [Apache-2.0](LICENSE). Third-party notices are in [NOTICE](NOTICE).
+
+Muse, Grok and o are products of Meta, xAI and OpenAI. AgentForEach is an independent project and is not affiliated with them.
