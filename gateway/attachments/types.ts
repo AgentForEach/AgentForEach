@@ -20,6 +20,12 @@ export interface AttachmentConfig {
   maxDocumentBytes: number;
   /** Maximum combined size of all attachments in bytes. Default: 20 MiB. */
   maxTotalBytes: number;
+  /**
+   * Maximum size a .docx may expand to once unzipped, measured by inflating
+   * it (the zip's own headers can lie). Stops a small "zip bomb" from
+   * exhausting the worker's memory. Default: 40 MiB.
+   */
+  maxDocxExpandedBytes: number;
   /** Maximum extracted characters kept per document. Default: 20000. */
   maxDocumentChars: number;
   /** Maximum extracted characters kept across all documents. Default: 60000. */

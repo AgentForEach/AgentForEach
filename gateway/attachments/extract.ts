@@ -16,6 +16,7 @@
  */
 
 import { analyzeLayout } from "./layout.js";
+import { assertZipWithinLimits, ZipLimitError } from "../utils/zip.js";
 import type {
   AttachmentConfig,
   DocumentFormat,
@@ -226,12 +227,37 @@ async function extractPdf(
 /** ZIP magic bytes: PK — .docx is a zip archive. */
 const ZIP_MAGIC = Buffer.from([0x50, 0x4b]);
 
-async function extractDocx(buffer: Buffer): Promise<ExtractionOutput> {
+/** Far more parts than any real Word document has. */
+const MAX_DOCX_ENTRIES = 5_000;
+
+async function extractDocx(
+  buffer: Buffer,
+  config: AttachmentConfig,
+): Promise<ExtractionOutput> {
   if (buffer.subarray(0, 2).compare(ZIP_MAGIC) !== 0) {
     throw new DocumentExtractionError(
       "That file is named as a Word document but isn't a valid .docx archive.",
       "invalid_docx",
     );
+  }
+
+  // Mammoth inflates the whole archive into memory, so measure it first.
+  try {
+    assertZipWithinLimits(buffer, {
+      maxExpandedBytes: config.maxDocxExpandedBytes,
+      maxEntries: MAX_DOCX_ENTRIES,
+    });
+  } catch (err) {
+    if (!(err instanceof ZipLimitError)) throw err;
+    throw err.code === "invalid"
+      ? new DocumentExtractionError(
+          "That Word document couldn't be read. It may be corrupted.",
+          "unreadable_docx",
+        )
+      : new DocumentExtractionError(
+          "That Word document is too large to read once unpacked.",
+          "docx_too_large",
+        );
   }
 
   const [{ default: mammoth }, { NodeHtmlMarkdown }] = await Promise.all([

@@ -7,6 +7,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { crc32, deflateRawSync } from "node:zlib";
 import { classifyAttachment } from "./detect.js";
 import { base64ByteLength, validateAttachments } from "./validate.js";
 import {
@@ -30,6 +31,7 @@ const CONFIG: AttachmentConfig = {
   maxImageBytes: 5 * 1024 * 1024,
   maxDocumentBytes: 8 * 1024 * 1024,
   maxTotalBytes: 20 * 1024 * 1024,
+  maxDocxExpandedBytes: 40 * 1024 * 1024,
   maxDocumentChars: 20_000,
   maxTotalDocumentChars: 60_000,
   minExtractableChars: 200,
@@ -267,6 +269,108 @@ test("rejects a docx that isn't a zip archive", async () => {
       ),
     (error: unknown) =>
       error instanceof DocumentExtractionError && error.code === "invalid_docx",
+  );
+});
+
+/**
+ * Build a zip by hand. `claimedSize` overrides the uncompressed size the
+ * headers state, to model an archive that lies about itself.
+ */
+function buildZip(entries: Array<{ name: string; data: Buffer; claimedSize?: number }>): Buffer {
+  const locals: Buffer[] = [];
+  const centrals: Buffer[] = [];
+  let offset = 0;
+  for (const { name, data, claimedSize } of entries) {
+    const nameBytes = Buffer.from(name, "utf8");
+    const packed = deflateRawSync(data);
+    const size = claimedSize ?? data.length;
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(8, 8);
+    local.writeUInt32LE(crc32(data), 14);
+    local.writeUInt32LE(packed.length, 18);
+    local.writeUInt32LE(size, 22);
+    local.writeUInt16LE(nameBytes.length, 26);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(8, 10);
+    central.writeUInt32LE(crc32(data), 16);
+    central.writeUInt32LE(packed.length, 20);
+    central.writeUInt32LE(size, 24);
+    central.writeUInt16LE(nameBytes.length, 28);
+    central.writeUInt32LE(offset, 42);
+    locals.push(local, nameBytes, packed);
+    centrals.push(central, nameBytes);
+    offset += 30 + nameBytes.length + packed.length;
+  }
+  const directory = Buffer.concat(centrals);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(directory.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, directory, end]);
+}
+
+/** The smallest .docx Mammoth accepts, plus any extra parts. */
+function buildDocx(text: string, extra: Array<{ name: string; data: Buffer; claimedSize?: number }> = []): Buffer {
+  const xml = (s: string) => Buffer.from(`<?xml version="1.0" encoding="UTF-8"?>${s}`, "utf8");
+  return buildZip([
+    {
+      name: "[Content_Types].xml",
+      data: xml(
+        `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+          `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
+          `<Default Extension="xml" ContentType="application/xml"/>` +
+          `<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>` +
+          `</Types>`,
+      ),
+    },
+    {
+      name: "_rels/.rels",
+      data: xml(
+        `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+          `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>` +
+          `</Relationships>`,
+      ),
+    },
+    {
+      name: "word/document.xml",
+      data: xml(
+        `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+          `<w:body><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:body></w:document>`,
+      ),
+    },
+    ...extra,
+  ]);
+}
+
+test("extracts text from a real docx", async () => {
+  const doc = await extractDocument(buildDocx("Clause 4: the term is 24 months."), "docx", "contract.docx", CONFIG);
+  assert.match(doc.text, /Clause 4: the term is 24 months\./);
+});
+
+test("rejects a docx that expands past the limit, whatever its headers claim", async () => {
+  const padding = { name: "word/media/padding.bin", data: Buffer.alloc(48 * 1024 * 1024) };
+  for (const bomb of [buildDocx("hi", [padding]), buildDocx("hi", [{ ...padding, claimedSize: 100 }])]) {
+    assert.ok(bomb.length < 100 * 1024, "the archive itself is small");
+    await assert.rejects(
+      () => extractDocument(bomb, "docx", "bomb.docx", CONFIG),
+      (error: unknown) => error instanceof DocumentExtractionError && error.code === "docx_too_large",
+    );
+  }
+});
+
+test("rejects a docx whose archive is corrupt", async () => {
+  const docx = buildDocx("hi");
+  const truncated = docx.subarray(0, docx.length - 30);
+  await assert.rejects(
+    () => extractDocument(truncated, "docx", "broken.docx", CONFIG),
+    (error: unknown) => error instanceof DocumentExtractionError && error.code === "unreadable_docx",
   );
 });
 

@@ -125,6 +125,7 @@
     "maxImageBytes": 5242880,
     "maxDocumentBytes": 8388608,
     "maxTotalBytes": 20971520,
+    "maxDocxExpandedBytes": 41943040,
     "maxDocumentChars": 20000,
     "maxTotalDocumentChars": 60000,
     "minExtractableChars": 200,

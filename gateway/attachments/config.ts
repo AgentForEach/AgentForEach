@@ -19,6 +19,7 @@ const DEFAULT_CONFIG: AttachmentConfig = {
   maxImageBytes: 5 * MIB,
   maxDocumentBytes: 8 * MIB,
   maxTotalBytes: 20 * MIB,
+  maxDocxExpandedBytes: 40 * MIB,
   maxDocumentChars: 20_000,
   maxTotalDocumentChars: 60_000,
   minExtractableChars: 200,
@@ -48,6 +49,8 @@ export function loadAttachmentConfig(): AttachmentConfig {
     maxDocumentBytes:
       section?.maxDocumentBytes ?? DEFAULT_CONFIG.maxDocumentBytes,
     maxTotalBytes: section?.maxTotalBytes ?? DEFAULT_CONFIG.maxTotalBytes,
+    maxDocxExpandedBytes:
+      section?.maxDocxExpandedBytes ?? DEFAULT_CONFIG.maxDocxExpandedBytes,
     maxDocumentChars:
       section?.maxDocumentChars ?? DEFAULT_CONFIG.maxDocumentChars,
     maxTotalDocumentChars:
