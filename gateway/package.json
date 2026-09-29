@@ -35,22 +35,22 @@
     "test:security": "npm run build && node --test dist/gateway/cron/api-guards.test.js dist/gateway/cron/recipient-policy.test.js dist/gateway/utils/safe-fetch.test.js dist/gateway/handlers/ws-security.test.js dist/gateway/handlers/chat-turn.test.js dist/gateway/utils/redact.test.js dist/gateway/utils/azure-token.test.js dist/gateway/utils/control-tokens.test.js dist/gateway/auth/*.test.js dist/gateway/identity/*.test.js dist/gateway/skills/credentials.test.js"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.78.0",
-    "@azure/core-auth": "^1.10.0",
-    "@azure/cosmos": "^4.3.1",
-    "@azure/functions": "^4.6.0",
-    "@azure/storage-blob": "^12.26.0",
+    "@anthropic-ai/sdk": "^0.128.0",
+    "@azure/core-auth": "^1.11.0",
+    "@azure/cosmos": "^4.10.1",
+    "@azure/functions": "^4.16.5",
+    "@azure/storage-blob": "^12.34.0",
     "@azure/web-pubsub": "^1.2.0",
-    "@e2b/code-interpreter": "^2.3.3",
-    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@e2b/code-interpreter": "^2.8.0",
+    "@modelcontextprotocol/sdk": "^1.30.1",
     "croner": "^9.0.0",
-    "durable-functions": "^3.1.0",
-    "langsmith": "^0.5.7",
-    "mammoth": "^1.12.0",
+    "durable-functions": "^3.5.0",
+    "langsmith": "^0.10.5",
+    "mammoth": "^1.12.3",
     "node-html-markdown": "^2.0.0",
     "openai": "^4.77.0",
     "undici": "^6.29.0",
-    "unpdf": "^1.8.0"
+    "unpdf": "^1.8.1"
   },
   "devDependencies": {
     "@types/node": "^22.0.0"
