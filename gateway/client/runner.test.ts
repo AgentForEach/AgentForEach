@@ -63,6 +63,24 @@ test("a chained turn carries its history for failover, and a reply that doesn't 
   assert.equal(sessionStore.persistedStates.at(-1), null, "a chain that wasn't extended is cleared");
 });
 
+test("a turn that fails after /new replaced its session writes nothing into the new one", async () => {
+  let sessionStore!: ReturnType<typeof makeDeps>["sessionStore"];
+  const provider = scriptedProvider([
+    () => {
+      // Mid-turn, the user sends /new: a fresh instance with an empty history.
+      sessionStore.sessions.get("s1")!.instanceId = "inst2";
+      sessionStore.messages.length = 0;
+      throw Object.assign(new Error("upstream failure"), { status: 500 });
+    },
+  ]);
+  const made = makeDeps(provider);
+  sessionStore = made.sessionStore;
+
+  await send(made.deps, "a message for the old conversation");
+  assert.deepEqual(sessionStore.messages, [], "nothing from the old turn in the new conversation");
+  assert.deepEqual(sessionStore.persistedStates, [], "the new conversation's chain is untouched");
+});
+
 // ============================================================================
 // T1-1 (HITL): resuming a form sends every output the paused response needs
 // ============================================================================

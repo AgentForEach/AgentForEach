@@ -45,7 +45,7 @@ import {
   withFailoverStream,
 } from "../llms/index.js";
 import { retryStreamStart } from "../llms/stream-retry.js";
-import { RunLeaseLostError } from "../sessions/store.js";
+import { RunLeaseLostError, SessionReplacedError } from "../sessions/store.js";
 import { chainResponsesEnabled } from "../llms/config.js";
 import type { MemoryLayer } from "../memory/index.js";
 import {
@@ -431,6 +431,8 @@ export async function runAgentTurn(
   // still billed for the rounds it completed.
   let usageSoFar: UsageStats | undefined;
   let leasedSessionId: string | undefined;
+  // The session instance this run leased; /new replaces it.
+  let leasedInstanceId: string | undefined;
   let leaseRenewal: NodeJS.Timeout | undefined;
   let leaseLost = false;
   // This delivery found its own run holding the session and waited for it.
@@ -545,6 +547,7 @@ export async function runAgentTurn(
       if (!acquired) throw new SessionBusyError(true);
     }
     leasedSessionId = session.sessionId;
+    leasedInstanceId = session.instanceId;
     let leaseRenewedAt = Date.now();
     const loseLease = () => {
       leaseLost = true;
@@ -2717,7 +2720,7 @@ export async function runAgentTurn(
       !userMessagePersisted &&
       !(err instanceof SessionBusyError) &&
       !(err instanceof RunLeaseLostError) && // another execution owns the session now
-
+      !(err instanceof SessionReplacedError) && // /new started a fresh conversation
       request.metadata?._hitlContinuation !== "true" &&
       !request.abortSignal?.aborted
     ) {
@@ -2731,6 +2734,11 @@ export async function runAgentTurn(
             { role: "assistant", content: `(This reply failed before it finished: ${failure.code}.)`, timestamp: now },
           ],
           null,
+          undefined,
+          // Same guards as a normal save: never into a replaced session, or
+          // one another execution now holds.
+          leasedInstanceId,
+          leaseId,
         )
         .catch((persistErr) =>
           console.warn(

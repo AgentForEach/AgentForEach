@@ -13,7 +13,7 @@ import type {
   StreamEvent,
 } from "../llms/types.js";
 import type { Session } from "../sessions/types.js";
-import { RunLeaseLostError } from "../sessions/store.js";
+import { RunLeaseLostError, SessionReplacedError } from "../sessions/store.js";
 
 type Step = (req: ProviderRequest, round: number) => ProviderResponse | Promise<ProviderResponse>;
 
@@ -141,9 +141,12 @@ export function memorySessionStore() {
       newMessages: Array<{ role: string; content: unknown }>,
       conversationState?: ConversationState | null,
       _metadata?: unknown,
-      _expectedInstanceId?: string,
+      expectedInstanceId?: string,
       expectedLeaseId?: string,
     ) {
+      if (expectedInstanceId !== undefined && sessions.get(sessionId)?.instanceId !== expectedInstanceId) {
+        throw new SessionReplacedError("Session was replaced");
+      }
       if (expectedLeaseId !== undefined && store.leases.get(sessionId)?.leaseId !== expectedLeaseId) {
         throw new RunLeaseLostError("Run lease lost");
       }
