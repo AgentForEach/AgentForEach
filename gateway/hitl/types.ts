@@ -315,6 +315,8 @@ export interface HitlRunState {
    */
   completedToolResults: Array<{
     callId: string;
+    /** Tool name, so a resume can write the result into the history. */
+    name?: string;
     output: string;
   }>;
 

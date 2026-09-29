@@ -231,6 +231,19 @@ df.app.activity(HITL_RESUME_ACTIVITY, {
  * The LLM sees: original user message → tool execution result → continuation prompt
  * — the first two from session history, the prompt is transient (never persisted).
  */
+/**
+ * History entries for the tool calls that ran alongside the paused one (the
+ * runner saves their results when it suspends), so the model sees they ran.
+ */
+export function siblingResultMessages(runState: HitlRunState, timestamp: string): SessionMessage[] {
+  return (runState.completedToolResults ?? []).map((r) => ({
+    role: "assistant" as const,
+    content: `[${r.name ?? "tool"}] ${r.output}`,
+    timestamp,
+    runId: runState.runId,
+  }));
+}
+
 async function resumeRunWithResult(
   client: any,
   runState: HitlRunState,
@@ -267,7 +280,7 @@ async function resumeRunWithResult(
       await sessionStore.appendMessages(
         originalRequest.userId,
         sessionId,
-        [toolResultMessage],
+        [...siblingResultMessages(runState, now), toolResultMessage],
         null, // ← clear previousResponseId — chain is broken by HITL
       );
     } catch (err) {
@@ -416,7 +429,7 @@ df.app.activity(HITL_TIMEOUT_ACTIVITY, {
           await sessionStore.appendMessages(
             input.userId,
             runState.sessionId,
-            [timeoutMessage],
+            [...siblingResultMessages(runState, now), timeoutMessage],
           );
         } catch (err) {
           // Non-fatal — session persistence failure shouldn't block cleanup

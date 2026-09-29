@@ -240,7 +240,7 @@ export interface RunnerDeps {
  * returns an "awaiting_input" response instead of treating it
  * as an error.
  */
-class HitlSuspendSignal extends Error {
+export class HitlSuspendSignal extends Error {
   readonly requestId: string;
   readonly sessionId: string;
   readonly text: string;
@@ -347,6 +347,26 @@ async function* withStreamIdleTimeout<T>(
  * can recover (retry, try another tool, explain) instead of the whole run
  * failing. A HITL suspend is not an error and still propagates.
  */
+/**
+ * If a tool call suspended the run for approval: its signal, and the results
+ * of the calls from the same response that completed alongside it.
+ */
+export function findSuspension(
+  settled: PromiseSettledResult<{ callId: string; output: string }>[],
+  calls: Array<{ name: string }>,
+): { signal: HitlSuspendSignal; siblingResults: Array<{ callId: string; name: string; output: string }> } | undefined {
+  const suspended = settled.find(
+    (r): r is PromiseRejectedResult => r.status === "rejected" && r.reason instanceof HitlSuspendSignal,
+  );
+  if (!suspended) return undefined;
+  return {
+    signal: suspended.reason as HitlSuspendSignal,
+    siblingResults: settled.flatMap((r, i) =>
+      r.status === "fulfilled" ? [{ callId: r.value.callId, name: calls[i]!.name, output: r.value.output }] : [],
+    ),
+  };
+}
+
 async function settleToolCall(
   call: { callId: string; name: string },
   runId: string,
@@ -1807,7 +1827,7 @@ export async function runAgentTurn(
       }
 
       // Execute all function calls in parallel
-      const toolResults = await Promise.all(
+      const settledToolCalls = await Promise.allSettled(
         functionCalls.map((call) => settleToolCall(call, runId, async () => {
           const toolStartTime = Date.now();
           const args = safeParseArgs(call.arguments);
@@ -2233,6 +2253,24 @@ export async function runAgentTurn(
           return { callId: call.callId, output: result };
         })),
       );
+
+      // A gated call suspends the run for approval. The other calls from the
+      // same response have run (or are running): wait for them and keep
+      // their results with the paused request, so the resume writes them
+      // into the history instead of the model calling them again.
+      const suspension = findSuspension(settledToolCalls, functionCalls);
+      if (suspension) {
+        const { signal, siblingResults } = suspension;
+        if (siblingResults.length > 0 && deps.hitlStore) {
+          await deps.hitlStore
+            .setCompletedToolResults(signal.requestId, request.userId, siblingResults)
+            .catch((e) => console.warn(`[runner] hitl sibling results not saved run=${runId}: ${e instanceof Error ? e.message : String(e)}`));
+        }
+        throw signal;
+      }
+      const failedToolCall = settledToolCalls.find((r): r is PromiseRejectedResult => r.status === "rejected");
+      if (failedToolCall) throw failedToolCall.reason;
+      const toolResults = settledToolCalls.map((r) => (r as PromiseFulfilledResult<{ callId: string; output: string }>).value);
 
       const terminalInputRequestPayload = getPendingInputRequestPayload();
       if (terminalInputRequestPayload) {

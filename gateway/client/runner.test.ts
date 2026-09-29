@@ -6,7 +6,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { runAgentTurn, type RunnerDeps } from "./runner.js";
+import { findSuspension, HitlSuspendSignal, runAgentTurn, type RunnerDeps } from "./runner.js";
+import { siblingResultMessages } from "../hitl/orchestrator.js";
 import { makeDeps, scriptedProvider, textResponse, toolCallResponse } from "./runner.test-harness.js";
 import type { Provider } from "../llms/types.js";
 
@@ -402,4 +403,27 @@ test("without an idempotency key, a second delivery of a finished run replays it
   assert.equal(a.text, "only once");
   assert.equal(b.text, "only once");
   assert.equal(provider.requests.length, 1, "the model ran once");
+});
+
+test("a call paused for approval keeps the results of the calls that ran beside it", async () => {
+  const settled = await Promise.allSettled([
+    Promise.resolve({ callId: "c1", output: '{"ok":true,"jobId":"j1"}' }),
+    Promise.reject(new HitlSuspendSignal("req-1", "s1", "Approve the transfer?")),
+    Promise.resolve({ callId: "c3", output: "3 results" }),
+  ]);
+  const found = findSuspension(settled, [{ name: "cron_create" }, { name: "bank_transfer" }, { name: "memory_search" }]);
+  assert.equal(found?.signal.requestId, "req-1");
+  assert.deepEqual(found?.siblingResults, [
+    { callId: "c1", name: "cron_create", output: '{"ok":true,"jobId":"j1"}' },
+    { callId: "c3", name: "memory_search", output: "3 results" },
+  ]);
+
+  // On resume they go into the history ahead of the approved call's result.
+  const messages = siblingResultMessages(
+    { runId: "run-1", completedToolResults: found!.siblingResults } as never,
+    "2026-09-30T00:00:00.000Z",
+  );
+  assert.deepEqual(messages.map((m) => m.content), ['[cron_create] {"ok":true,"jobId":"j1"}', "[memory_search] 3 results"]);
+
+  assert.equal(findSuspension(await Promise.allSettled([Promise.resolve({ callId: "c1", output: "x" })]), [{ name: "a" }]), undefined);
 });
