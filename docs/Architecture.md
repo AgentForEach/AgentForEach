@@ -2,6 +2,11 @@
 
 AgentForEach is one stateless Function App in front of Cosmos DB. Every turn loads what it needs, calls the model, writes the result and forgets; nothing about a user lives in memory between turns. That is what lets it run one deployment for any number of users and cost nothing for users who aren't talking to it.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/architecture-dark.svg">
+  <img alt="Architecture. Users reach one Function App on Flex Consumption from an app or the web over HTTP and WebSocket, or from Telegram and WhatsApp webhooks. The app accepts a message in about 0.12 seconds, runs the turn in a Durable orchestration and hands it to the agent runner; a sharded scheduler wakes the runner for reminders and heartbeats. The runner calls model providers, Cosmos DB partitioned by user, Web PubSub, a per-user sandbox and optional AI Search. The reply streams back to every device the user has open. The app is stateless, so any instance serves any user and it scales to zero." src="assets/architecture-light.svg">
+</picture>
+
 ## Components
 
 | Component | Azure service | Role |
@@ -74,6 +79,26 @@ Almost everything is partitioned by user, so a turn's reads and writes are point
 ## Scheduled work
 
 Jobs are spread over scheduler shards (8 by default), each an eternal Durable orchestration that sleeps until its next due job. A job's due time lives in `cron-due-index`, partitioned by shard, so a shard finds its next work with a single-partition query. A timer restarts any shard that stopped.
+
+## Scaling
+
+Nothing in the design is per user or global. A turn holds no state between calls, user data sits in that user's partition, schedules are spread over shards, and the only lock is a lease on one session. So each ceiling below is either a limit Microsoft publishes or a setting in this repo, and you raise it without changing code.
+
+| Layer | What Microsoft publishes | The setting here |
+|---|---|---|
+| Functions, Flex Consumption | Up to [1,000 instances](https://learn.microsoft.com/azure/azure-functions/flex-consumption-plan) per function group; 250 cores per region per subscription by default, raised by a support request | `agentforeach:functionMaxInstances` (100 by default), `httpPerInstanceConcurrency` (16) |
+| Cosmos DB | [No limit](https://learn.microsoft.com/azure/cosmos-db/concepts-limits) on storage or physical partitions per container; 10,000 RU/s and 20 GB per logical partition (one user's data) | `agentforeach:cosmosCapacity`: `serverless` by default; `autoscale` with `cosmosAutoscaleMaxRu` for sustained load. Fixed when the account is created |
+| Web PubSub | [1,000 connections per unit](https://learn.microsoft.com/azure/azure-web-pubsub/howto-scale-manual-scale), up to 100 units on Standard and Premium_P1; Premium_P2 goes to 1,000 units | `agentforeach:webPubSubSku`, `webPubSubUnits` (1 by default) |
+| Scheduler | — | `CRON_SCHEDULER_SHARDS`: 8 by default, up to 128 |
+| Durable Functions (Azure Storage backend) | [1 to 16 partitions](https://learn.microsoft.com/azure/durable-task/durable-functions/durable-functions-azure-storage-provider); activities scale out with instances, and each orchestration lives in one partition | `partitionCount` 16 in `gateway/host.json`, the maximum |
+| Model providers | Tokens and requests per minute, [per model and region](https://learn.microsoft.com/azure/foundry/openai/quotas-limits) | Failover between providers (`llms.failover` in the config) |
+
+Limits as published on 30 September 2026. Two notes for very large deployments:
+
+- **The model usually runs out first.** A deployment's token rate limit is reached well before the platform's limits; plan quota per region, and use failover.
+- **The Durable task hub is the first platform ceiling.** Every chat turn is a Durable orchestration, and the Azure Storage backend tops out at 16 partitions. Microsoft's [Durable Task Scheduler](https://learn.microsoft.com/azure/durable-task/scheduler/durable-task-scheduler) is the documented next step (about five times the work-item throughput in Microsoft's comparison). It isn't wired up or measured here yet.
+
+What has been measured end to end is in [Benchmarks](Benchmarks.md).
 
 ## Security boundaries
 

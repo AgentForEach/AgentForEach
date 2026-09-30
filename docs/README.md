@@ -8,12 +8,14 @@
 | [What it costs](costs.md) | Monthly cost at 10,000 to 1,000,000 users, the assumptions, and a script to run your own |
 | [Benchmarks](Benchmarks.md) | Load-test method, results and how to measure your own stack |
 | [Upgrading](UPGRADING.md) | Behaviour changes an operator needs to know about, newest first |
+| [FAQ](FAQ.md) | Short answers: models, apps, clouds, scale, cost, isolation |
 
 ## How it works
 
 | Doc | What it covers |
 |---|---|
-| [Architecture](Architecture.md) | The stateless Function App, how a turn flows, the real-time protocol |
+| [Architecture](Architecture.md) | The stateless Function App, how a turn flows, the real-time protocol, how far it scales |
+| [Comparisons](Comparisons.md) | A machine per user, agent frameworks, Cloudflare Agents and Letta |
 | [Sessions and messages](Session-management.md) | How conversations are stored, kept private per user and compacted |
 | [Identity](Identity.md) | Mapping channel senders to users, account linking and pairing |
 | [Easy Auth](EasyAuth.md) | Signing users in with App Service authentication |

@@ -7,6 +7,13 @@ A deployment has three kinds of cost: **model tokens** for every turn, the **pla
   <img alt="100,000 users for a month. A machine per user: about $772,340. AgentForEach: about $14,292, of which $1,152 is the platform and the rest model tokens. Both include up to $13,140 of model tokens." src="assets/costs-light.svg">
 </picture>
 
+The saving comes from what an agent does all day: almost nothing. It wakes for a message or a scheduled job, works for about 0.7 s of platform time plus the model call, and goes back to storage.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/day-dark.svg">
+  <img alt="One user's day. A machine per user is billed for all 24 hours. With AgentForEach the agent wakes only for a scheduled reminder and a handful of messages, each about 0.7 seconds of platform work plus model tokens; in between it costs only storage." src="assets/day-light.svg">
+</picture>
+
 These are estimates from [`scripts/cost-model.mjs`](../scripts/cost-model.mjs). Every assumption below is a flag, so you can run it with your own numbers:
 
 ```bash
