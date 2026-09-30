@@ -1,6 +1,6 @@
-# AgentForEach Cron System (Azure Durable + Cosmos) — Architecture
+# AgentForEach cron system (Azure Durable + Cosmos): architecture
 
-For an implementation + operations guide focused on Durable Functions and Cosmos usage, see:
+For an implementation and operations guide to Durable Functions and Cosmos usage, see:
 `docs/Cron-Durable-Cosmos.md`
 
 ## 1. Purpose
@@ -10,11 +10,11 @@ This document describes **how cron jobs run in AgentForEach today**: at/every/cr
 - Scheduler runtime: Azure Durable Functions orchestrations, not an in-process timer
 - Persistence: Cosmos DB containers for jobs, run history and the due index
 
-## 2. Runtime Architecture
+## 2. Runtime architecture
 
-### 2.1 Durable Components
+### 2.1 Durable components
 
-- `CronScheduler` orchestration (`gateway/cron/orchestrator.ts`) — one instance per shard
+- `CronScheduler` orchestration (`gateway/cron/orchestrator.ts`): one instance per shard
 - Activities:
   - `GetDueJobs`
   - `ExecuteAndRecordJob`
@@ -23,7 +23,7 @@ This document describes **how cron jobs run in AgentForEach today**: at/every/cr
 - Health timer:
   - `CronSchedulerHealthCheck` ensures all configured shard orchestrations are running
 
-### 2.2 Eternal Loop
+### 2.2 Eternal loop
 
 Each orchestration iteration:
 
@@ -40,7 +40,7 @@ Non-duplicacy guard:
 - Stale claims are recoverable after a configurable timeout window
 - Jobs are deterministically assigned to scheduler shards via `shardId`
 
-## 3. Data Model (Cosmos)
+## 3. Data model (Cosmos)
 
 ### 3.1 Containers
 
@@ -49,7 +49,7 @@ Non-duplicacy guard:
 - `cron-heartbeat-events` (partition key: `/shardId`): queued `main`-session events waiting for the next heartbeat flush
 - `cron-runs` (partition key: `/jobId`, TTL on run docs)
 
-### 3.2 Job Semantics
+### 3.2 Job semantics
 
 AgentForEach cron jobs have these core semantics:
 
@@ -71,7 +71,7 @@ Store-level invariants are enforced in `gateway/cron/store.ts`:
 - `main` only supports webhook delivery (non-webhook delivery rejected)
 - `every` schedules normalize/repair `anchorMs`
 
-## 4. Schedule Behavior
+## 4. Schedule behavior
 
 ### 4.1 `every` correctness (spin-loop prevention)
 
@@ -81,7 +81,7 @@ Store-level invariants are enforced in `gateway/cron/store.ts`:
 
 Top-of-hour cron jobs use deterministic per-job offsets, with cursor shifting so staggered jobs do not skip the active schedule window.
 
-## 5. Execution Paths
+## 5. Execution paths
 
 ## 5.1 `isolated` jobs
 
@@ -96,13 +96,13 @@ Top-of-hour cron jobs use deterministic per-job offsets, with cursor shifting so
 - `wakeMode: "now"` queues the event and then tries to flush it immediately; if the session is busy or a backlog has built up, it stays queued for the next flush instead of being dropped
 - Supports optional `agentId` and `sessionId` routing
 
-## 6. Write Paths and Scheduler Wake
+## 6. Write paths and scheduler wake
 
-Any cron mutation should wake scheduler promptly.
+Any cron mutation should wake the scheduler promptly.
 
 ### 6.1 HTTP cron API path
 
-`gateway/cron/api.ts` raises Durable external event `jobsChanged` after create/update/delete and force-run state updates.
+`gateway/cron/api.ts` raises the Durable external event `jobsChanged` after create/update/delete and force-run state updates.
 
 ### 6.2 Tool path (LLM function tools)
 
@@ -114,27 +114,27 @@ Wired in:
 - `gateway/handlers/channel-webhook.ts`
 - `gateway/client/runner.ts`
 
-## 7. Force-Run Semantics
+## 7. Force-run semantics
 
-`POST /cron/jobs/{id}/run` now:
+`POST /cron/jobs/{id}/run`:
 
-1. Executes job
+1. Executes the job
 2. Records run history
 3. Applies normal result state transitions (`applyResult`) including next-run recomputation / one-shot cleanup
 4. Signals scheduler wake
 
 A force-run is a real run, not only a recorded one.
 
-## 8. Error Handling and Resilience
+## 8. Error handling and resilience
 
-`ExecuteAndRecordJob` activity is wrapped defensively:
+The `ExecuteAndRecordJob` activity is wrapped defensively:
 
 - Execution/storage errors are converted into error run records when possible
 - Activity returns a result instead of crashing the whole fanout cycle
 
 This reduces orchestration-wide failure risk from a single job failure.
 
-## 9. Design Summary
+## 9. Design summary
 
 ### 9.1 Behaviour
 
@@ -152,7 +152,7 @@ This reduces orchestration-wide failure risk from a single job failure.
 - State lives in Cosmos containers
 - The heartbeat queue is flushed by the shard scheduler, not a per-agent timer
 
-## 10. Key Files
+## 10. Key files
 
 - `gateway/cron/types.ts`
 - `gateway/cron/store.ts`
@@ -163,7 +163,7 @@ This reduces orchestration-wide failure risk from a single job failure.
 - `gateway/cron/tools.ts`
 - `gateway/handlers/cron-signal.ts`
 
-## 11. Operational Notes
+## 11. Operational notes
 
 - Scheduler runs as sharded Durable instances (`<prefix>` for shard 0, `<prefix>-{shardId}` for shard > 0; the prefix is `cron.scheduler.instanceIdPrefix`).
 - Due-job and wake queries are shard-scoped through `cron-due-index`. Jobs created before the index existed are picked up by `POST /cron/admin/backfill-due-index` (run once), or by the legacy cross-partition sweep if `CRON_LEGACY_SWEEP=true`.

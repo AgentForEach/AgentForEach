@@ -55,7 +55,7 @@ credentials: [{"key":"GITHUB_TOKEN","label":"GitHub token","required":true,"host
 
 On the first sandbox call of each turn, the brain rewrites the sandbox's egress policy and env file:
 
-- A credential with `hosts` and `header` becomes an egress-proxy `Transform` rule that sets that header on requests to those hosts only. The secret never enters the sandbox; the env var holds the placeholder `injected-by-egress-proxy`, so a script sending `Authorization: Bearer $GITHUB_TOKEN` still works because the proxy overwrites the header.
+- A credential with `hosts` and `header` becomes an egress-proxy `Transform` rule that sets that header on requests to those hosts only. The secret never enters the sandbox. The env var holds the placeholder `injected-by-egress-proxy`, and a script sending `Authorization: Bearer $GITHUB_TOKEN` still works because the proxy overwrites the header.
 - Any other credential is written to an env file (created with `umask 077`) that every command sources, so sandbox code can read it.
 - Both are rewritten even when the user has no credentials, so a revoked secret doesn't linger in a sandbox that outlives the turn.
 
@@ -80,9 +80,9 @@ Separately, `http_fetch` (which runs in the brain) refuses to send a host-bound 
 
 With `agentforeach:sandboxEnabled true` and `agentforeach:sandboxProvider aca-sandboxes` (the default provider), `pulumi up` creates a sandbox group (through an ARM deployment, as Pulumi has no type for it yet), gives the Function App's managed identity the built-in **Container Apps SandboxGroup Data Owner** role (`c24cf47c-5077-412d-a19c-45202126392c`) on it, and sets `SANDBOX_PROVIDER` and the `ACA_SANDBOX_*` app settings. Other keys:
 
-- `agentforeach:sandboxGroupLocation` — region for the group, if your stack's region doesn't offer Sandboxes yet.
-- `agentforeach:sandboxGroupMaxCount` — cap on sandboxes in the group.
-- `agentforeach:sandboxDiskImageId` — the image id from the build script; sets `ACA_SANDBOX_DISK_IMAGE_ID`.
+- `agentforeach:sandboxGroupLocation`: region for the group, if your stack's region doesn't offer Sandboxes yet.
+- `agentforeach:sandboxGroupMaxCount`: cap on sandboxes in the group.
+- `agentforeach:sandboxDiskImageId`: the image id from the build script; sets `ACA_SANDBOX_DISK_IMAGE_ID`.
 
 Running sandboxes count against the subscription's regional "Sandbox Cores" quota; check it before a launch.
 
@@ -108,8 +108,8 @@ Build at production size (`ACA_SANDBOX_CPU`, `ACA_SANDBOX_MEMORY`, `ACA_SANDBOX_
 
 Set `agentforeach:sandboxProvider aca-sessions` to use a session pool instead. `pulumi up` then creates a Container Apps environment and a session pool, gives the Function App the built-in **Azure ContainerApps Session Executor** role (`0fb8eba5-a2bb-4abe-b1c1-49dfad359bb0`) on it, and sets `ACA_POOL_MANAGEMENT_ENDPOINT`.
 
-- `agentforeach:sandboxContainerType` — `PythonLTS` (default; Azure's Python code interpreter, no image) or `CustomContainer` (the multi-runtime image from `gateway/sandbox-container/Dockerfile`, which serves `/exec` and `/files` from `server.mjs`). `CustomContainer` also creates a container registry and needs a workload-profile environment, which carries a fixed monthly management fee.
-- `agentforeach:sandboxContainerImage`, `sandboxContainerCpu`, `sandboxContainerMemory`, `sandboxContainerPort` — CustomContainer only.
+- `agentforeach:sandboxContainerType`: `PythonLTS` (default; Azure's Python code interpreter, no image) or `CustomContainer` (the multi-runtime image from `gateway/sandbox-container/Dockerfile`, which serves `/exec` and `/files` from `server.mjs`). `CustomContainer` also creates a container registry and needs a workload-profile environment, which carries a fixed monthly management fee.
+- `agentforeach:sandboxContainerImage`, `sandboxContainerCpu`, `sandboxContainerMemory`, `sandboxContainerPort`: CustomContainer only.
 - `agentforeach:sandboxMaxConcurrentSessions` (10), `sandboxReadyInstances` (0), `sandboxCooldownSec` (600), `sandboxNetworkStatus` (`EgressDisabled`).
 
 Runtime settings are in `skills.sandbox.aca` in `agentforeach.json` (timeouts default to 60 s, capped at 220 s). A session and its files are destroyed after the cooldown, there is no per-host egress control, and there is no egress proxy, so credentials are set as environment variables that code in the session can read.

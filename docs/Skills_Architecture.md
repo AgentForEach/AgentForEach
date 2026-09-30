@@ -1,6 +1,6 @@
 # Skills
 
-A skill is a `SKILL.md` instruction file that teaches the agent how to do something (call an API, run a script). There is no per-skill TypeScript: the agent reads the file with `skill_read` and follows it using two general tools, `http_fetch` for HTTP calls and `sandbox_exec` for everything else. Per-user settings and credentials live in Cosmos DB; the credentials are substituted by the server, not written into prompts.
+A skill is a `SKILL.md` instruction file that teaches the agent how to do something (call an API, run a script). There is no per-skill TypeScript: the agent reads the file with `skill_read` and follows it using two general tools, `http_fetch` for HTTP calls and `sandbox_exec` for everything else. Per-user settings and credentials live in Cosmos DB. The server substitutes the credentials; they are not written into prompts.
 
 Code: `gateway/skills/`. Sandbox details: [Sandbox.md](Sandbox.md).
 
@@ -12,7 +12,7 @@ Code: `gateway/skills/`. Sandbox details: [Sandbox.md](Sandbox.md).
 | Per-user state | Cosmos container `user-skills` (`skills.containerId`), partition key `/userId`. One document per user and skill (`{userId}:{skillId}`: `enabled`, `credentials`), plus audit entries |
 | Example skill | `gateway/skills/skill-files/weather/SKILL.md` |
 
-Skill files are not deployed by the gateway deployment; upload each skill folder to the `skills` container yourself (your identity needs a blob data role on the account):
+The gateway deployment doesn't upload skill files. Upload each skill folder to the `skills` container yourself (your identity needs a blob data role on the account):
 
 ```bash
 az storage blob upload-batch --auth-mode login --account-name <storage-account> \
@@ -80,7 +80,7 @@ Operators can hide any tool with `prompt.hiddenTools`, or limit it to some chann
 
 ## Credentials
 
-Users provide credentials through `skill_setup`, so a value passes through the conversation once when the user supplies it. After that the model only ever writes `$KEY`:
+Your users provide credentials through `skill_setup`, so a value passes through the conversation once, when the user supplies it. After that the model only ever writes `$KEY`:
 
 - **`http_fetch`** substitutes `$KEY` in the URL, headers and body on the server. A credential whose skill declares `hosts` is substituted only when the request goes to one of those hosts; otherwise the call is refused. With `skills.requireCredentialHosts` (default `true`), a credential whose skill declares no `hosts` is refused everywhere, so a prompt-injected request can't send it to an attacker's server.
 - **Sandboxes** get credentials on the first `sandbox_exec` or `sandbox_skill_load` of a turn. On ACA Sandboxes, a credential with `hosts` and `header` is injected by the sandbox's egress proxy on requests to those hosts: the secret never enters the sandbox, and the environment variable holds the placeholder `injected-by-egress-proxy`. Other credentials, and all credentials on the Dynamic Sessions fallback, are set as environment variables inside the sandbox.
@@ -100,7 +100,7 @@ Credential values are excluded from the `user-skills` indexing policy. `http_fet
 | `requireCredentialHosts` | `true` | See above |
 | `setupMinIntervalMs` | `30000` | `skill_setup` rate limit per skill |
 | `blobStore.cacheTtlMs`, `.maxSkillFileBytes`, `.maxZipFileBytes` | 5 min, 256 KB, 10 MB | |
-| `sandbox` | — | Sandbox backend; see [Sandbox.md](Sandbox.md) |
+| `sandbox` | None | Sandbox backend; see [Sandbox.md](Sandbox.md) |
 
 ## Related
 

@@ -37,10 +37,10 @@ A WhatsApp Cloud API channel built on the same plugin contract as Telegram (see 
 
 | Key | Default | Notes |
 |---|---|---|
-| `accessToken`, `phoneNumberId` | — | Both required for the channel to register |
-| `businessAccountId` | — | Optional |
-| `appSecret` | — | Webhook signature key; required on Azure |
-| `webhookVerifyToken` | — | Echo token for the GET handshake |
+| `accessToken`, `phoneNumberId` | None | Both required for the channel to register |
+| `businessAccountId` | None | Optional |
+| `appSecret` | None | Webhook signature key; required on Azure |
+| `webhookVerifyToken` | None | Echo token for the GET handshake |
 | `apiBase` | `https://graph.facebook.com` | |
 | `apiVersion` | `v26.0` | Graph API versions are retired about two years after release; review yearly |
 | `authorizedSenders` | `[]` | Phone numbers; compared as digits only, so `+`, spaces and dashes don't matter |

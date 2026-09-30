@@ -1,30 +1,30 @@
-# Channel Identity Registry — Architecture & Pairing Guide
+# Channel Identity Registry: architecture & pairing guide
 
-> Maps channel-specific sender IDs (Telegram user 12345, Discord user abc) to canonical AgentForEach user IDs, enabling multi-channel identity unification and multi-user deployments.
+> Maps channel-specific sender IDs (Telegram user 12345, Discord user abc) to canonical AgentForEach user IDs. This unifies a user's identity across channels and supports multi-user deployments.
 
 ---
 
-## Table of Contents
+## Table of contents
 
-1. [Problem Statement](#1-problem-statement)
-2. [Design Principles](#2-design-principles)
-3. [Architecture Overview](#3-architecture-overview)
-4. [Data Model](#4-data-model)
-5. [Identity Resolution](#5-identity-resolution)
-6. [Pairing Flow](#6-pairing-flow)
+1. [Problem statement](#1-problem-statement)
+2. [Design principles](#2-design-principles)
+3. [Architecture overview](#3-architecture-overview)
+4. [Data model](#4-data-model)
+5. [Identity resolution](#5-identity-resolution)
+6. [Pairing flow](#6-pairing-flow)
 7. [Admin API](#7-admin-api)
-8. [Integration Points](#8-integration-points)
+8. [Integration points](#8-integration-points)
 9. [Configuration](#9-configuration)
-10. [Backward Compatibility](#10-backward-compatibility)
-11. [Source Files](#11-source-files)
+10. [Backward compatibility](#10-backward-compatibility)
+11. [Source files](#11-source-files)
 
 ---
 
-## 1. Problem Statement
+## 1. Problem statement
 
 AgentForEach partitions all data (sessions, memories, prompt-docs, usage, cron-jobs) by `userId` in Cosmos DB. Without identity resolution:
 
-- **Single-user only**: Telegram plugin hardcodes `userId: config.defaultUserId` for all messages — every sender shares one identity.
+- **Single-user only**: the Telegram plugin hardcodes `userId: config.defaultUserId` for all messages, so every sender shares one identity.
 - **No cross-channel unification**: A user on Telegram and the same user on the WebSocket dashboard are treated as different people.
 - **No multi-user support**: Adding a second user requires deploying a separate AgentForEach instance.
 
@@ -32,19 +32,19 @@ The Channel Identity Registry solves all three by mapping `(channel, channelSend
 
 ---
 
-## 2. Design Principles
+## 2. Design principles
 
 | Principle | Rationale |
 |-----------|-----------|
-| **Database-only mappings** | `agentforeach.json` stays global/static deployment config. All user-specific identity data lives in Cosmos DB — never in config files. |
+| **Database-only mappings** | `agentforeach.json` stays global/static deployment config. All user-specific identity data lives in Cosmos DB, never in config files. |
 | **Stateless gateway** | The webhook/WebSocket handlers do a per-request DB lookup. No in-memory state beyond the cached store reference. |
 | **Backward compatible** | With no identity links, a sender falls back to `config.defaultUserId`, but only if the channel has an `authorizedSenders` allowlist; without one the channel refuses to register (see [Backward Compatibility](#10-backward-compatibility)). |
-| **Self-service pairing** | Users pair channels themselves via short-lived codes — no admin intervention needed for routine linking. |
+| **Self-service pairing** | Users pair channels themselves via short-lived codes. Routine linking needs no admin intervention. |
 | **Fails closed** | If identity is enabled but its store can't be initialized (e.g. Cosmos is unreachable), channel turns are refused and the bootstrap is retried after 30 s. Falling back would resolve every sender to the default user. |
 
 ---
 
-## 3. Architecture Overview
+## 3. Architecture overview
 
 ```
                      ┌─────────────────────────────────────────────┐
@@ -94,11 +94,11 @@ The Channel Identity Registry solves all three by mapping `(channel, channelSend
                   └───────────────┘          └──────────────────┘
 ```
 
-**Key insight**: WebSocket and REST API paths get `userId` from authentication (Easy Auth / JWT). Only channel webhooks need identity resolution — they receive an unauthenticated sender ID from the channel platform.
+**Key insight**: WebSocket and REST API paths get `userId` from authentication (Easy Auth / JWT). Only channel webhooks need identity resolution, because they receive an unauthenticated sender ID from the channel platform.
 
 ---
 
-## 4. Data Model
+## 4. Data model
 
 ### IdentityLink
 
@@ -149,11 +149,11 @@ Stored in the `identity-pairing` Cosmos DB container. Partition key: `/code`. Au
 
 A code is consumed by **deleting** it, which is atomic: of two concurrent consumers, exactly one wins. The same container also holds a per-sender counter of failed attempts (id `attempts:{channel}:{senderId}`, TTL `pairingAttemptWindowSeconds`).
 
-**Code alphabet**: `ABCDEFGHJKLMNPQRSTUVWXYZ23456789` (32 chars — no `0/O` or `1/I` to avoid ambiguity). Default length: 6 characters (32^6 = ~1 billion combinations).
+**Code alphabet**: `ABCDEFGHJKLMNPQRSTUVWXYZ23456789` (32 chars; no `0/O` or `1/I`, to avoid ambiguity). Default length: 6 characters (32^6 = ~1 billion combinations).
 
 ---
 
-## 5. Identity Resolution
+## 5. Identity resolution
 
 Every inbound channel message goes through a 3-tier resolution in `resolveChannelIdentity()`:
 
@@ -173,7 +173,7 @@ Every inbound channel message goes through a 3-tier resolution in `resolveChanne
 | 2 | `config-default` | No link, `fallbackMode: "config-default"`, channel config has `defaultUserId` | `"owner"` (from the channel config) |
 | 3 | `sender-id-passthrough` | No link, no config default (or `fallbackMode: "sender-passthrough"`) | `"telegram:12345"` |
 
-**Priority**: Identity link always wins over config default. This ensures that once a user pairs a channel, the pairing takes precedence regardless of what `defaultUserId` is set to.
+**Priority**: an identity link always wins over the config default. Once a user pairs a channel, the pairing takes precedence regardless of what `defaultUserId` is set to.
 
 **Config-default needs an allowlist.** Tier 2 runs a stranger as the configured default user, so a channel refuses to register in that state unless it has `authorizedSenders`, and the router also refuses any such turn (defence in depth).
 
@@ -196,11 +196,11 @@ Alternatively, `legacyLinkLookup: true` backfills lazily: an index miss falls ba
 
 ---
 
-## 6. Pairing Flow
+## 6. Pairing flow
 
 Self-service pairing lets a user link their channel account to their AgentForEach identity without admin intervention.
 
-### Step-by-Step
+### Step-by-step
 
 ```
  User (browser/app)                AgentForEach API                  AgentForEach (Telegram)
@@ -244,7 +244,7 @@ Self-service pairing lets a user link their channel account to their AgentForEac
       │  to userId "alice"                                      │
 ```
 
-### Code Detection Logic
+### Code detection logic
 
 In `tryPairChannel()`, a message is treated as a potential pairing code only if:
 1. Message text length equals `pairingCodeLength` (default: 6)
@@ -347,13 +347,13 @@ Response:
 
 ---
 
-## 8. Integration Points
+## 8. Integration points
 
-### Channel Webhook Handler (`handlers/channel-webhook.ts`)
+### Channel webhook handler (`handlers/channel-webhook.ts`)
 
 Calls `ensureIdentityStore()` before `processInbound()` to lazily bootstrap the identity store on first inbound message.
 
-### Channel Router (`channels/router.ts`)
+### Channel router (`channels/router.ts`)
 
 The single integration point. `processInbound()` was modified to:
 1. Try pairing code detection (returns early with confirmation if matched)
@@ -366,13 +366,13 @@ The resolved `userId` is placed after the `...partial` spread to ensure identity
 
 Creates and initializes the `IdentityStore` in the client's `initialize()` method alongside other stores. Calls `setIdentityStore(store)` on the router after initialization.
 
-### Identity Store Bootstrap (`channels/index.ts`)
+### Identity store bootstrap (`channels/index.ts`)
 
 Uses a **promise guard** (not a boolean flag) so concurrent webhook requests all await the same initialization rather than racing past a flag. Also checks if the client already initialized the store before creating a redundant instance.
 
-### WebSocket Handler (`handlers/ws-message.ts`)
+### WebSocket handler (`handlers/ws-message.ts`)
 
-**No changes needed.** WebSocket connections already have an authenticated `userId` from the `ce-userId` header (set by Azure Web PubSub after token authentication). Identity resolution is purely a channel concern.
+**No changes needed.** WebSocket connections already have an authenticated `userId` from the `ce-userId` header (set by Azure Web PubSub after token authentication). Identity resolution is only a channel concern.
 
 ---
 
@@ -389,7 +389,7 @@ Add to `agentforeach.json`:
 }
 ```
 
-### All Options
+### All options
 
 | Setting | Default | Description |
 |---------|---------|-------------|
@@ -405,7 +405,7 @@ Add to `agentforeach.json`:
 | `pairingAttemptWindowSeconds` | `900` | Window for failed attempts (15 minutes) |
 | `maxActivePairingCodes` | `5` | Unexpired pairing codes one user may hold |
 
-### Deployment Scenarios
+### Deployment scenarios
 
 **Single-user:**
 ```json
@@ -442,7 +442,7 @@ Store is not initialized. Channel messages use `config.defaultUserId`, which aga
 
 ---
 
-## 10. Backward Compatibility
+## 10. Backward compatibility
 
 | Scenario | Behavior |
 |----------|----------|
@@ -456,20 +456,20 @@ Store is not initialized. Channel messages use `config.defaultUserId`, which aga
 
 ---
 
-## 11. Source Files
+## 11. Source files
 
-### Identity Module
+### Identity module
 
 | File | Purpose |
 |------|---------|
 | `identity/types.ts` | `IdentityLink`, `PairingCode`, `IdentityResolution`, `IdentityJsonConfig` |
 | `identity/config.ts` | Config loader (defaults, caching, `loadIdentityConfig()`) |
-| `identity/store.ts` | `IdentityStore` class — Cosmos DB operations for links + pairing codes |
-| `identity/resolver.ts` | `resolveChannelIdentity()` — 3-tier resolution. `tryPairChannel()` — code detection |
+| `identity/store.ts` | `IdentityStore` class: Cosmos DB operations for links + pairing codes |
+| `identity/resolver.ts` | `resolveChannelIdentity()`: 3-tier resolution. `tryPairChannel()`: code detection |
 | `identity/index.ts` | Barrel exports |
 | `identity/identity.test.ts` | 27 unit tests (link CRUD, pairing codes, resolution, pairing flow) |
 
-### Modified Files
+### Modified files
 
 | File | Change |
 |------|--------|
@@ -482,11 +482,11 @@ Store is not initialized. Channel messages use `config.defaultUserId`, which aga
 | `tsconfig.json` | Added `identity/**/*.ts` to includes |
 | `package.json` | Added `test:identity` script, updated main `test` script |
 
-### Reference Files (unchanged)
+### Reference files (unchanged)
 
 | File | Relevance |
 |------|-----------|
-| `handlers/ws-message.ts` | WebSocket flow — uses `ce-userId` from auth, no changes needed |
-| `channels/telegram/plugin.ts` | `toSendRequest()` returns `userId: config.defaultUserId` — becomes fallback |
+| `handlers/ws-message.ts` | WebSocket flow: uses `ce-userId` from auth, no changes needed |
+| `channels/telegram/plugin.ts` | `toSendRequest()` returns `userId: config.defaultUserId`, which becomes the fallback |
 | `sessions/store.ts` | Pattern reference for IdentityStore constructor/init |
-| `database/client.ts` | Cosmos DB provider — used by IdentityStore |
+| `database/client.ts` | Cosmos DB provider, used by IdentityStore |

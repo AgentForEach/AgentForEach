@@ -24,7 +24,7 @@ The routes are `authLevel: "anonymous"` because providers can't authenticate to 
 5. Run the turn (`processInbound` in `channels/router.ts`):
    - a message that looks like a **pairing code** is consumed and answered with a confirmation, and no turn runs;
    - `enrichInbound` (if any) downloads media;
-   - the sender is resolved to a AgentForEach user (below);
+   - the sender is resolved to an AgentForEach user (below);
    - the turn runs through the same client pipeline as the app, with session id `{channelId}-{chatId}` (for example `telegram-12345`), so each chat is one continuing conversation;
    - the reply is formatted for the channel (`formatReply`) and sent (`sendOutbound`), with buttons or a list when the agent offered a small set of choices and the channel supports them (WhatsApp).
 
@@ -43,13 +43,13 @@ How step 5 is scheduled depends on the plugin:
 | Secret missing, on Azure | The channel **refuses to register** and logs why; its webhook returns `404` | Same |
 | Secret missing, elsewhere | Every webhook is rejected (`401`) unless `ALLOW_UNSIGNED_WEBHOOKS=true` | Same |
 
-"On Azure" means `WEBSITE_SITE_NAME` is set; `ALLOW_UNSIGNED_WEBHOOKS` is ignored there. It exists for local development against a tunnel, and nothing else.
+"On Azure" means `WEBSITE_SITE_NAME` is set; `ALLOW_UNSIGNED_WEBHOOKS` is ignored there. It exists only for local development against a tunnel.
 
 WhatsApp's GET handshake has no bypass: without `webhookVerifyToken` it answers `403`.
 
 ### Who a sender is
 
-A channel sender becomes a AgentForEach user in one of three ways (`identity/resolver.ts`):
+A channel sender becomes an AgentForEach user in one of three ways (`identity/resolver.ts`):
 
 1. **An identity link.** Links are made only by **pairing** (a signed-in user calls `POST /api/identity/pair`, gets a short-lived code and sends it from the channel) or by an **admin** (`POST /api/identity/links`, which returns `403` to anyone else). Nothing links accounts automatically by phone number, username or email.
 2. **`identity.fallbackMode: "config-default"`** (the default): an unlinked sender acts as the channel's `defaultUserId`.
@@ -81,8 +81,8 @@ Channels are configured under `channels` in `gateway/config/agentforeach.json`. 
 | Telegram key | Default | Notes |
 |---|---|---|
 | `enabled` | `true` if the block exists | Also requires a `botToken` |
-| `botToken` | — | From BotFather |
-| `webhookSecretToken` | — | Required on Azure |
+| `botToken` | None | From BotFather |
+| `webhookSecretToken` | None | Required on Azure |
 | `authorizedSenders` | `[]` | Numeric Telegram user ids; required unless `fallbackMode` is `sender-passthrough` |
 | `defaultUserId` | `"telegram-user"` | Used by the `config-default` fallback |
 | `maxMessageLength` | `4096` | Longer replies are split |

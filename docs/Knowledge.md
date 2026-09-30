@@ -1,4 +1,4 @@
-# Knowledge Base
+# Knowledge base
 
 An optional, deployment-wide library of reference documents (manuals, policies, guides) that the agent can search. It is backed by **Azure AI Search** using its integrated pipeline: you upload raw files to a blob container, and an AI Search indexer cracks, chunks, embeds and indexes them. AgentForEach itself only runs queries (hybrid BM25 + vector, with the semantic reranker when the service tier has it).
 

@@ -4,7 +4,7 @@ Thanks for your interest. While the project is in preview we are **not accepting
 
 - **Bug reports** with steps to reproduce, what you expected, and what happened (logs with ids pseudonymised are fine).
 - **Deployment reports**: what broke or confused you when deploying from [Getting started](docs/getting-started.md).
-- **Small fixes** (typos, docs, obvious bugs) as pull requests — keep them focused.
+- **Small fixes** (typos, docs, obvious bugs) as pull requests. Keep them focused.
 - **Security issues**: never in public issues; see [SECURITY.md](SECURITY.md).
 
 For anything larger, open an issue first so we can agree on the approach.

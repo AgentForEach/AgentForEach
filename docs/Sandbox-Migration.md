@@ -12,7 +12,7 @@ An ACA Sandbox **suspends** instead. When it is idle, it takes a snapshot and st
 - In `Disk` mode (AgentForEach's default) the files survive. Processes restart on resume, like a reboot.
 - In `Memory` mode the running processes are meant to survive too; Microsoft quotes sub-second restores. In our tests a background process did *not* survive an auto-suspend even in `Memory` mode (see [Verified on a real sandbox group](#verified-on-a-real-sandbox-group)), so AgentForEach treats processes as restarting in both modes.
 
-Either way, you pay for compute only while code runs, not for a VM per user that stays on. And the agent can keep working on something across days.
+Either way, you pay for compute only while code runs, not for a VM per user that stays on, and the agent can keep working on something across days.
 
 ## What AgentForEach needs from a sandbox
 
@@ -211,7 +211,7 @@ Build at the same CPU, memory and disk as production (`ACA_SANDBOX_CPU`, `ACA_SA
 - **delete** the session pool, the Container Apps environment that hosted it and, for CustomContainer, the container registry and its image;
 - create the sandbox group and its role assignment.
 
-Users' old session files were already gone after the cooldown, so no data needs moving. But the next deploy of your custom image has to go through a disk image instead.
+Users' old session files were already gone after the cooldown, so no data needs moving. The next deploy of your custom image has to go through a disk image instead.
 
 **Network behaviour changes too.** `sandboxNetworkStatus: EgressEnabled` doesn't carry over. ACA Sandboxes defaults to deny-all, so `pip install` and `npm install` stop working unless you allow those hosts or set `"networkAccess": "enabled"`.
 

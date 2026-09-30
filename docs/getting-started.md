@@ -1,8 +1,8 @@
 # Getting started
 
-Deploy AgentForEach to Azure, let users sign in, and talk to your first agent. Then run it locally for development.
+Deploy AgentForEach to Azure, let your users sign in, and talk to your first agent. Then run it locally for development.
 
-Prerequisites: Node 22, [Azure Functions Core Tools](https://learn.microsoft.com/azure/azure-functions/functions-run-local) 4, the Azure CLI, [Pulumi](https://www.pulumi.com/docs/install/), and an Azure subscription where you can assign roles (Owner, or Contributor plus User Access Administrator). `pulumi up` creates role assignments that give the Function App's identities access to storage, Key Vault and Cosmos DB; with Contributor alone it fails with `AuthorizationFailed`.
+Prerequisites: Node 22, [Azure Functions Core Tools](https://learn.microsoft.com/azure/azure-functions/functions-run-local) 4, the Azure CLI, [Pulumi](https://www.pulumi.com/docs/install/), and an Azure subscription where you can assign roles (Owner, or Contributor plus User Access Administrator). `pulumi up` creates role assignments that give the Function App's identities access to storage, Key Vault and Cosmos DB. With Contributor alone it fails with `AuthorizationFailed`.
 
 ## Deploy to Azure
 
@@ -41,7 +41,7 @@ To try the web chat before wiring up a real identity provider, sign tokens yours
   "issuer": "agentforeach-trial", "audience": "agentforeach", "userIdClaim": "sub" }
 ```
 
-Give the Function App the secret, and mint a token for a test user (valid for a day):
+Give the Function App the secret, then mint a token for a test user (valid for a day):
 
 ```bash
 export TRIAL_JWT_SECRET=$(openssl rand -hex 32)
@@ -49,7 +49,7 @@ export TRIAL_JWT_SECRET=$(openssl rand -hex 32)
 node -e 'const c=require("crypto"),b=o=>Buffer.from(JSON.stringify(o)).toString("base64url"),n=Math.floor(Date.now()/1e3);const t=b({alg:"HS256",typ:"JWT"})+"."+b({sub:"test-user",iss:"agentforeach-trial",aud:"agentforeach",iat:n,exp:n+86400});console.log(t+"."+c.createHmac("sha256",process.env.TRIAL_JWT_SECRET).update(t).digest("base64url"))'
 ```
 
-Anyone with the secret can sign in as anyone, so replace this with a real identity provider before real users arrive.
+Anyone with the secret can sign in as anyone, so replace this with a real identity provider before your real users arrive.
 
 Then deploy the gateway. `agentforeach.json` is packaged with the code, so deploy again after every change to it:
 
@@ -63,7 +63,7 @@ Open the [web chat sample](../examples/web-chat/) with your Function App URL and
 
 ## Add channels
 
-Telegram and WhatsApp are off until configured. See [Channels](Channel.md) and [WhatsApp](Channel-WhatsApp.md); users link a channel to their account through [pairing](Identity.md).
+Telegram and WhatsApp are off until you configure them. See [Channels](Channel.md) and [WhatsApp](Channel-WhatsApp.md). Your users link a channel to their account through [pairing](Identity.md).
 
 ## Run locally
 

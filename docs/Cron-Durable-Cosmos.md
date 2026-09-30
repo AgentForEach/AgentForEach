@@ -1,4 +1,4 @@
-# AgentForEach Cron on Azure Durable Functions + Cosmos DB
+# AgentForEach cron on Azure Durable Functions + Cosmos DB
 
 This document is the implementation reference for AgentForEach cron/reminders.
 
@@ -10,9 +10,9 @@ It explains:
 - Non-duplication and reliability behavior
 - API behavior, auth, and operations
 
-## 1. Executive Summary
+## 1. Executive summary
 
-AgentForEach cron is a **shared scheduler model**:
+AgentForEach cron uses a **shared scheduler model**:
 
 - Jobs are stored in Cosmos DB (`cron-jobs`)
 - A Durable orchestrator loop (`CronScheduler`) fetches due jobs and executes them
@@ -25,7 +25,7 @@ Important:
 - It is one scheduler instance per shard.
 - Default is **8 shards** (`CRON_SCHEDULER_SHARDS=8`).
 
-## 2. Component Map
+## 2. Component map
 
 Core modules:
 
@@ -44,7 +44,7 @@ Runtime registrations:
 
 - `gateway/index.ts`
 
-## 3. Data Model in Cosmos
+## 3. Data model in Cosmos
 
 ### 3.1 Containers
 
@@ -89,9 +89,9 @@ Each run document stores:
 - delivery metadata (`delivered`, `deliveryChannel`)
 - `ttl`
 
-## 4. End-to-End Lifecycle
+## 4. End-to-end lifecycle
 
-### 4.1 Create/Update/Delete
+### 4.1 Create/update/delete
 
 1. API/tool writes job mutation in `cron-jobs`
 2. Mutation path also upserts/deletes the job's due-index row in `cron-due-index`
@@ -128,7 +128,7 @@ Additional `wakeMode="now"` path:
 - Runtime attempts an immediate target-scoped heartbeat flush for the same `userId`/`agentId`/`sessionId`
 - If immediate flush fails, the event remains queued for retry by scheduler heartbeat processing
 
-## 5. Scheduler Loop Frequency
+## 5. Scheduler loop frequency
 
 The scheduler is **not fixed-interval polling**.
 
@@ -143,7 +143,7 @@ Also:
 - `CronSchedulerHealthCheck` runs every 5 minutes to ensure scheduler instances are alive.
 - Durable timer waits are capped by `MAX_DURABLE_TIMER_MS` due to JS Durable timer limits.
 
-## 6. Scheduling Semantics
+## 6. Scheduling semantics
 
 ## 6.1 `at` (one-shot)
 
@@ -177,13 +177,13 @@ For top-of-hour expressions, AgentForEach applies deterministic staggering:
 - Offset is stable per job (`sha256(jobId) % staggerMs`)
 - Cursor shifting prevents skipping the current valid window
 
-## 7. Session Target Semantics
+## 7. Session target semantics
 
 ## 7.1 `sessionTarget = "isolated"`
 
 - Requires `payload.kind = "agentTurn"`
-- Executor calls OpenAI Responses API directly
-- Supports per-job model override and timeout override
+- Executor makes a single model call through AgentForEach's provider layer (not a full chat turn)
+- Supports a per-job timeout override; `payload.model` is ignored and the default model is used
 
 ## 7.2 `sessionTarget = "main"`
 
@@ -193,7 +193,7 @@ For top-of-hour expressions, AgentForEach applies deterministic staggering:
 
 ## 7.3 `wakeMode` semantics
 
-`wakeMode` is now functionally active for `sessionTarget="main"` jobs:
+`wakeMode` takes effect for `sessionTarget="main"` jobs:
 
 - `wakeMode="now"`
   - Enqueues a heartbeat event due `now`.
@@ -219,7 +219,7 @@ Ordering policy (`userId` + `agentId` + `sessionId`):
 - FIFO guarantee scope: deterministic FIFO within a single claimed drain batch for a target
 - Cross-drain global FIFO is best-effort (concurrent workers/retries can still reorder across separate batches)
 
-## 8. Delivery Semantics
+## 8. Delivery semantics
 
 Delivery modes:
 
@@ -244,7 +244,7 @@ Default behavior differences:
 - LLM tool path defaults isolated jobs to `announce` push + `bestEffort=true`
 - Raw HTTP API create does not force this default; explicit delivery may be required depending on caller behavior
 
-## 9. Non-Duplication and Reliability
+## 9. Non-duplication and reliability
 
 AgentForEach uses claim-token based execution ownership.
 
@@ -272,7 +272,7 @@ Key protections:
 
 This protects against duplicate execution in retries/races.
 
-## 10. Sharding and Scale Model
+## 10. Sharding and scale model
 
 Shard derivation:
 
@@ -311,7 +311,7 @@ Operational threshold guidance:
 - `CRON_SCHEDULER_SHARDS=1` is fine for local development.
 - For larger SaaS workloads, increase shards and monitor per-shard RU + durable throughput.
 
-## 11. API Surface
+## 11. API surface
 
 Main endpoints:
 
@@ -331,7 +331,7 @@ Functional notes:
 - `/cron/status` supports per-shard inspection (`?shardId=`); **admin role required**
 - `/cron/start` can ensure one or all shard schedulers; **admin role required** (the `CronSchedulerHealthCheck` timer normally does this)
 
-## 12. Auth and Access Rules
+## 12. Auth and access rules
 
 All cron routes resolve caller identity using gateway Easy Auth resolver (`resolveAuthContext`).
 
@@ -346,19 +346,19 @@ Dev fallback:
 - `AUTH_ALLOW_INSECURE_USER_ID_HEADER=true` allows `x-user-id` fallback
 - For production, disable insecure header mode
 
-## 13. Tooling Behavior (LLM Cron Tools)
+## 13. Tooling behavior (LLM cron tools)
 
 Registered tools:
 
 - `cron_create`, `cron_list`, `cron_get`, `cron_update`, `cron_delete`, `cron_runs`
 
-Important guardrails:
+Guardrails:
 
 - Reminder guardrail enforces one-shot `at` for reminder-like requests unless recurrence is explicit
 - Tool mutation triggers scheduler wake callback
 - Tool handler always injects server-side `userId` (model cannot set owner)
 
-## 14. Operational Runbook
+## 14. Operational runbook
 
 ### 14.1 Deploy-time configuration
 
@@ -402,7 +402,7 @@ Track:
 
 ### 14.4 Automated validation
 
-Run advanced multi-user cron/heartbeat e2e suite:
+Run the multi-user cron/heartbeat e2e suite:
 
 - `npm run test:cron-heartbeat:e2e`
 - Optional load knobs:
@@ -416,7 +416,7 @@ What it validates:
 - Scheduler-due execution without force-run
 - Cross-user endpoint isolation and session-content isolation
 
-## 15. Troubleshooting Guide
+## 15. Troubleshooting guide
 
 ### Symptom: one-time reminder repeats
 
@@ -460,7 +460,7 @@ Check:
 - `AUTH_ALLOW_INSECURE_USER_ID_HEADER` alignment with client behavior
 - CORS and cookie credential settings if using browser auth flow
 
-## 16. Design Notes
+## 16. Design notes
 
 - Schedule types (`at`, `every`, `cron`), one-shot terminal behavior, error backoff, top-of-hour stagger, and tool-based cron UX.
 - Scheduling runs on Durable orchestrations with state in Cosmos.

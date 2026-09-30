@@ -2,7 +2,7 @@
 
 ## Reporting a vulnerability
 
-Please report vulnerabilities privately through GitHub's **Report a vulnerability** button (Security → Advisories) on this repository, not in public issues or discussions. Include what you found, how to reproduce it, and what an attacker could do with it. We aim to acknowledge reports within 3 working days and to agree a disclosure date with you.
+Report vulnerabilities privately through GitHub's **Report a vulnerability** button (Security → Advisories) on this repository, not in public issues or discussions. Include what you found, how to reproduce it, and what an attacker could do with it. We aim to acknowledge reports within 3 working days and to agree a disclosure date with you.
 
 Only the `main` branch is supported while the project is in preview.
 
@@ -16,7 +16,7 @@ AgentForEach serves many users from one deployment, so most of its security is a
 
 **Channels.** Telegram and WhatsApp webhooks must be signed (`TELEGRAM_WEBHOOK_SECRET`, WhatsApp `appSecret`); a channel whose fallback would let strangers act as the default user refuses to start. Web PubSub upstream calls must carry a valid `ce-signature`.
 
-**Tools.** Every fetch of a user- or model-controlled URL goes through an SSRF-safe client: internal addresses are refused when the connection is made (not only at DNS lookup), on every redirect. Skill credentials are bound to the hosts a skill declares: `http_fetch` sends them nowhere else, and on ACA Sandboxes a credential with a declared `header` is added by the sandbox's egress proxy, so it never enters the sandbox. Credential values are redacted from tool results. The model can call only the tools offered in that turn, and approval-gated tools fail closed where no one can approve.
+**Tools.** Every fetch of a user- or model-controlled URL goes through an SSRF-safe client: internal addresses are refused when the connection is made (not only at DNS lookup) and again on every redirect. Skill credentials are bound to the hosts a skill declares: `http_fetch` sends them nowhere else, and on ACA Sandboxes a credential with a declared `header` is added by the sandbox's egress proxy, so it never enters the sandbox. Credential values are redacted from tool results. The model can call only the tools offered in that turn, and approval-gated tools fail closed where no one can approve.
 
 **Abuse and cost.** Per-user rate limits (per minute and per day) on messages, on scheduled runs (jobs and heartbeats) and on force-runs, a cap on jobs per user, one run at a time per conversation, run deadlines, and a model allowlist (only priced or default models).
 

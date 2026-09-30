@@ -1,4 +1,4 @@
-# AgentForEach HITL (Human-in-the-Loop) Module
+# AgentForEach HITL (Human-in-the-loop) module
 
 This document is the implementation reference for AgentForEach's Human-in-the-Loop system.
 
@@ -12,7 +12,7 @@ It explains:
 - Timeout and cancellation behaviour
 - How to add HITL for a new MCP server (no code changes)
 
-## 1. Executive Summary
+## 1. Executive summary
 
 AgentForEach HITL is a **config-driven, fire-and-leave** system:
 
@@ -24,13 +24,13 @@ AgentForEach HITL is a **config-driven, fire-and-leave** system:
 
 Important:
 
-- The Azure Function **is NOT held open** while waiting for the user
-- Zero compute cost during hibernation — state lives in Azure Storage
+- The Azure Function **is not held open** while waiting for the user
+- Zero compute cost during hibernation: state lives in Azure Storage
 - The orchestration survives function app restarts
-- Config in `agentforeach.json` controls which tools need HITL — **no code changes needed** for new MCP servers
-- Uses shared `SessionStore` for all persistence — no separate conversation tracking
+- Config in `agentforeach.json` controls which tools need HITL, so new MCP servers need **no code changes**
+- Uses the shared `SessionStore` for all persistence, with no separate conversation tracking
 
-## 2. Component Map
+## 2. Component map
 
 Core modules:
 
@@ -56,11 +56,11 @@ Integration points:
 
 ## 3. Architecture
 
-### 3.1 The Problem
+### 3.1 The problem
 
 When an LLM generates a tool call like `example_create_contact`, some tools need user confirmation or additional input before execution. Holding an HTTP request or Azure Function invocation open while waiting for a human response (which could take minutes) is wasteful and fragile.
 
-### 3.2 The Solution: Fire and Leave, Resume on Response
+### 3.2 The solution: fire and leave, resume on response
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -147,21 +147,21 @@ When an LLM generates a tool call like `example_create_contact`, some tools need
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-### 3.3 Key Design Decisions
+### 3.3 Key design decisions
 
-1. **One-shot orchestration** — unlike the CronScheduler (which loops with `continueAsNew`), HITL orchestrations complete after the user responds or the request times out. No eternal loops.
+1. **One-shot orchestration**: unlike the CronScheduler (which loops with `continueAsNew`), HITL orchestrations complete after the user responds or the request times out. No eternal loops.
 
-2. **Shared session infrastructure** — the HITL module does NOT track conversation history separately. It uses the same `SessionStore.appendMessages()` that the runner uses in Step 8. The tool result is saved as a session message, and the runner loads full history on resume.
+2. **Shared session infrastructure**: the HITL module does not track conversation history separately. It uses the same `SessionStore.appendMessages()` that the runner uses in Step 8. The tool result is saved as a session message, and the runner loads full history on resume.
 
-3. **Response chain clearing** — when the runner saves `previousResponseId` from the OpenAI Responses API, it enables "chain mode" where only the new message is sent to the LLM (the rest is in the chain). HITL breaks this chain because the last chained response has unresolved tool calls. The resume path clears `previousResponseId` by passing `null` to `appendMessages`, forcing the runner to send full conversation history.
+3. **Response chain clearing**: when the runner saves `previousResponseId` from the OpenAI Responses API, it enables "chain mode" where only the new message is sent to the LLM (the rest is in the chain). HITL breaks this chain because the last chained response has unresolved tool calls. The resume path clears `previousResponseId` by passing `null` to `appendMessages`, forcing the runner to send full conversation history.
 
-4. **No LLM call on timeout** — when the timer wins the race, the `HitlTimeout` activity saves a friendly note to the session and sends `input_expired` to the client. Zero LLM calls, zero loops. The user can continue naturally in their next message.
+4. **No LLM call on timeout**: when the timer wins the race, the `HitlTimeout` activity saves a friendly note to the session and sends `input_expired` to the client. Zero LLM calls, zero loops. The user can continue in their next message.
 
 ## 4. Configuration (agentforeach.json)
 
 All HITL behaviour is configured in the `hitl` section of `config/agentforeach.json`. No code changes are needed to add HITL for a new MCP server.
 
-### 4.1 Top-Level Structure
+### 4.1 Top-level structure
 
 ```json
 {
@@ -181,9 +181,9 @@ All HITL behaviour is configured in the `hitl` section of `config/agentforeach.j
 | `forms` | object | `{}` | Named form definitions (reusable across tools) |
 | `tools` | object | `{}` | Tool-name → policy mapping |
 
-### 4.2 Named Forms (`hitl.forms`)
+### 4.2 Named forms (`hitl.forms`)
 
-Forms define the UI that the client renders when asking for input. They're reusable — multiple tools can reference the same form.
+Forms define the UI that the client renders when asking for input. They're reusable: multiple tools can reference the same form.
 
 ```json
 {
@@ -223,7 +223,7 @@ Forms define the UI that the client renders when asking for input. They're reusa
 
 A complete example (forms, tool policies for every gate mode, a custom form type) is in [`examples/hitl-forms.json`](../examples/hitl-forms.json).
 
-### 4.3 Form Types
+### 4.3 Form types
 
 Five built-in form types the client must support:
 
@@ -237,7 +237,7 @@ Five built-in form types the client must support:
 
 Deployments can add their own types for `request_user_input` with `hitl.customFormTypes` (name → description shown to the model); the client must know how to render them.
 
-### 4.4 UI Hints
+### 4.4 UI hints
 
 ```typescript
 interface HitlUiHints {
@@ -249,9 +249,9 @@ interface HitlUiHints {
 }
 ```
 
-UI hints are suggestions — the client can ignore them if its UI doesn't support the requested layout. They're merged with tool-level overrides taking precedence over form-level.
+UI hints are suggestions: the client can ignore them if its UI doesn't support the requested layout. They're merged, with tool-level overrides taking precedence over form-level.
 
-### 4.5 Tool Policies (`hitl.tools`)
+### 4.5 Tool policies (`hitl.tools`)
 
 Tool policies control which MCP tools get gated for human input and how.
 
@@ -286,7 +286,7 @@ Tool policies control which MCP tools get gated for human input and how.
 | `always` | Always show the form, regardless of args |
 | `when_args_missing` | Show only if required fields are missing from the LLM's proposed args |
 | `confirm_only` | Show a confirmation with the LLM's proposed args |
-| `never` | Explicit opt-out — tool executes immediately |
+| `never` | Explicit opt-out: the tool executes immediately |
 
 **Tool policy fields:**
 
@@ -302,7 +302,7 @@ Tool policies control which MCP tools get gated for human input and how.
 
 **Glob patterns:** Tool names support simple wildcards. `example_*` matches all tools from that server. Exact matches take precedence over glob patterns.
 
-### 4.6 Adding HITL for a New MCP Server
+### 4.6 Adding HITL for a new MCP server
 
 To add HITL for a new MCP server (e.g., a hypothetical `billing_*` server), only edit `agentforeach.json`:
 
@@ -332,7 +332,7 @@ To add HITL for a new MCP server (e.g., a hypothetical `billing_*` server), only
 
 No TypeScript changes needed. The runner's tool loop automatically checks `getHitlPolicy()` for every MCP tool call.
 
-## 5. Data Model in Cosmos DB
+## 5. Data model in Cosmos DB
 
 ### 5.1 Container: `hitl-requests`
 
@@ -352,7 +352,7 @@ interface HitlDocument {
 **TTL policy:**
 - Pending requests: the request's timeout plus **10 minutes**, and at least **1 hour**, so an answer (or the timeout) always finds the state
 - When a gated call pauses the run, the other calls from the same response get up to **10 seconds** to finish; their results are saved with the request and written into the history on resume or timeout
-- Resolved requests (responded/cancelled/timed_out): **24 hours** — kept for debugging
+- Resolved requests (responded/cancelled/timed_out): **24 hours**, kept for debugging
 
 ### 5.2 HitlRunState
 
@@ -386,7 +386,7 @@ interface HitlRunState {
 }
 ```
 
-### 5.3 Store Operations
+### 5.3 Store operations
 
 | Method | Description |
 |--------|-------------|
@@ -396,21 +396,21 @@ interface HitlRunState {
 | `listPending(userId)` | List all pending requests for a user |
 | `cancelAllPending(userId)` | Cancel all pending requests (called on disconnect/reset) |
 
-## 6. Session Integration
+## 6. Session integration
 
-The HITL module uses the shared `SessionStore` (same module used by the runner pipeline in Step 8 of `runAgentTurn`) for all session and conversation persistence. It does NOT maintain a separate conversation tracking system.
+The HITL module uses the shared `SessionStore` (same module used by the runner pipeline in Step 8 of `runAgentTurn`) for all session and conversation persistence. It does not maintain a separate conversation tracking system.
 
-### 6.1 Suspend Path (runner.ts)
+### 6.1 Suspend path (runner.ts)
 
 When the runner hits a HITL gate:
 
 1. **Saves HitlRunState** to the `hitl-requests` container (via `HitlStore.create()`)
-2. **Saves the user's message** to the session via `sessionStore.appendMessages()` — this ensures the user's original message is in the session history regardless of what happens next
-3. **Does NOT save `conversationState`** — the session retains its existing `conversationState` from the last fully-completed run. The current run's LLM response has pending unresolved tool calls; saving its `previousResponseId` would leave a broken Responses API chain.
+2. **Saves the user's message** to the session via `sessionStore.appendMessages()`, so the user's original message is in the session history regardless of what happens next
+3. **Does not save `conversationState`**: the session retains its existing `conversationState` from the last fully-completed run. The current run's LLM response has pending unresolved tool calls; saving its `previousResponseId` would leave a broken Responses API chain.
 4. **Starts the Durable orchestrator** (fire-and-forget)
-5. **Throws `HitlSuspendSignal`** — caught by the outer error handler to return `status: "awaiting_input"`
+5. **Throws `HitlSuspendSignal`**, which the outer error handler catches to return `status: "awaiting_input"`
 
-### 6.2 Resume Path (orchestrator.ts)
+### 6.2 Resume path (orchestrator.ts)
 
 When the user responds and the orchestrator wakes:
 
@@ -418,12 +418,12 @@ When the user responds and the orchestrator wakes:
 2. **Merges user data** with LLM-proposed args: `{ ...llmArgs, ...userData }`
 3. **Executes the MCP tool** via `handleMcpToolCall()`
 4. **Saves the tool result** to the session as an assistant message via `sessionStore.appendMessages()`
-5. **Clears `conversationState`** by passing `null` to `appendMessages()` — this breaks the stale Responses API chain (see §6.3)
-6. **Calls `client.send()`** — the standard runner pipeline runs: load session → load message history → build prompt → call LLM → persist response → push to WebSocket
+5. **Clears `conversationState`** by passing `null` to `appendMessages()`, which breaks the stale Responses API chain (see §6.3)
+6. **Calls `client.send()`**, which runs the standard runner pipeline: load session → load message history → build prompt → call LLM → persist response → push to WebSocket
 
-### 6.3 Why `previousResponseId` Is Cleared
+### 6.3 Why `previousResponseId` is cleared
 
-The OpenAI Responses API supports **response chaining** via `previousResponseId`. When present, the runner sends only the new user message to the LLM — the Responses API server-side has the full conversation history in the chain.
+The OpenAI Responses API supports **response chaining** via `previousResponseId`. When present, the runner sends only the new user message to the LLM, because the Responses API holds the full conversation history server-side in the chain.
 
 HITL breaks this chain:
 
@@ -441,21 +441,21 @@ By clearing `previousResponseId` (passing `null` to `appendMessages`), the resum
 - The user's original message (saved during suspend)
 - The tool result (saved during resume, step 4)
 
-The LLM gets complete context naturally, through the existing session history pipeline.
+The LLM gets complete context through the existing session history pipeline.
 
-> Note: `HitlRunState.conversationState` is a **diagnostic snapshot only** — it records what `previousResponseId` was at the moment of interruption for audit/debugging. The session's own `conversationState` (managed by `SessionStore`) is the authoritative source.
+> `HitlRunState.conversationState` is a **diagnostic snapshot only**. It records what `previousResponseId` was at the moment of interruption for audit/debugging. The session's own `conversationState` (managed by `SessionStore`) is the authoritative source.
 
-### 6.4 Timeout Path (orchestrator.ts)
+### 6.4 Timeout path (orchestrator.ts)
 
 When the timer wins the race (no user response within `timeoutSeconds`):
 
 1. **Marks the request** as `timed_out` in the HITL store
-2. **Saves a timeout note** to the session as an assistant message — provides context when the user returns
+2. **Saves a timeout note** to the session as an assistant message, which gives context when the user returns
 3. **Sends `input_expired`** WebSocket event to the client
-4. **Does NOT call `client.send()`** — zero LLM calls, zero loops
+4. **Does not call `client.send()`**: zero LLM calls, zero loops
 5. When the user sends their next message, the session history has full context and the LLM can re-trigger HITL if it still needs input
 
-### 6.5 `appendMessages` Three Modes
+### 6.5 `appendMessages` three modes
 
 The shared `SessionStore.appendMessages()` supports three modes for `conversationState`:
 
@@ -465,9 +465,9 @@ The shared `SessionStore.appendMessages()` supports three modes for `conversatio
 | `null` | Clear conversationState entirely | Resume path (break the stale chain) |
 | `{ ... }` object | Merge with existing | Normal runner persistence (Step 8) |
 
-## 7. Wire Protocol
+## 7. Wire protocol
 
-### 7.1 Server → Client: `input_request`
+### 7.1 Server → client: `input_request`
 
 Pushed via Web PubSub (`EVENTS.CHAT`) when the runner needs human input.
 
@@ -490,7 +490,7 @@ type ChatInputRequestPayload = {
 };
 ```
 
-### 7.2 Client → Server: `input_response`
+### 7.2 Client → server: `input_response`
 
 Sent via WebSocket upstream when the user submits or cancels the form.
 
@@ -503,9 +503,9 @@ type ClientInputResponseMessage = {
 };
 ```
 
-### 7.3 Server → Client: `input_expired`
+### 7.3 Server → client: `input_expired`
 
-Pushed when a HITL request times out. Client should dismiss the form.
+Pushed when a HITL request times out. The client should dismiss the form.
 
 ```typescript
 type ChatInputExpiredPayload = {
@@ -517,7 +517,7 @@ type ChatInputExpiredPayload = {
 };
 ```
 
-### 7.4 Server → Client: `awaiting_input`
+### 7.4 Server → client: `awaiting_input`
 
 The runner's `SendResponse` when it suspends for HITL (returned from the HTTP endpoint):
 
@@ -531,7 +531,7 @@ The runner's `SendResponse` when it suspends for HITL (returned from the HTTP en
 }
 ```
 
-## 8. Policy Resolution Pipeline
+## 8. Policy resolution pipeline
 
 When the runner encounters an MCP tool call, the policy resolution pipeline runs:
 
@@ -558,7 +558,7 @@ When the runner encounters an MCP tool call, the policy resolution pipeline runs
    └── Priority: named form options > LLM's proposedArgs.options > undefined
 ```
 
-## 9. Activity Details
+## 9. Activity details
 
 ### 9.1 HitlPushInputRequest
 
@@ -581,26 +581,26 @@ The `resumeRunWithResult` function:
 
 ### 9.3 HitlTimeout
 
-Handles a timed-out request WITHOUT calling the LLM:
+Handles a timed-out request without calling the LLM:
 
 1. Marks the request as `timed_out`
 2. Saves a friendly timeout note to the session
 3. Sends `input_expired` to the client
-4. Zero LLM calls — no loops, no unnecessary cost
+4. Zero LLM calls: no loops, no unnecessary cost
 
-## 10. Error Handling
+## 10. Error handling
 
 | Scenario | Behaviour |
 |----------|-----------|
 | Tool execution fails during resume | Result includes error text → LLM sees it → can retry or inform user |
-| Session persistence fails during suspend | Non-fatal warning — everything else still works |
-| Session persistence fails during resume | Non-fatal — continuation message also carries the tool result |
-| Durable event raise fails | Returns HTTP 500 to client — client can retry |
-| Orchestration not found (e.g. timed out) | Returns HTTP 404 — client shows "request expired" |
-| HITL store unavailable | HITL gate skipped — tool executes immediately (graceful degradation) |
+| Session persistence fails during suspend | Non-fatal warning; everything else still works |
+| Session persistence fails during resume | Non-fatal: the continuation message also carries the tool result |
+| Durable event raise fails | Returns HTTP 500 to the client, which can retry |
+| Orchestration not found (e.g. timed out) | Returns HTTP 404; the client shows "request expired" |
+| HITL store unavailable | HITL gate skipped; the tool executes immediately (graceful degradation) |
 | `client.send()` fails during resume | Error logged, best-effort `input_expired` pushed to client |
 
-## 11. Sequence Diagram: Full Happy Path
+## 11. Sequence diagram: full happy path
 
 ```
 User          Client App         Azure Function      Durable Orchestrator     Cosmos DB
@@ -649,23 +649,23 @@ User          Client App         Azure Function      Durable Orchestrator     Co
 
 Dedicated HITL tests in `hitl/hitl.test.ts` cover:
 
-- **Config loading** — enabled/disabled, default timeout, form resolution, tool policy resolution
-- **Form types** — all five built-in types resolve correctly
-- **UI hints** — nested vs top-level shorthand, merge precedence
-- **Gate decisions** — always, when_args_missing (with/without schema), confirm_only, never
-- **Intent resolution** — template placeholders, missing args, edge cases
-- **Schema resolution** — priority chain (override > form > MCP > empty)
-- **Options resolution** — form options > LLM options > undefined
-- **Integration** — full pipeline from tool name to resolved InputRequest fields
-- **Reset** — `resetHitlConfig()` forces re-read
-- **Constants** — all constants exported and distinct
+- **Config loading**: enabled/disabled, default timeout, form resolution, tool policy resolution
+- **Form types**: all five built-in types resolve correctly
+- **UI hints**: nested vs top-level shorthand, merge precedence
+- **Gate decisions**: always, when_args_missing (with/without schema), confirm_only, never
+- **Intent resolution**: template placeholders, missing args, edge cases
+- **Schema resolution**: priority chain (override > form > MCP > empty)
+- **Options resolution**: form options > LLM options > undefined
+- **Integration**: full pipeline from tool name to resolved InputRequest fields
+- **Reset**: `resetHitlConfig()` forces re-read
+- **Constants**: all constants exported and distinct
 
 Run with:
 ```bash
 npm run build && node --test dist/gateway/hitl/hitl.test.js
 ```
 
-## 13. Example Configuration
+## 13. Example configuration
 
 [`examples/hitl-forms.json`](../examples/hitl-forms.json) is a complete example to copy into `agentforeach.json` (which ships with only the generic `confirm_action` form and no tool policies). The `example_*` tool names are placeholders for tools your MCP servers expose:
 

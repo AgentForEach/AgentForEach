@@ -1,6 +1,6 @@
 # Architecture
 
-AgentForEach is one stateless Function App in front of Cosmos DB. Every turn loads what it needs, calls the model, writes the result and forgets; nothing about a user lives in memory between turns. That is what lets it run one deployment for any number of users and cost nothing for users who aren't talking to it.
+AgentForEach is one stateless Function App in front of Cosmos DB. Every turn loads what it needs, calls the model, writes the result and forgets. Nothing about a user lives in memory between turns. That is what lets one deployment serve any number of users and cost nothing for users who aren't talking to it.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/architecture-dark.svg">
@@ -29,11 +29,11 @@ The Pulumi program in `infra` creates all of it.
 3. **Stream.** Text deltas are coalesced every 400 ms and pushed over Web PubSub with their offset; the `final` event carries the whole reply.
 4. **Persist.** The user message and reply are appended to the session (etag-guarded), usage is recorded, memories may be captured, and the lease is released.
 
-Channels (Telegram, WhatsApp) follow the same path from their webhooks, acknowledging first and running the turn in a `ChannelInboundTurn` orchestration.
+Channels (Telegram, WhatsApp) take the same path from their webhooks: they acknowledge first, then run the turn in a `ChannelInboundTurn` orchestration.
 
 ### Real-time protocol
 
-A client calls `GET /negotiate` (authenticated like any API call) and gets `{ url }`, a Web PubSub URL with an access token for that user, and opens a WebSocket to it. What the client sends reaches `/ws/message` as a Web PubSub event, verified by its signature:
+A client calls `GET /negotiate` (authenticated like any API call) and gets `{ url }`: a Web PubSub URL with an access token for that user. It then opens a WebSocket to that URL. What the client sends reaches `/ws/message` as a Web PubSub event, verified by its signature:
 
 | Client message | Meaning |
 |---|---|
@@ -61,18 +61,18 @@ Every container is defined by the code that uses it and recorded in `infra/cosmo
 |---|---|---|---|
 | `sessions` | `/userId` | 24 h, renewed on every message | One doc per conversation: counters, compaction summary, provider chain, run lease |
 | `session-messages-v2` | `/pk` = `user:session:instance` | per message (7 days) | Messages, reachable only through the owning session |
-| `memories` | `/userId` | — | Long-term memories with vector and full-text indexes |
-| `episodes`, `session-digests` | `/userId` | — / per document | Episodic memory, summaries of past sessions |
-| `prompt-documents`, `onboarding-state` | `/userId` | — | The agent's documents (SOUL, USER, …) and onboarding |
-| `cron-jobs` | `/userId` | — | Scheduled jobs |
+| `memories` | `/userId` | None | Long-term memories with vector and full-text indexes |
+| `episodes`, `session-digests` | `/userId` | none / per document | Episodic memory, summaries of past sessions |
+| `prompt-documents`, `onboarding-state` | `/userId` | None | The agent's documents (SOUL, USER, …) and onboarding |
+| `cron-jobs` | `/userId` | None | Scheduled jobs |
 | `cron-due-index`, `cron-heartbeat-events` | `/shardId` | 7 days, 2 days | What each scheduler shard runs next |
 | `cron-runs` | `/jobId` | 1 day | Run history |
-| `identity-links`, `identity-channel-index`, `identity-pairing` | `/userId`, `/id`, `/code` | —, —, 5 min | Channel accounts linked to users |
+| `identity-links`, `identity-channel-index`, `identity-pairing` | `/userId`, `/id`, `/code` | none, none, 5 min | Channel accounts linked to users |
 | `hitl-requests` | `/userId` | 1 h | Paused runs waiting for a form or approval |
 | `usage-records` | `/userId` | 90 days | Tokens and cost per run |
 | `rate-limits` | `/id` | per document | Per-user message counters |
 | `abort-requests` | `/userId` | 10 min | Stop-button markers that reach any instance |
-| `user-skills`, `whatsapp-state` | `/userId`, `/scope` | —, per document | Skill settings, WhatsApp delivery state |
+| `user-skills`, `whatsapp-state` | `/userId`, `/scope` | none, per document | Skill settings, WhatsApp delivery state |
 
 Almost everything is partitioned by user, so a turn's reads and writes are point reads or single-partition queries.
 
@@ -89,7 +89,7 @@ Nothing in the design is per user or global. A turn holds no state between calls
 | Functions, Flex Consumption | Up to [1,000 instances](https://learn.microsoft.com/azure/azure-functions/flex-consumption-plan) per function group; 250 cores per region per subscription by default, raised by a support request | `agentforeach:functionMaxInstances` (100 by default), `httpPerInstanceConcurrency` (16) |
 | Cosmos DB | [No limit](https://learn.microsoft.com/azure/cosmos-db/concepts-limits) on storage or physical partitions per container; 10,000 RU/s and 20 GB per logical partition (one user's data) | `agentforeach:cosmosCapacity`: `serverless` by default; `autoscale` with `cosmosAutoscaleMaxRu` for sustained load. Fixed when the account is created |
 | Web PubSub | [1,000 connections per unit](https://learn.microsoft.com/azure/azure-web-pubsub/howto-scale-manual-scale), up to 100 units on Standard and Premium_P1; Premium_P2 goes to 1,000 units | `agentforeach:webPubSubSku`, `webPubSubUnits` (1 by default) |
-| Scheduler | — | `CRON_SCHEDULER_SHARDS`: 8 by default, up to 128 |
+| Scheduler | Not an Azure limit | `CRON_SCHEDULER_SHARDS`: 8 by default, up to 128 |
 | Durable Functions (Azure Storage backend) | [1 to 16 partitions](https://learn.microsoft.com/azure/durable-task/durable-functions/durable-functions-azure-storage-provider); activities scale out with instances, and each orchestration lives in one partition | `partitionCount` 16 in `gateway/host.json`, the maximum |
 | Model providers | Tokens and requests per minute, [per model and region](https://learn.microsoft.com/azure/foundry/openai/quotas-limits) | Failover between providers (`llms.failover` in the config) |
 
