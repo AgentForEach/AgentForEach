@@ -25,6 +25,14 @@
   .me { align-self: flex-end; background: var(--me); color: var(--me-fg); }
   .agent { align-self: flex-start; background: var(--agent); }
   .note { align-self: center; color: var(--muted); font-size: 13px; }
+  .card { align-self: flex-start; max-width: 85%; border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px; display: grid; gap: 8px; }
+  .card h3 { margin: 0; font-size: 15px; }
+  .card p { margin: 0; color: var(--muted); white-space: pre-wrap; }
+  .card .actions { display: flex; flex-wrap: wrap; gap: 6px; }
+  .card button.secondary { background: transparent; color: var(--fg); border: 1px solid var(--line); }
+  .card label.check { display: flex; gap: 6px; align-items: center; color: var(--fg); font-size: 15px; }
+  .card label.check input { width: auto; }
+  .reminder { align-self: flex-start; background: var(--agent); border-left: 3px solid var(--me); }
   form#send { display: flex; gap: 8px; padding-top: 8px; }
   .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   @media (max-width: 560px) { .row { grid-template-columns: 1fr; } }
@@ -58,10 +66,13 @@
 //                                        200 with the reply (local, synchronous)
 //   4. the reply streams as { type: "event", event: "chat", payload } frames:
 //      payload.state "delta" (delta, offset), "final" (text), "error", ...
-// See docs/Architecture.md, "Real-time protocol".
+//   5. a form (payload.state "input_request") is answered by POST /api/chat
+//      with hitlInputResponse { requestId, data | cancelled }
+//   6. a scheduled job's result (a reminder) arrives as event "cron"
+// See docs/Architecture.md, "Real-time protocol", and docs/HITL.md.
 
 const $ = (id) => document.getElementById(id);
-const state = { baseUrl: "", headers: {}, sessionId: undefined, ws: undefined, bubbles: new Map() };
+const state = { baseUrl: "", headers: {}, sessionId: undefined, ws: undefined, bubbles: new Map(), forms: new Map() };
 
 function setStatus(text) { $("status").textContent = text; }
 
@@ -82,7 +93,76 @@ function authHeaders() {
   return {};
 }
 
+// ---- Forms (human in the loop) --------------------------------------------
+
+function el(tag, props = {}, ...children) {
+  const node = Object.assign(document.createElement(tag), props);
+  node.append(...children);
+  return node;
+}
+
+/** Render an input request as a card; answering it resumes the paused run. */
+function showForm(p) {
+  const fields = [];
+  const card = el("div", { className: "card" }, el("h3", { textContent: p.formName || "Input needed" }));
+  if (p.intent) card.append(el("p", { textContent: p.intent }));
+  const actions = el("div", { className: "actions" });
+
+  const answer = (data, summary) => submitForm(p, card, { data }, summary);
+  const options = Array.isArray(p.options) ? p.options : [];
+  const properties = p.schema && typeof p.schema.properties === "object" ? Object.entries(p.schema.properties) : [];
+
+  if (options.length && p.formType === "multi_select") {
+    for (const o of options) {
+      const box = el("input", { type: "checkbox", value: o.value });
+      fields.push(box);
+      card.append(el("label", { className: "check" }, box, o.label));
+    }
+    actions.append(el("button", { textContent: "Submit", onclick: () => {
+      const picked = fields.filter((f) => f.checked);
+      answer({ values: picked.map((f) => f.value) }, picked.map((f) => f.parentElement.textContent).join(", ") || "None");
+    } }));
+  } else if (options.length) {
+    for (const o of options) actions.append(el("button", { textContent: o.label, onclick: () => answer({ value: o.value }, o.label) }));
+  } else if (properties.length || p.formType === "text_input" || p.formType === "form") {
+    const props = properties.length ? properties : [["text", { title: "Your answer" }]];
+    for (const [key, spec] of props) {
+      const input = el("input", { name: key, placeholder: spec.description ?? "" });
+      if (p.proposedArgs?.[key] !== undefined) input.value = String(p.proposedArgs[key]);
+      fields.push(input);
+      card.append(el("label", {}, spec.title ?? key, input));
+    }
+    actions.append(el("button", { textContent: "Submit", onclick: () => {
+      const data = Object.fromEntries(fields.map((f) => [f.name, f.value]));
+      answer(data, fields.map((f) => f.value).join(", "));
+    } }));
+  } else {
+    actions.append(el("button", { textContent: "Approve", onclick: () => answer({ approved: true, confirmed: true }, "Approved") }));
+  }
+  actions.append(el("button", { className: "secondary", textContent: "Cancel", onclick: () => submitForm(p, card, { cancelled: true }, "Cancelled") }));
+  card.append(actions);
+  $("log").append(card);
+  card.scrollIntoView({ block: "end" });
+  state.forms.set(p.requestId, card);
+}
+
+function closeForm(requestId, note) {
+  const card = state.forms.get(requestId);
+  if (!card) return;
+  card.querySelectorAll("button, input").forEach((n) => (n.disabled = true));
+  if (note) card.append(el("p", { textContent: note }));
+  state.forms.delete(requestId);
+}
+
+async function submitForm(p, card, response, summary) {
+  closeForm(p.requestId);
+  addBubble("me", summary);
+  await post({ message: summary, hitlInputResponse: { requestId: p.requestId, ...response } });
+}
+
 function onChatEvent(p) {
+  if (p.state === "input_request") return showForm(p);
+  if (p.state === "input_expired") return closeForm(p.requestId, "This form timed out.");
   if (!p.runId) return;
   let entry = state.bubbles.get(p.runId);
   if (!entry) {
@@ -134,6 +214,10 @@ async function connect() {
       let data = frame.type === "message" ? frame.data : frame;
       if (typeof data === "string") { try { data = JSON.parse(data); } catch { return; } }
       if (data?.type === "event" && data.event === "chat" && data.payload) onChatEvent(data.payload);
+      if (data?.type === "event" && data.event === "cron" && data.payload) {
+        const r = data.payload;
+        addBubble("agent reminder", `⏰ ${r.jobName}${r.summary ? `\n${r.summary}` : ""}`);
+      }
     });
     ws.addEventListener("close", () => { if (state.ws === ws) setStatus("Disconnected. Connect again to stream replies."); });
     state.ws = ws;
@@ -149,12 +233,16 @@ async function connect() {
 
 async function send(text) {
   addBubble("me", text);
+  await post({ message: text });
+}
+
+async function post(fields) {
   $("sendBtn").disabled = true;
   try {
     const res = await fetch(`${state.baseUrl}/api/chat`, {
       method: "POST",
       headers: { "content-type": "application/json", ...state.headers },
-      body: JSON.stringify({ message: text, sessionId: state.sessionId, idempotencyKey: crypto.randomUUID() }),
+      body: JSON.stringify({ ...fields, sessionId: state.sessionId, idempotencyKey: crypto.randomUUID() }),
     });
     const body = await res.json().catch(() => ({}));
     if (res.status === 202) {
