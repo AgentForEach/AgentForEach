@@ -11,7 +11,7 @@
   <a href="https://github.com/agentforeach/agentforeach/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/agentforeach/agentforeach/actions/workflows/ci.yml/badge.svg"></a>
   <a href="https://github.com/agentforeach/agentforeach/releases"><img alt="Release" src="https://img.shields.io/github/v/release/agentforeach/agentforeach?include_prereleases&label=release&color=F29A1F"></a>
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-151827"></a>
-  <img alt="1,100+ tests" src="https://img.shields.io/badge/tests-1%2C100%2B-151827">
+  <img alt="1,200+ tests" src="https://img.shields.io/badge/tests-1%2C200%2B-151827">
   <img alt="Azure today; AWS and Google Cloud next" src="https://img.shields.io/badge/cloud-Azure%20%C2%B7%20AWS%20and%20GCP%20next-151827">
 </p>
 
@@ -28,6 +28,16 @@
 
 <p align="center"><img src="docs/assets/demo.gif" width="760" alt="A web chat with an AgentForEach agent on Azure. Ann says she lives in London and is training for a half marathon, and the agent notes both. She asks for a reminder; a Create reminder card appears, she approves it, and the reminder arrives in the chat. Asked what she is training for, the agent answers from memory."></p>
 <p align="center"><sub>The <a href="examples/web-chat/">web chat sample</a> on a stack deployed with the quickstart: memory, an approval form and a reminder.</sub></p>
+
+## What's new
+
+- **Oct 1, 2026 · A real browser for every agent.** The agent opens pages, clicks, types, fills in forms, downloads files and looks at screenshots, in a Chromium that runs inside the user's own sandbox, so it keeps their logins and costs only storage while idle. When a step is the user's to take (a password, a CAPTCHA, a payment), the agent hands them the live browser in the chat and carries on when they press Done. Off by default. [Browser](docs/Browser.md)
+- **Sep 30 · One-command quickstart.** Open the repo in Codespaces, run one command, and get a trial stack on Azure with a login for the web chat. [Quick start](#quick-start)
+- **Sep 30 · Web chat answers forms and shows reminders**, in the new Tungsten on Night look. [Web chat sample](examples/web-chat/)
+- **Sep 30 · A full backend review.** Fixes across the scheduler, billing, sessions, human in the loop and how credentials bind to skills. Every behaviour change is in [UPGRADING.md](docs/UPGRADING.md).
+- **Sep 29 · Open source**, Apache-2.0, in preview.
+
+**Next:** local development without an Azure account, a starter app you can rebrand, then AWS and Google Cloud. See the [roadmap](ROADMAP.md).
 
 ## Hyperscale by design
 
@@ -162,6 +172,9 @@ Memory, the reminder at 7pm, the tool loop, approvals and the per-user sandbox c
     <td valign="top"><img src="docs/assets/icons/isolation.svg" width="32" alt=""><br><b>Multi-tenant safety</b><br>Tenant-scoped data, SSRF-safe fetching, rate limits, per-session run leases, managed identities, Key Vault secrets and pseudonymised logs.</td>
     <td valign="top"><img src="docs/assets/icons/infra.svg" width="32" alt=""><br><b>Infrastructure as code</b><br>One Pulumi program creates the whole stack.</td>
   </tr>
+  <tr>
+    <td colspan="3" valign="top"><img src="docs/assets/icons/browser.svg" width="32" alt=""><br><b>Browser</b> <sub>new</sub><br>A real Chromium in each user's sandbox: the agent reads pages, clicks, types, fills in forms and sees screenshots, and hands the live browser to the user for a login, a CAPTCHA or a payment. Card details never reach the model. Capped per turn and per user, and billable per action.</td>
+  </tr>
 </table>
 
 ## Architecture
@@ -173,7 +186,7 @@ Memory, the reminder at 7pm, the tool loop, approvals and the per-user sandbox c
 
 A message is accepted in the HTTP request (auth, validation, rate limit) and handed to a Durable orchestration, so no turn is bound by the HTTP timeout and an instance recycled mid-turn doesn't lose it. The runner takes a short, renewed lease on the session so a conversation never runs two turns at once, and the reply streams to every device the user has connected.
 
-More: [Architecture](docs/Architecture.md) · [Sessions](docs/Session-management.md) · [Scheduler](docs/Crons.md) · [Human in the loop](docs/HITL.md) · [Identity](docs/Identity.md) · [Channels](docs/Channel.md) · [Sandboxes](docs/Sandbox.md) · [Knowledge](docs/Knowledge.md)
+More: [Architecture](docs/Architecture.md) · [Sessions](docs/Session-management.md) · [Scheduler](docs/Crons.md) · [Human in the loop](docs/HITL.md) · [Identity](docs/Identity.md) · [Channels](docs/Channel.md) · [Sandboxes](docs/Sandbox.md) · [Browser](docs/Browser.md) · [Knowledge](docs/Knowledge.md)
 
 ## How it compares
 
@@ -189,7 +202,7 @@ Against Cloudflare Agents, Letta, LangGraph, Mastra and the OpenAI Agents SDK: [
 
 ## Quick start
 
-> **Preview.** Load-tested, security-reviewed and covered by 1,100+ tests, but not yet run in many production deployments. Read [SECURITY.md](SECURITY.md) before exposing it to users.
+> **Preview.** Load-tested, security-reviewed and covered by 1,200+ tests, but not yet run in many production deployments. Read [SECURITY.md](SECURITY.md) before exposing it to users.
 
 Open the repo in GitHub Codespaces, which has every tool installed, and run one command. It asks for an Azure sign-in (on a subscription where you can assign roles) and an OpenAI API key, deploys a trial stack and prints a login for the [web chat sample](examples/web-chat/).
 
@@ -235,7 +248,7 @@ pulumi up && cd ..
 
 - **Start:** [Getting started](docs/getting-started.md) · [What it costs](docs/costs.md) · [Benchmarks](docs/Benchmarks.md) · [FAQ](docs/FAQ.md) · [Upgrading](docs/UPGRADING.md)
 - **How it works:** [Architecture](docs/Architecture.md) · [Scaling](docs/Architecture.md#scaling) · [Sessions and messages](docs/Session-management.md) · [Identity](docs/Identity.md) · [Comparisons](docs/Comparisons.md)
-- **Features:** [Scheduler](docs/Crons.md) · [Human in the loop](docs/HITL.md) · [Channels](docs/Channel.md) · [Skills](docs/Skills_Architecture.md) · [Sandboxes](docs/Sandbox.md) · [Knowledge](docs/Knowledge.md)
+- **Features:** [Scheduler](docs/Crons.md) · [Human in the loop](docs/HITL.md) · [Channels](docs/Channel.md) · [Skills](docs/Skills_Architecture.md) · [Sandboxes](docs/Sandbox.md) · [Browser](docs/Browser.md) · [Knowledge](docs/Knowledge.md)
 
 The full index is in [docs/README.md](docs/README.md).
 
