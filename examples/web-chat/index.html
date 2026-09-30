@@ -9,14 +9,14 @@
   /* AgentForEach "Tungsten on Night": dim is asleep, amber is awake. */
   :root {
     --bg: #F6F6F7; --surface: #FFFFFF; --raised: #EFEFF2; --fg: #0B0B0C; --muted: #63636B; --line: #E4E4E7;
-    --wake: #F09A1A; --wake-bg: #FFE3B8; --wake-ink: #9A5B00; --on-wake: #2A1700; --sleep: #E6E7EB; --depth: #FFFFFF;
+    --wake: #F09A1A; --wake-bg: #FFE3B8; --tile: #E4E5EA; --wake-ink: #9A5B00; --on-wake: #2A1700; --sleep: #E6E7EB; --depth: #FFFFFF;
     --display: "Bricolage Grotesque", "Instrument Sans", system-ui, sans-serif;
     --body: "Instrument Sans", system-ui, sans-serif;
     --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
   }
   @media (prefers-color-scheme: dark) {
     :root { --bg: #080C14; --surface: #0C121D; --raised: #152033; --fg: #EEF1F6; --muted: #8C97AA; --line: #1E2838;
-      --wake: #FFB547; --wake-bg: #FFD08A; --wake-ink: #FFB547; --sleep: #1C2636; --depth: #0F1726; color-scheme: dark; }
+      --wake: #FFB547; --wake-bg: #FFD08A; --tile: #243044; --wake-ink: #FFB547; --sleep: #1C2636; --depth: #0F1726; color-scheme: dark; }
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); background-image: linear-gradient(180deg, var(--depth), var(--bg) 320px); color: var(--fg); font: 15px/1.5 var(--body); }
@@ -64,7 +64,7 @@
 <main>
   <header>
     <div class="brand">
-      <svg width="26" height="26" viewBox="0 0 30 30" aria-hidden="true"><circle cx="15" cy="15" r="11" fill="none" stroke="#8C97AA" stroke-width="1" opacity=".5"/><circle cx="22.8" cy="7.2" r="2.1" fill="#8C97AA"/><circle cx="26" cy="15" r="4.4" fill="#FFB547" opacity=".25"/><circle cx="26" cy="15" r="2.8" fill="#FFB547"/><circle cx="22.8" cy="22.8" r="2.1" fill="#8C97AA"/><circle cx="15" cy="26" r="2.1" fill="#8C97AA"/><circle cx="7.2" cy="22.8" r="2.1" fill="#8C97AA"/><circle cx="4" cy="15" r="2.1" fill="#8C97AA"/><circle cx="7.2" cy="7.2" r="2.1" fill="#8C97AA"/></svg>
+      <svg width="26" height="26" viewBox="0 0 100 100" aria-hidden="true"><rect x="8" y="8" width="24" height="24" rx="6" fill="var(--tile)"/><rect x="38" y="8" width="24" height="24" rx="6" fill="var(--tile)"/><rect x="68" y="8" width="24" height="24" rx="6" fill="var(--wake)"/><rect x="8" y="38" width="24" height="24" rx="6" fill="var(--tile)"/><rect x="38" y="38" width="24" height="24" rx="6" fill="var(--tile)"/><rect x="68" y="38" width="24" height="24" rx="6" fill="var(--tile)"/><rect x="8" y="68" width="24" height="24" rx="6" fill="var(--tile)"/><rect x="38" y="68" width="24" height="24" rx="6" fill="var(--tile)"/><rect x="68" y="68" width="24" height="24" rx="6" fill="var(--tile)"/></svg>
       <span>Agent<b>ForEach</b><small>web chat sample</small></span>
     </div>
     <div id="agent" title="Dim while your agent is asleep, lit while it works">
