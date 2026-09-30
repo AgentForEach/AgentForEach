@@ -4,42 +4,74 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AgentForEach web chat</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap">
 <style>
-  :root { --bg: #fff; --fg: #1d1d1f; --muted: #6e6e73; --line: #d2d2d7; --me: #0a64d6; --me-fg: #fff; --agent: #f2f2f5; }
+  /* AgentForEach "Tungsten on Night": dim is asleep, amber is awake. */
+  :root {
+    --bg: #F6F6F7; --surface: #FFFFFF; --raised: #EFEFF2; --fg: #0B0B0C; --muted: #63636B; --line: #E4E4E7;
+    --wake: #F09A1A; --wake-bg: #FFE3B8; --wake-ink: #9A5B00; --on-wake: #2A1700; --sleep: #E6E7EB; --depth: #FFFFFF;
+    --display: "Bricolage Grotesque", "Instrument Sans", system-ui, sans-serif;
+    --body: "Instrument Sans", system-ui, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #111113; --fg: #f2f2f5; --muted: #a1a1a6; --line: #3a3a3c; --me: #2f7bf5; --agent: #232326; }
+    :root { --bg: #080C14; --surface: #0C121D; --raised: #152033; --fg: #EEF1F6; --muted: #8C97AA; --line: #1E2838;
+      --wake: #FFB547; --wake-bg: #FFD08A; --wake-ink: #FFB547; --sleep: #1C2636; --depth: #0F1726; color-scheme: dark; }
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.45 system-ui, sans-serif; }
-  main { max-width: 760px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; height: 100dvh; }
-  fieldset { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; display: grid; gap: 8px; }
-  legend { color: var(--muted); padding: 0 4px; }
-  label { display: grid; gap: 2px; font-size: 13px; color: var(--muted); }
+  body { margin: 0; background: var(--bg); background-image: linear-gradient(180deg, var(--depth), var(--bg) 320px); color: var(--fg); font: 15px/1.5 var(--body); }
+  main { max-width: 760px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; height: 100dvh; gap: 12px; }
+  header { display: flex; align-items: center; gap: 12px; }
+  .brand { display: flex; align-items: center; gap: 8px; font: 700 18px var(--display); letter-spacing: -.01em; }
+  .brand b { color: var(--wake-ink); font-weight: 700; }
+  .brand small { font: 400 12px var(--mono); color: var(--muted); letter-spacing: .02em; margin-left: 4px; }
+  #agent { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
+  #avatar { width: 40px; height: 40px; border-radius: 50%; background: var(--sleep); overflow: hidden; flex: none; transition: box-shadow .4s, background .4s; }
+  #avatar svg { display: block; width: 100%; height: 100%; opacity: .5; transition: opacity .4s; }
+  #agent.awake #avatar { background: var(--wake-bg); box-shadow: 0 0 0 2px var(--wake), 0 0 18px color-mix(in srgb, var(--wake) 45%, transparent); }
+  #agent.awake #avatar svg { opacity: 1; }
+  #agent.awake #agentState { color: var(--wake-ink); }
+  @media (prefers-reduced-motion: reduce) { #avatar, #avatar svg { transition: none; } }
+  fieldset { border: 1px solid var(--line); border-radius: 16px; padding: 14px 16px; display: grid; gap: 10px; background: var(--surface); margin: 0; }
+  legend { font: 400 12px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); padding: 0 6px; }
+  label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
   input, button { font: inherit; }
-  input { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--fg); width: 100%; }
-  button { padding: 8px 14px; border: 0; border-radius: 8px; background: var(--me); color: var(--me-fg); cursor: pointer; }
-  button:disabled { opacity: .5; cursor: default; }
-  #status { color: var(--muted); font-size: 13px; min-height: 1.4em; margin: 8px 2px; }
-  #log { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 4px 0; }
-  .msg { max-width: 85%; padding: 8px 12px; border-radius: 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
-  .me { align-self: flex-end; background: var(--me); color: var(--me-fg); }
-  .agent { align-self: flex-start; background: var(--agent); }
+  input { padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--fg); width: 100%; }
+  input:focus-visible, button:focus-visible { outline: 2px solid var(--wake); outline-offset: 2px; }
+  button { padding: 9px 16px; border: 0; border-radius: 999px; background: var(--wake); color: var(--on-wake); font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: .45; cursor: default; }
+  #status { color: var(--muted); font: 400 12px/1.5 var(--mono); min-height: 1.5em; margin: 0 2px; }
+  #log { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 4px 0; }
+  .msg { max-width: 85%; padding: 10px 14px; border-radius: 16px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .me { align-self: flex-end; background: var(--raised); border-bottom-right-radius: 6px; }
+  .agent { align-self: flex-start; background: var(--surface); border: 1px solid var(--line); border-bottom-left-radius: 6px; }
   .note { align-self: center; color: var(--muted); font-size: 13px; }
-  .card { align-self: flex-start; max-width: 85%; border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px; display: grid; gap: 8px; }
-  .card h3 { margin: 0; font-size: 15px; }
+  .card { align-self: flex-start; max-width: 85%; border: 1px solid var(--wake); background: var(--surface); border-radius: 16px; padding: 12px 14px; display: grid; gap: 10px; }
+  .card h3 { margin: 0; font: 600 15px var(--body); }
   .card p { margin: 0; color: var(--muted); white-space: pre-wrap; }
-  .card .actions { display: flex; flex-wrap: wrap; gap: 6px; }
+  .card .actions { display: flex; flex-wrap: wrap; gap: 8px; }
   .card button.secondary { background: transparent; color: var(--fg); border: 1px solid var(--line); }
-  .card label.check { display: flex; gap: 6px; align-items: center; color: var(--fg); font-size: 15px; }
+  .card label.check { display: flex; gap: 8px; align-items: center; color: var(--fg); font-size: 15px; }
   .card label.check input { width: auto; }
-  .reminder { align-self: flex-start; background: var(--agent); border-left: 3px solid var(--me); }
-  form#send { display: flex; gap: 8px; padding-top: 8px; }
-  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-  @media (max-width: 560px) { .row { grid-template-columns: 1fr; } }
+  .reminder { border-color: var(--wake); }
+  .reminder::before { content: "Reminder"; display: block; font: 400 11px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--wake-ink); margin-bottom: 4px; }
+  form#send { display: flex; gap: 8px; padding-top: 4px; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  @media (max-width: 560px) { .row { grid-template-columns: 1fr; } .brand small { display: none; } }
 </style>
 </head>
 <body>
 <main>
+  <header>
+    <div class="brand">
+      <svg width="26" height="26" viewBox="0 0 30 30" aria-hidden="true"><circle cx="15" cy="15" r="11" fill="none" stroke="#8C97AA" stroke-width="1" opacity=".5"/><circle cx="22.8" cy="7.2" r="2.1" fill="#8C97AA"/><circle cx="26" cy="15" r="4.4" fill="#FFB547" opacity=".25"/><circle cx="26" cy="15" r="2.8" fill="#FFB547"/><circle cx="22.8" cy="22.8" r="2.1" fill="#8C97AA"/><circle cx="15" cy="26" r="2.1" fill="#8C97AA"/><circle cx="7.2" cy="22.8" r="2.1" fill="#8C97AA"/><circle cx="4" cy="15" r="2.1" fill="#8C97AA"/><circle cx="7.2" cy="7.2" r="2.1" fill="#8C97AA"/></svg>
+      <span>Agent<b>ForEach</b><small>web chat sample</small></span>
+    </div>
+    <div id="agent" title="Dim while your agent is asleep, lit while it works">
+      <span id="agentState">asleep</span>
+      <div id="avatar" role="img" aria-label="Your agent"></div>
+    </div>
+  </header>
   <form id="connect">
     <fieldset>
       <legend>Gateway</legend>
@@ -76,6 +108,12 @@ const state = { baseUrl: "", headers: {}, sessionId: undefined, ws: undefined, b
 
 function setStatus(text) { $("status").textContent = text; }
 
+// The agent's portrait is dim while it sleeps and lit while a turn runs.
+function setAwake(awake) {
+  $("agent").classList.toggle("awake", awake);
+  $("agentState").textContent = awake ? "awake" : "asleep";
+}
+
 function addBubble(kind, text) {
   const el = document.createElement("div");
   el.className = `msg ${kind}`;
@@ -83,6 +121,13 @@ function addBubble(kind, text) {
   $("log").append(el);
   el.scrollIntoView({ block: "end" });
   return el;
+}
+
+// One portrait per user: the JWT's subject, or the dev user id.
+function avatarSeed() {
+  const token = $("token").value.trim();
+  try { if (token) return JSON.parse(atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).sub || "agent"; } catch {}
+  return $("devUser").value.trim() || "agent";
 }
 
 function authHeaders() {
@@ -171,30 +216,34 @@ function onChatEvent(p) {
   }
   if (p.sessionId) state.sessionId = p.sessionId;
   switch (p.state) {
-    case "thinking": setStatus("Thinking…"); break;
-    case "tool_start": setStatus(`Using ${p.name ?? p.toolType}…`); break;
+    case "thinking": setAwake(true); setStatus("Thinking…"); break;
+    case "tool_start": setAwake(true); setStatus(`Using ${p.name ?? p.toolType}…`); break;
     case "delta":
+      setAwake(true);
       // A gap means a frame was missed; "final" carries the full text anyway.
       if (p.offset === entry.text.length) entry.text += p.delta;
       entry.el.textContent = entry.text;
       break;
     case "final":
       entry.el.textContent = p.text;
+      setAwake(false);
       setStatus(`Done (${p.model}, ${(p.durationMs / 1000).toFixed(1)} s).`);
       state.bubbles.delete(p.runId);
       break;
     case "error":
-      entry.el.textContent = `⚠ ${p.error}`;
+      setAwake(false);
+      entry.el.textContent = `Error: ${p.error}`;
       setStatus(p.code ? `Error: ${p.code}` : "Error.");
       state.bubbles.delete(p.runId);
       break;
-    case "aborted": setStatus("Stopped."); state.bubbles.delete(p.runId); break;
+    case "aborted": setAwake(false); setStatus("Stopped."); state.bubbles.delete(p.runId); break;
   }
 }
 
 async function connect() {
   state.baseUrl = $("baseUrl").value.trim().replace(/\/+$/, "");
   state.headers = authHeaders();
+  window.afeAvatar?.(avatarSeed());
   state.ws?.close();
   state.ws = undefined;
   setStatus("Connecting…");
@@ -216,7 +265,8 @@ async function connect() {
       if (data?.type === "event" && data.event === "chat" && data.payload) onChatEvent(data.payload);
       if (data?.type === "event" && data.event === "cron" && data.payload) {
         const r = data.payload;
-        addBubble("agent reminder", `⏰ ${r.jobName}${r.summary ? `\n${r.summary}` : ""}`);
+        addBubble("agent reminder", `${r.jobName}${r.summary ? `\n${r.summary}` : ""}`);
+        setAwake(true); setTimeout(() => setAwake(false), 2500);
       }
     });
     ws.addEventListener("close", () => { if (state.ws === ws) setStatus("Disconnected. Connect again to stream replies."); });
@@ -271,6 +321,15 @@ $("send").addEventListener("submit", (e) => {
   $("message").value = "";
   send(text);
 });
+</script>
+<script type="module">
+  // Draws the agent's portrait. Loaded from a CDN; if it's unreachable the page works without it.
+  try {
+    const { createAvatar } = await import("https://cdn.jsdelivr.net/npm/@dicebear/core@9/+esm");
+    const { notionists } = await import("https://cdn.jsdelivr.net/npm/@dicebear/collection@9/+esm");
+    window.afeAvatar = (seed) => { document.getElementById("avatar").innerHTML = createAvatar(notionists, { seed }).toString(); };
+    window.afeAvatar(avatarSeed());
+  } catch { /* offline: keep the plain circle */ }
 </script>
 </body>
 </html>

@@ -17,4 +17,6 @@ npx serve examples/web-chat        # or: python3 -m http.server -d examples/web-
 - **Local gateway** (`npm start`, see [Run locally](../../docs/getting-started.md#run-locally)): URL `http://localhost:7071`, a dev user id, and `AUTH_ALLOW_INSECURE_USER_ID_HEADER=true` in `local.settings.json`. Without `WEBPUBSUB_CONNECTION_STRING` there is no live stream; replies arrive when complete.
 - **Deployed gateway**: your Function App URL and a JWT from the JWT provider you configured. (The API-key provider reads `x-api-key`, which this page doesn't send.) Add the page's origin to `agentforeach:corsAllowedOrigins` if you restricted CORS.
 
+The agent's portrait in the header is drawn from the signed-in user's id (the JWT's `sub`, or the dev user id): dim while the agent is asleep, lit while a turn runs. It's the Notionists style by Zoish (CC0), rendered by DiceBear from jsDelivr; offline, the page works without it.
+
 Replies are rendered as plain text (`textContent`), never as HTML.
