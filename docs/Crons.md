@@ -86,12 +86,14 @@ Top-of-hour cron jobs use deterministic per-job offsets, with cursor shifting so
 ## 5.1 `isolated` jobs
 
 - Executes the `agentTurn` payload as a single model call through AgentForEach's provider layer (not a full chat turn)
+- Has **no tools**: it can't search, fetch, browse, run code or read memory, so it answers from the model and the payload alone. A job that needs tools ("check this price every morning") must be a `main` job
 - Applies the timeout override from payload (a `payload.model` override is ignored; isolated jobs use the default model)
 - Records run history and usage
 
 ## 5.2 `main` jobs
 
 - The `systemEvent` text is queued in `cron-heartbeat-events` and delivered to the user's main session as a normal turn (`AgentClient.send()`, marked `scheduled`); events due for the same user/agent/session are batched into one turn
+- The turn has the user's tools, including the [browser](Browser.md) if they have it, capped at `maxActionsPerScheduledRun` browser actions
 - `wakeMode: "next-heartbeat"` only queues the event; the shard's next `ProcessHeartbeatQueue` flush delivers it
 - `wakeMode: "now"` queues the event and then tries to flush it immediately; if the session is busy or a backlog has built up, it stays queued for the next flush instead of being dropped
 - Supports optional `agentId` and `sessionId` routing

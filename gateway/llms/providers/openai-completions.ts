@@ -28,6 +28,7 @@ import type {
   ContentBlock,
   FunctionCallOutput,
   FunctionCallOutputItem,
+  ToolResultImage,
   MessageOutputItem,
   OpenAIProviderConfig,
   OutputItem,
@@ -331,13 +332,16 @@ export class OpenAICompletionsProvider implements Provider {
       }
 
       // Map FunctionCallOutput[] → tool result messages
-      for (const item of request.input as FunctionCallOutput[]) {
+      const outputs = request.input as FunctionCallOutput[];
+      for (const item of outputs) {
         messages.push({
           role: "tool" as const,
           tool_call_id: item.callId,
           content: item.output,
         });
       }
+      const imageMessage = toolImagesMessage(outputs.map((o) => ({ callId: o.callId, images: o.images })));
+      if (imageMessage) messages.push(imageMessage);
 
       return messages;
     }
@@ -436,15 +440,19 @@ export class OpenAICompletionsProvider implements Provider {
         Array.isArray(m.content) &&
         m.content.some((b) => b.type === "tool_result")
       ) {
+        const withImages: Array<{ callId: string; images?: ToolResultImage[] }> = [];
         for (const block of m.content) {
           if (block.type === "tool_result") {
             result.push({
               role: "tool" as const,
-              tool_call_id: (block as { tool_use_id: string }).tool_use_id,
-              content: (block as { content: string }).content,
+              tool_call_id: block.tool_use_id,
+              content: block.content,
             });
+            withImages.push({ callId: block.tool_use_id, images: block.images });
           }
         }
+        const imageMessage = toolImagesMessage(withImages);
+        if (imageMessage) result.push(imageMessage);
       } else {
         result.push(this.mapConversationMessage(m));
       }
@@ -899,4 +907,22 @@ export function createOpenAICompletionsProvider(
   config: ProviderConfig,
 ): OpenAICompletionsProvider {
   return new OpenAICompletionsProvider(config as OpenAIProviderConfig);
+}
+
+/**
+ * Chat Completions tool messages are text only, so images a tool returned
+ * follow the tool messages in one user message, labelled with their call.
+ */
+function toolImagesMessage(
+  results: Array<{ callId: string; images?: ToolResultImage[] }>,
+): OpenAI.ChatCompletionUserMessageParam | undefined {
+  const parts: OpenAI.ChatCompletionContentPart[] = [];
+  for (const { callId, images } of results) {
+    if (!images?.length) continue;
+    parts.push({ type: "text", text: `Image returned by tool call ${callId}:` });
+    for (const img of images) {
+      parts.push({ type: "image_url", image_url: { url: `data:${img.mediaType};base64,${img.data}`, detail: "auto" } });
+    }
+  }
+  return parts.length ? { role: "user", content: parts } : undefined;
 }

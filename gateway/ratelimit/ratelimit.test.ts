@@ -106,3 +106,12 @@ test("scheduled runs and force-runs have their own limits, with no channel exemp
   assert.equal((await limiter.check("u1", "cron", t)).allowed, true);
   assert.equal((await limiter.check("u1", "cron", t)).allowed, false, "a job loop is cut off");
 });
+
+test("browser actions have their own limit, apart from messages and scheduled runs", () => {
+  const browser = scopedRateLimitConfig("browser");
+  assert.equal(browser.scope, "browser");
+  assert.deepEqual(browser.exemptChannels, []);
+  assert.equal(browser.perMinute, 30);
+  assert.equal(browser.perDay, 300);
+  assert.notEqual(browser.scope, scopedRateLimitConfig("scheduled").scope);
+});

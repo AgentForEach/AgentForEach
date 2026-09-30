@@ -11,6 +11,8 @@
 #     is switched to the new image (the identity then also needs
 #     Website Contributor on the app). The next `pulumi up` sets the setting
 #     back to the stack's sandboxDiskImageId, so update that too.
+#   SANDBOX_IMAGE_BROWSER (optional) — "1" to include Chromium and the
+#     afe-browser driver for the `browser` tool (docs/Browser.md)
 name: Sandbox image
 
 on:
@@ -32,6 +34,7 @@ jobs:
       ACA_SANDBOX_RESOURCE_GROUP: ${{ vars.ACA_SANDBOX_RESOURCE_GROUP }}
       ACA_SANDBOX_GROUP: ${{ vars.ACA_SANDBOX_GROUP }}
       ACA_SANDBOX_REGION: ${{ vars.ACA_SANDBOX_REGION }}
+      SANDBOX_IMAGE_BROWSER: ${{ vars.SANDBOX_IMAGE_BROWSER }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

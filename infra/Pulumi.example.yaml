@@ -38,6 +38,7 @@ config:
   # --- Optional features ------------------------------------------------------
   agentforeach:sandboxEnabled: "false"           # per-user code sandboxes (docs/Sandbox.md)
   # agentforeach:sandboxProvider: aca-sandboxes
+  # agentforeach:sandboxBrowserEnabled: "true"   # a real browser in each sandbox (docs/Browser.md)
   agentforeach:searchEnabled: "false"            # Azure AI Search knowledge base (docs/Knowledge.md)
 
   # Settings the stack doesn't model (values go to Key Vault):

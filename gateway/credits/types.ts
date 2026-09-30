@@ -38,6 +38,13 @@ export interface CreditsConfig {
   /** Minimum coins deducted per run (floor). Default 1. */
   minimumCharge: number;
 
+  /**
+   * Coins per metered action, added to a run's token cost. Keys are the
+   * units the runner reports, e.g. { "browserAction": 1 } charges a coin per
+   * browser tool action. Unlisted units are free. Default {}.
+   */
+  unitCoins?: Record<string, number>;
+
   /** Shared secret for service-to-service auth. */
   serviceKey: string;
 

@@ -46,15 +46,21 @@ export function loadRateLimitConfig(): RateLimitConfig {
 /** A limit for one kind of action, in its own counter namespace. */
 export type ScopedLimit = { perMinute: number; perDay: number };
 
-const SCOPED_DEFAULTS: Record<"scheduled" | "forceRun", ScopedLimit> = {
+export type ScopedLimitKind = "scheduled" | "forceRun" | "browser";
+
+const SCOPED_DEFAULTS: Record<ScopedLimitKind, ScopedLimit> = {
   // Every model run a user's jobs and heartbeats cause.
   scheduled: { perMinute: 6, perDay: 300 },
   // POST /cron/jobs/{id}/run.
   forceRun: { perMinute: 2, perDay: 30 },
+  // Every `browser` tool action, in chats and scheduled runs alike.
+  browser: { perMinute: 30, perDay: 300 },
 };
 
-/** Limiter config for `rateLimit.scheduled` or `rateLimit.forceRun`. */
-export function scopedRateLimitConfig(kind: "scheduled" | "forceRun"): RateLimitConfig {
+const SCOPE_NAMES: Record<ScopedLimitKind, string> = { scheduled: "sched", forceRun: "force", browser: "browser" };
+
+/** Limiter config for `rateLimit.scheduled`, `rateLimit.forceRun` or `rateLimit.browser`. */
+export function scopedRateLimitConfig(kind: ScopedLimitKind): RateLimitConfig {
   const base = loadRateLimitConfig();
   const json = (base as unknown as Record<string, Partial<ScopedLimit> | undefined>)[kind] ?? {};
   return {
@@ -63,14 +69,14 @@ export function scopedRateLimitConfig(kind: "scheduled" | "forceRun"): RateLimit
     perDay: json.perDay ?? SCOPED_DEFAULTS[kind].perDay,
     exemptChannels: [],
     containerId: base.containerId,
-    scope: kind === "scheduled" ? "sched" : "force",
+    scope: SCOPE_NAMES[kind],
   };
 }
 
 const scopedShared = new Map<string, RateLimiter>();
 
-/** The process-wide limiter for scheduled runs or force-runs. */
-export function getScopedRateLimiter(kind: "scheduled" | "forceRun"): RateLimiter {
+/** The process-wide limiter for scheduled runs, force-runs or browser actions. */
+export function getScopedRateLimiter(kind: ScopedLimitKind): RateLimiter {
   let limiter = scopedShared.get(kind);
   if (!limiter) scopedShared.set(kind, (limiter = new RateLimiter(getSharedDatabase(), scopedRateLimitConfig(kind))));
   return limiter;

@@ -132,3 +132,23 @@ test("the user id reaches Anthropic only as a pseudonym", () => {
   const userId = (params.metadata as { user_id?: string }).user_id;
   assert.ok(userId && !userId.includes("15551234567"));
 });
+
+test("a tool result with an image becomes a tool_result holding text and an image block", () => {
+  const params = build({
+    input: [
+      { type: "function_call_output", callId: "toolu_1", output: "{\"url\":\"x\"}", images: [{ mediaType: "image/jpeg", data: "AAAA" }] },
+      { type: "function_call_output", callId: "toolu_2", output: "plain" },
+    ],
+    conversation: { messages: [{ role: "user", content: "look at the page" }] },
+  } as ProviderRequest) as { messages: Array<{ role: string; content: unknown }> };
+  const results = params.messages.at(-1)!.content as Array<{ tool_use_id: string; content: unknown }>;
+  assert.deepEqual(results[0], {
+    type: "tool_result",
+    tool_use_id: "toolu_1",
+    content: [
+      { type: "text", text: "{\"url\":\"x\"}" },
+      { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "AAAA" } },
+    ],
+  });
+  assert.equal(results[1]!.content, "plain", "results without images stay plain text");
+});

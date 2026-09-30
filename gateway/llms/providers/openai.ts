@@ -18,6 +18,7 @@ import OpenAI from "openai";
 import { redactId } from "../../utils/redact.js";
 import type {
   ConversationState,
+  FunctionCallOutput,
   FunctionCallOutputItem,
   LocalShellToolDefinition,
   MessageOutputItem,
@@ -369,14 +370,23 @@ export class OpenAIProvider implements Provider {
     ) {
       // Map FunctionCallOutput[] to OpenAI ResponseInputItem[]
       // OpenAI expects: { type: "function_call_output", call_id: "...", output: "..." }
-      return (
-        request.input as Array<{ type: string; callId: string; output: string }>
-      ).map(
+      // A tool that returned images (a browser screenshot) sends them in the output list,
+      // which the Responses API accepts beside text.
+      return (request.input as FunctionCallOutput[]).map(
         (item) =>
           ({
             type: "function_call_output",
             call_id: item.callId,
-            output: item.output,
+            output: item.images?.length
+              ? [
+                  { type: "input_text", text: item.output },
+                  ...item.images.map((img) => ({
+                    type: "input_image",
+                    image_url: `data:${SAFE_IMAGE_MIME_TYPES.has(img.mediaType) ? img.mediaType : "image/jpeg"};base64,${img.data}`,
+                    detail: "auto",
+                  })),
+                ]
+              : item.output,
           }) as unknown as OpenAI.Responses.ResponseInputItem,
       );
     }

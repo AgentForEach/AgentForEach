@@ -31,6 +31,7 @@ import type {
   ProviderRequest,
   ProviderResponse,
   FunctionCallOutput,
+  ToolResultImage,
   StreamEvent,
   UsageStats,
   FunctionCallOutputItem,
@@ -119,6 +120,7 @@ import {
   type ResolvedSkills,
   SkillToolHandler,
   getSkillToolDefinitions,
+  isBrowserEnabled,
   resolveUserSkills,
 } from "../skills/index.js";
 import type { UserSkillStore, SkillBlobStore, SandboxBackend } from "../skills/index.js";
@@ -342,7 +344,7 @@ async function* withStreamIdleTimeout<T>(
   }
 }
 
-type ToolCallResult = { callId: string; output: string };
+type ToolCallResult = { callId: string; output: string; images?: ToolResultImage[] };
 
 /**
  * If a tool call suspended the run for approval: its signal, and the results
@@ -492,6 +494,9 @@ export async function runAgentTurn(
   // Tokens spent so far, visible to the failure path so a failed run is
   // still billed for the rounds it completed.
   let usageSoFar: UsageStats | undefined;
+  // Metered actions besides tokens (browser actions), billed by credits.unitCoins
+  // on every exit that settles, like usageSoFar.
+  const units: Record<string, number> = {};
   let leasedSessionId: string | undefined;
   // The session instance this run leased; /new replaces it.
   let leasedInstanceId: string | undefined;
@@ -1039,6 +1044,7 @@ export async function runAgentTurn(
     const skillTools = deps.skillsConfig?.enabled && deps.skillStore && deps.skillBlobStore
       ? getSkillToolDefinitions({
           sandboxEnabled: deps.sandboxClient?.isReady() ?? false,
+          browserEnabled: isBrowserEnabled(deps.skillsConfig.sandbox, deps.sandboxClient, request.userId),
         }) : [];
     if (deps.skillsConfig?.enabled && deps.skillStore && deps.skillBlobStore) {
       try {
@@ -1235,6 +1241,7 @@ export async function runAgentTurn(
           session?.sessionId,
           deps.exportStore,
           resolvedSkills?.credentialBindings ?? {},
+          { scheduled: isScheduledRun(request, sessionType), units },
         )
       : undefined;
 
@@ -1879,6 +1886,8 @@ export async function runAgentTurn(
           const toolStartTime = Date.now();
           const args = safeParseArgs(call.arguments);
           let result: string;
+          // Images a tool returned for the model (browser screenshots); only skill tools return them.
+          let images: ToolResultImage[] | undefined;
 
           // Policy is enforced here, not just on the list the model saw.
           const notOffered = rejectUnofferedToolCall(call.name, offeredToolNames);
@@ -1963,7 +1972,7 @@ export async function runAgentTurn(
           } else if (isWebTool(call.name) && webHandler) {
             result = await webHandler.handle(call.name, args, request.userId, session.sessionId);
           } else if (skillHandler && skillHandler.isSkillTool(call.name)) {
-            result = await skillHandler.handle(call.name, args, request.userId);
+            ({ output: result, images } = await skillHandler.handleWithImages(call.name, args, request.userId));
           } else if (isDigestTool(call.name) && digestHandler) {
             result = await digestHandler.handle(call.name, args, request.userId);
           } else if (isKnowledgeTool(call.name) && deps.knowledgeLayer) {
@@ -2297,7 +2306,7 @@ export async function runAgentTurn(
           );
           executedToolNames.add(call.name);
 
-          return { callId: call.callId, output: result };
+          return { callId: call.callId, output: result, ...(images?.length ? { images } : {}) };
         })),
       );
 
@@ -2355,6 +2364,7 @@ export async function runAgentTurn(
           type: "function_call_output" as const,
           callId: r.callId,
           output: r.output,
+          ...(r.images ? { images: r.images } : {}),
         }),
       );
 
@@ -2440,6 +2450,7 @@ export async function runAgentTurn(
         runId,
         userId: request.userId,
         response: abortedResponse,
+        units,
       });
       return abortedResponse;
     }
@@ -2676,6 +2687,7 @@ export async function runAgentTurn(
       runId,
       userId: request.userId,
       response: sendResponse,
+      units,
     });
 
     // Flush any buffered request_user_input AFTER the final text emit and
@@ -2740,6 +2752,7 @@ export async function runAgentTurn(
         runId,
         userId: request.userId,
         response: suspendResponse,
+        units,
       });
 
       // Push a "waiting for input" state to the client so it knows
@@ -2887,6 +2900,7 @@ export async function runAgentTurn(
       error: err instanceof Error ? err : new Error(errorMessage),
       usage: usageSoFar,
       model: modelSoFar ?? model,
+      units,
     });
     onStream?.({
       type: "error",
@@ -2924,6 +2938,18 @@ export async function runAgentTurn(
  * the UI acts on: offering "try again" for a failure that will fail the same
  * way every time is worse than saying so plainly.
  */
+/**
+ * Whether nobody is waiting on this run: a cron session, or a job or
+ * heartbeat delivered into the user's session. A resumed HITL run is also
+ * sent with `scheduled` (for delivery), but the user has just answered it.
+ */
+export function isScheduledRun(
+  request: { scheduled?: boolean; metadata?: Record<string, string> },
+  sessionType: string,
+): boolean {
+  return sessionType === "cron" || (request.scheduled === true && request.metadata?._hitlContinuation !== "true");
+}
+
 /**
  * Soft tool-round budget: when `round` has reached `softBudget`, append a
  * one-time convergence note to the LAST tool output of the round.

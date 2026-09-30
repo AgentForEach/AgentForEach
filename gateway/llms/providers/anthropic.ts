@@ -21,6 +21,7 @@ import type {
   ContentBlock,
   FunctionCallOutput,
   FunctionCallOutputItem,
+  ToolResultImage,
   MessageOutputItem,
   OutputItem,
   Provider,
@@ -266,7 +267,7 @@ export class AnthropicProvider implements Provider {
         (item) => ({
           type: "tool_result" as const,
           tool_use_id: item.callId,
-          content: item.output,
+          content: toolResultContent(item.output, item.images),
         }),
       );
 
@@ -398,7 +399,7 @@ export class AnthropicProvider implements Provider {
         return {
           type: "tool_result",
           tool_use_id: block.tool_use_id,
-          content: block.content,
+          content: toolResultContent(block.content, block.images),
         };
 
       case "thinking":
@@ -744,4 +745,19 @@ export function createAnthropicProvider(
   config: ProviderConfig,
 ): AnthropicProvider {
   return new AnthropicProvider(config as AnthropicProviderConfig);
+}
+
+/** A tool result's text, plus its images as image blocks (Anthropic accepts both inside tool_result). */
+function toolResultContent(
+  text: string,
+  images: ToolResultImage[] | undefined,
+): string | Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam> {
+  if (!images?.length) return text;
+  return [
+    { type: "text", text },
+    ...images.map((img) => ({
+      type: "image" as const,
+      source: { type: "base64" as const, media_type: img.mediaType, data: img.data },
+    })),
+  ];
 }

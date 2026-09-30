@@ -48,3 +48,6 @@ infra/Pulumi.*.yaml
 
 # Deploy staging area (scripts/deploy-gateway.sh)
 .deploy-staging/
+
+# Local test installs of the sandbox browser driver (the image installs its own)
+gateway/sandbox-container/browser/package-lock.json

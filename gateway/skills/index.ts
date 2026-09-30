@@ -108,3 +108,13 @@ export type {
   SandboxFileExportResult,
   SandboxFileInfo,
 } from "./sandbox/index.js";
+
+// -- Browser (a real browser inside the user's ACA Sandbox) --
+export {
+  BrowserToolHandler,
+  BROWSER_TOOL_NAME,
+  getBrowserToolDefinitions,
+  isBrowserEnabled,
+  isBrowserTool,
+} from "./browser/index.js";
+export type { BrowserConfig, BrowserJsonConfig } from "./browser/index.js";

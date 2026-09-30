@@ -42,6 +42,7 @@ export type {
   ShellCallOutputItem,
   ShellCallResultItem,
   FunctionCallOutput,
+  ToolResultImage,
   FunctionCallOutputItem,
   ReasoningOutputItem,
   UsageStats,

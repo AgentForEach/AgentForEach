@@ -222,7 +222,7 @@ export type ContentBlock =
   | { type: "image"; source: ImageSource }
   | { type: "document"; source: DocumentSource; fileName?: string }
   | { type: "tool_use"; id: string; name: string; input: unknown }
-  | { type: "tool_result"; tool_use_id: string; content: string }
+  | { type: "tool_result"; tool_use_id: string; content: string; images?: ToolResultImage[] }
   /** Anthropic extended thinking; must be sent back unchanged with its tool_use. */
   | { type: "thinking"; thinking: string; signature: string }
   | { type: "redacted_thinking"; data: string };
@@ -266,6 +266,21 @@ export interface FunctionCallOutput {
   callId: string;
   /** The string result returned by the function. */
   output: string;
+  /** Images the tool returned for the model to see (a browser screenshot), sent with `output`. */
+  images?: ToolResultImage[];
+}
+
+/**
+ * An image a tool returns to the model. Providers send it with the tool's
+ * result (Anthropic tool_result blocks, OpenAI function_call_output lists);
+ * Chat Completions, whose tool messages are text only, gets it in a user
+ * message after them. Only the latest round's images are resent (see
+ * transcript.ts), and none are saved to session history.
+ */
+export interface ToolResultImage {
+  mediaType: "image/jpeg" | "image/png" | "image/webp" | "image/gif";
+  /** Base64, no data: prefix. */
+  data: string;
 }
 
 // ============================================================================

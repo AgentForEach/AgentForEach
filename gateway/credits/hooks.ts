@@ -6,7 +6,7 @@
  *   2. Settle actual cost and refund the remainder on `run_completed`
  *
  * Cost formula:
- *   coins = max(minimumCharge, round(estimatedCostUsd × costMultiplier))
+ *   coins = max(minimumCharge, round(estimatedCostUsd × costMultiplier + Σ units × unitCoins))
  *
  * Reservation is fail-closed so paid usage cannot proceed without a ledger.
  */
@@ -56,6 +56,7 @@ export function registerCreditsHooks(
           event.response.model,
           config,
           usageConfig,
+          event.units,
         )
       : 0;
 
@@ -78,6 +79,7 @@ export function registerCreditsHooks(
       console.log(
         `[credits] Settled ${settlement.charged} coins for user=${redactId(event.userId)} ` +
           `runId=${event.runId} model=${event.response.model} ` +
+          (event.units && Object.keys(event.units).length ? `units=${JSON.stringify(event.units)} ` : "") +
           `(refund=${settlement.refunded}, shortfall=${settlement.shortfall}) — balance=${settlement.balance}`,
       );
     } catch (error) {
@@ -110,7 +112,7 @@ export function registerCreditsHooks(
     // (a run that failed before any LLM call just releases its reservation).
     const coins =
       event.usage && event.model
-        ? computeCoins(event.usage, event.model, config, usageConfig)
+        ? computeCoins(event.usage, event.model, config, usageConfig, event.units)
         : 0;
     try {
       const settlement = await provider.settle(event.userId, event.runId, coins);
@@ -288,18 +290,23 @@ export async function runMetered<
 // ============================================================================
 
 /**
- * Compute how many coins to deduct from a usage record.
+ * Compute how many coins to deduct from a usage record and the run's metered units.
  *
- * Formula: max(minimumCharge, round(estimatedCostUsd × costMultiplier))
+ * Formula: max(minimumCharge, round(estimatedCostUsd × costMultiplier + Σ units × unitCoins))
  */
 export function computeCoins(
   usage: UsageStats,
   model: string,
   config: CreditsConfig,
   usageConfig: ReturnType<typeof loadUsageConfig>,
+  units: Record<string, number> = {},
 ): number {
   const pricing = getModelPricing(model, usageConfig);
   const costUsd = estimateCost(usage, pricing);
-  const raw = Math.round(costUsd * config.costMultiplier);
+  let unitCost = 0;
+  for (const [unit, count] of Object.entries(units)) {
+    unitCost += count * (config.unitCoins?.[unit] ?? 0);
+  }
+  const raw = Math.round(costUsd * config.costMultiplier + unitCost);
   return Math.max(config.minimumCharge, raw);
 }

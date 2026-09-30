@@ -37,6 +37,7 @@
 import type { ToolDefinition } from "../../memory/types.js";
 import type {
   SandboxExecArgs,
+  SandboxExecResult,
   SandboxFileWriteArgs,
   SandboxFileReadArgs,
 } from "./types.js";
@@ -280,10 +281,7 @@ export class SandboxToolHandler {
     toolName: string,
     args: Record<string, unknown>,
   ): Promise<string> {
-    const identifier = this.client.resolveIdentifier(
-      this.userId,
-      this.sessionIdOverride,
-    );
+    const identifier = this.identifier();
 
     switch (toolName) {
       case SANDBOX_EXEC_TOOL_NAME:
@@ -301,6 +299,43 @@ export class SandboxToolHandler {
       default:
         return JSON.stringify({ error: `Unknown sandbox tool: ${toolName}` });
     }
+  }
+
+  /**
+   * Run a command another tool built (the browser) in this user's sandbox,
+   * after the same once-per-turn credential rewrite sandbox_exec gets.
+   */
+  async runCommand(command: string, timeoutSec: number): Promise<SandboxExecResult> {
+    const identifier = this.identifier();
+    await this.ensureCredentialsInjected(identifier);
+    return this.client.exec({ command, timeout: timeoutSec }, identifier);
+  }
+
+  /** A /mnt/data file as base64 (for the model to see an image), or undefined if empty or over `maxBytes`. */
+  async readFileBase64(filename: string, maxBytes: number): Promise<string | undefined> {
+    const file = await this.client.fileReadBinary({ filename }, this.identifier());
+    if (!file.contentBase64 || file.sizeBytes > maxBytes) return undefined;
+    return file.contentBase64;
+  }
+
+  /** Export a /mnt/data file as a download link; the same result as sandbox_file_export. */
+  exportFile(filename: string): Promise<string> {
+    return this.handleFileExport({ filename }, this.identifier());
+  }
+
+  /**
+   * Hosts the egress proxy adds this user's credentials to. The browser keeps
+   * pages from sending their own requests there (the proxy would sign them).
+   */
+  injectedHosts(): string[] {
+    if (!this.client.setEgressCredentials) return [];
+    return Object.entries(this.credentialBindings)
+      .filter(([key, binding]) => binding?.header && this.credentials[key] !== undefined)
+      .flatMap(([, binding]) => binding.hosts);
+  }
+
+  private identifier(): string {
+    return this.client.resolveIdentifier(this.userId, this.sessionIdOverride);
   }
 
   // --------------------------------------------------------------------------

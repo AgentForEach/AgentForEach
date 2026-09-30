@@ -253,6 +253,8 @@ export type AcaSandboxGroupSettings = {
   group: pulumi.Input<string>;
   region: pulumi.Input<string>;
   diskImageId?: pulumi.Input<string>;
+  /** Offer the `browser` tool (needs a disk image built with SANDBOX_IMAGE_BROWSER=1). */
+  browserEnabled?: boolean;
 };
 
 export function createFunctionApp(args: {
@@ -405,6 +407,9 @@ export function createFunctionApp(args: {
     );
     if (args.acaSandboxGroup.diskImageId) {
       appSettings.push({ name: "ACA_SANDBOX_DISK_IMAGE_ID", value: args.acaSandboxGroup.diskImageId });
+    }
+    if (args.acaSandboxGroup.browserEnabled) {
+      appSettings.push({ name: "SANDBOX_BROWSER_ENABLED", value: "true" });
     }
   }
 

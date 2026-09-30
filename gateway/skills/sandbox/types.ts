@@ -62,6 +62,9 @@ export interface SandboxJsonConfig {
   /** Maximum export file size in bytes. Default: 52428800 (50 MB). */
   maxExportBytes?: number;
 
+  /** A real browser inside the user's sandbox (ACA Sandboxes only). See docs/Browser.md. */
+  browser?: import("../browser/types.js").BrowserJsonConfig;
+
   /** ACA-specific config. */
   aca?: {
     /**
@@ -191,6 +194,8 @@ export interface SandboxConfig {
   exportExpiryHours: number;
   /** Maximum export file size in bytes. */
   maxExportBytes: number;
+  /** Browser settings; set by loadSkillsConfig, absent in hand-built configs. */
+  browser?: import("../browser/types.js").BrowserConfig;
 }
 
 // ============================================================================

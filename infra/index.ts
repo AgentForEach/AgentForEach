@@ -323,6 +323,7 @@ if (cfg.sandboxEnabled && cfg.sandboxProvider === "aca-sandboxes") {
     group: sandboxGroup.name,
     region: sandboxGroupLocation,
     diskImageId: cfg.sandboxDiskImageId,
+    browserEnabled: cfg.sandboxBrowserEnabled,
   };
 }
 

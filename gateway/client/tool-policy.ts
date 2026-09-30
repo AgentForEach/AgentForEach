@@ -73,6 +73,10 @@ const CRON_ALLOWED: ReadonlySet<string> = new Set([
   "sandbox_file_read",
   "sandbox_file_list",
   "sandbox_skill_load",
+  // Browser. Scheduled browsing today happens in main-session jobs, which run as
+  // interactive turns (capped by skills.sandbox.browser.maxActionsPerScheduledRun);
+  // isolated jobs are a single model call with no tools.
+  "browser",
   // Web (for scheduled lookups)
   "web_search",
   "web_fetch",

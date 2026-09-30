@@ -212,6 +212,12 @@ export const sandboxGroupMaxCount = cfg.getNumber("sandboxGroupMaxCount");
  */
 export const sandboxDiskImageId = cfg.get("sandboxDiskImageId");
 
+/**
+ * Offer the agent a real browser inside each user's sandbox (docs/Browser.md).
+ * ACA Sandboxes only; build sandboxDiskImageId with SANDBOX_IMAGE_BROWSER=1.
+ */
+export const sandboxBrowserEnabled = cfg.getBoolean("sandboxBrowserEnabled") ?? false;
+
 // ============================================================================
 // Knowledge Base (Azure AI Search)
 // ============================================================================

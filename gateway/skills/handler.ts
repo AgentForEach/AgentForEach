@@ -32,6 +32,14 @@ import {
 } from "./sandbox/index.js";
 import type { SandboxBackend } from "./sandbox/index.js";
 import type { ExportBlobStore } from "./sandbox/export-store.js";
+import {
+  BrowserToolHandler,
+  getBrowserToolDefinitions,
+  isBrowserEnabled,
+  isBrowserTool,
+} from "./browser/index.js";
+import { getScopedRateLimiter } from "../ratelimit/index.js";
+import type { ToolResultImage } from "../llms/types.js";
 
 // ============================================================================
 // Rate Limiting
@@ -174,17 +182,20 @@ const SKILL_TOOLS: ToolDefinition[] = [
 /** Get all skill tool definitions (registered when skills are enabled). */
 export function getSkillToolDefinitions(opts?: {
   sandboxEnabled?: boolean;
+  /** The browser runs inside the sandbox, so it needs sandboxEnabled too. */
+  browserEnabled?: boolean;
 }): ToolDefinition[] {
   const tools = [...SKILL_TOOLS];
   if (opts?.sandboxEnabled) {
     tools.push(...getSandboxToolDefinitions());
+    if (opts.browserEnabled) tools.push(...getBrowserToolDefinitions());
   }
   return tools;
 }
 
-/** Check whether a tool name is a skill tool (including sandbox tools). */
+/** Check whether a tool name is a skill tool (including sandbox and browser tools). */
 export function isSkillTool(toolName: string): boolean {
-  return SKILL_TOOL_NAMES.has(toolName) || isSandboxToolCheck(toolName);
+  return SKILL_TOOL_NAMES.has(toolName) || isSandboxToolCheck(toolName) || isBrowserTool(toolName);
 }
 
 // ============================================================================
@@ -213,6 +224,7 @@ export class SkillToolHandler {
   /** Refuse credentials whose skill declares no hosts (skills.requireCredentialHosts). */
   private readonly requireCredentialHosts: boolean;
   private sandboxHandler?: SandboxToolHandler;
+  private browserHandler?: BrowserToolHandler;
   private readonly setupMinIntervalMs: number;
 
   constructor(
@@ -225,6 +237,11 @@ export class SkillToolHandler {
     sessionId?: string,
     exportStore?: ExportBlobStore,
     credentialBindings: Record<string, CredentialBinding> = {},
+    /**
+     * scheduled: this run is a scheduled job or heartbeat (tighter browser cap, nobody to confirm).
+     * units: the run's meter for billable actions (credits.unitCoins).
+     */
+    options: { scheduled?: boolean; units?: Record<string, number> } = {},
   ) {
     this.store = store;
     this.blobStore = blobStore;
@@ -245,12 +262,22 @@ export class SkillToolHandler {
         credentialBindings,
         (skillId) => this.statuses.some((s) => s.manifest.id === skillId && s.enabled),
       );
+      const sandboxConfig = loadSkillsConfig().sandbox;
+      if (sandboxConfig?.browser && isBrowserEnabled(sandboxConfig, sandboxClient, userId)) {
+        this.browserHandler = new BrowserToolHandler(this.sandboxHandler, sandboxConfig.browser, {
+          userId,
+          scheduled: options.scheduled,
+          units: options.units,
+          // Resolved on first use, so building the handler never touches the database.
+          limiter: { check: (id) => getScopedRateLimiter("browser").check(id) },
+        });
+      }
     }
   }
 
   /** Check whether this handler can handle the given tool name. */
   isSkillTool(toolName: string): boolean {
-    return SKILL_TOOL_NAMES.has(toolName) || isSandboxToolCheck(toolName);
+    return SKILL_TOOL_NAMES.has(toolName) || isSandboxToolCheck(toolName) || isBrowserTool(toolName);
   }
 
   /** Handle a skill tool call. Credential values never appear in the result. */
@@ -259,7 +286,20 @@ export class SkillToolHandler {
     args: Record<string, unknown>,
     userId: string,
   ): Promise<string> {
-    return redactCredentialValues(await this.dispatch(toolName, args, userId), this.userCredentials);
+    return (await this.handleWithImages(toolName, args, userId)).output;
+  }
+
+  /** As handle, plus any images the tool returned for the model (browser screenshots). */
+  async handleWithImages(
+    toolName: string,
+    args: Record<string, unknown>,
+    userId: string,
+  ): Promise<{ output: string; images?: ToolResultImage[] }> {
+    if (isBrowserTool(toolName) && this.browserHandler) {
+      const { output, images } = await this.browserHandler.run(args);
+      return { output: redactCredentialValues(output, this.userCredentials), ...(images ? { images } : {}) };
+    }
+    return { output: redactCredentialValues(await this.dispatch(toolName, args, userId), this.userCredentials) };
   }
 
   private async dispatch(
@@ -276,6 +316,16 @@ export class SkillToolHandler {
         });
       }
       return this.sandboxHandler.handle(toolName, args);
+    }
+
+    if (isBrowserTool(toolName)) {
+      if (!this.browserHandler) {
+        return JSON.stringify({
+          error:
+            "The browser is not available. It needs the ACA Sandboxes backend and skills.sandbox.browser.enabled=true (see docs/Browser.md).",
+        });
+      }
+      return this.browserHandler.handle(args);
     }
 
     switch (toolName) {

@@ -25,6 +25,8 @@ When `skills.sandbox.enabled` is true and a backend is configured, each turn off
 | `sandbox_file_export` | Uploads a file to Blob Storage (`user-exports`) and returns a read-only, time-limited (24 h by default) download link |
 | `sandbox_skill_load` | Unpacks a skill's zip into `/mnt/data/<skill_id>/` and returns its `SKILL.md` |
 
+With `skills.sandbox.browser.enabled`, the model also gets a `browser` tool: a real Chromium inside the same sandbox ([Browser.md](Browser.md)).
+
 Output is truncated to `maxOutputChars` (50,000 by default). With the default `identifierStrategy: "userId"`, every conversation of a user shares one sandbox; `"sessionId"` gives each conversation its own.
 
 ## Choosing the backend

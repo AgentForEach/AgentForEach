@@ -17,6 +17,7 @@ interface CreditsJsonConfig {
   currencyCode?: string;
   costMultiplier?: number;
   minimumCharge?: number;
+  unitCoins?: Record<string, number>;
   serviceKey?: string;
   preFlightCheck?: boolean;
 }
@@ -66,6 +67,7 @@ export function loadCreditsConfig(): CreditsConfig {
     currencyCode: section.currencyCode ?? "CRD",
     costMultiplier: section.costMultiplier ?? 100,
     minimumCharge: section.minimumCharge ?? 1,
+    unitCoins: validUnitCoins(section.unitCoins),
     serviceKey,
     preFlightCheck: section.preFlightCheck !== false,
   };
@@ -112,4 +114,15 @@ function isHttpUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** Keep only finite, non-negative prices: a typo must never make a charge NaN or a refund. */
+function validUnitCoins(raw: unknown): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const [unit, price] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof price === "number" && Number.isFinite(price) && price >= 0) out[unit] = price;
+    else console.warn(`[credits] Ignoring unitCoins.${unit}: must be a number of coins, 0 or more`);
+  }
+  return out;
 }

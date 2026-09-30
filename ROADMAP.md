@@ -30,5 +30,5 @@ The [benchmarks](docs/Benchmarks.md) cover chat, memory and reminders at 1,000 u
 ## Under consideration
 
 - An [AG-UI](https://github.com/ag-ui-protocol/ag-ui) endpoint, so AG-UI clients can talk to the platform directly
-- A browser tool for the agent
+- More for the [browser](docs/Browser.md): buttons inside frames (cookie banners, payment forms), and a live view where the user can take over for logins and CAPTCHAs
 - Gmail and Google Calendar connectors

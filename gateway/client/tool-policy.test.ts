@@ -59,6 +59,7 @@ const ALL_TOOLS: MockTool[] = [
   makeTool("skill_read"),
   makeTool("http_fetch"),
   makeTool("sandbox_exec"),
+  makeTool("browser"),
   // Digests
   makeTool("session_search"),
 ];
@@ -154,6 +155,7 @@ test("applyToolPolicy — cron only allows allowlisted tools", () => {
   assert.ok(names.has("skill_read"), "skill_read should be allowed");
   assert.ok(names.has("http_fetch"), "http_fetch should be allowed");
   assert.ok(names.has("sandbox_exec"), "sandbox_exec should be allowed");
+  assert.ok(names.has("browser"), "browser should be allowed (capped per run)");
   assert.ok(names.has("web_search"), "web_search should be allowed");
   assert.ok(names.has("web_fetch"), "web_fetch should be allowed");
   assert.ok(names.has("session_search"), "session_search should be allowed");

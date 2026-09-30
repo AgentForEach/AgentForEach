@@ -1,0 +1,9 @@
+{
+  "name": "agentforeach-browser",
+  "private": true,
+  "description": "Browser driver baked into the ACA Sandboxes image by provision-aca.sh (SANDBOX_IMAGE_BROWSER=1)",
+  "type": "module",
+  "dependencies": {
+    "playwright-core": "1.63.0"
+  }
+}

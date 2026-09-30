@@ -16,6 +16,7 @@ import type {
   SandboxConfig,
   SandboxProvider,
 } from "./sandbox/types.js";
+import type { BrowserConfig, BrowserJsonConfig } from "./browser/types.js";
 
 // ============================================================================
 // Defaults
@@ -55,6 +56,40 @@ const ACA_SANDBOXES_DEFAULTS = {
   defaultTimeoutSec: 120,
   maxTimeoutSec: 200,
 };
+
+// Snapshots are the browser's main token cost, and sandboxes are billed while
+// running, so the defaults keep both small. Chromium fits the default 2 GiB
+// sandbox (about 700 MB measured live), so the browser doesn't change its size.
+const MAX_SNAPSHOT_CHARS = 40_000;
+
+const BROWSER_DEFAULTS = {
+  actionTimeoutSec: 30,
+  navigationTimeoutSec: 45,
+  maxSnapshotChars: 8_000,
+  viewport: { width: 1280, height: 800 },
+  idleShutdownSec: 120,
+  maxActionsPerTurn: 30,
+  maxActionsPerScheduledRun: 10,
+  showScreenshots: true,
+};
+
+/** SANDBOX_BROWSER_ENABLED (from the IaC) wins over agentforeach.json. */
+function resolveBrowser(json: BrowserJsonConfig = {}): BrowserConfig {
+  const fromEnv = process.env.SANDBOX_BROWSER_ENABLED?.trim();
+  return {
+    enabled: fromEnv ? /^(true|1|yes)$/i.test(fromEnv) : (json.enabled ?? false),
+    actionTimeoutSec: json.actionTimeoutSec ?? BROWSER_DEFAULTS.actionTimeoutSec,
+    navigationTimeoutSec: json.navigationTimeoutSec ?? BROWSER_DEFAULTS.navigationTimeoutSec,
+    // The driver's whole answer is one line of exec output, which the sandbox cuts at maxOutputChars (50,000).
+    maxSnapshotChars: Math.min(json.maxSnapshotChars ?? BROWSER_DEFAULTS.maxSnapshotChars, MAX_SNAPSHOT_CHARS),
+    viewport: json.viewport ?? BROWSER_DEFAULTS.viewport,
+    idleShutdownSec: json.idleShutdownSec ?? BROWSER_DEFAULTS.idleShutdownSec,
+    maxActionsPerTurn: json.maxActionsPerTurn ?? BROWSER_DEFAULTS.maxActionsPerTurn,
+    maxActionsPerScheduledRun: json.maxActionsPerScheduledRun ?? BROWSER_DEFAULTS.maxActionsPerScheduledRun,
+    showScreenshots: json.showScreenshots ?? BROWSER_DEFAULTS.showScreenshots,
+    ...(json.users ? { users: json.users } : {}),
+  };
+}
 
 /**
  * Resolve the ACA Sandboxes section. Each identity field falls back to an
@@ -157,6 +192,7 @@ export function loadSkillsConfig(): SkillsConfig {
         s.exportExpiryHours ?? SANDBOX_DEFAULTS.exportExpiryHours,
       maxExportBytes:
         s.maxExportBytes ?? SANDBOX_DEFAULTS.maxExportBytes,
+      browser: resolveBrowser(s.browser),
     };
   }
 

@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { HookEmitter } from "../hooks/index.js";
-import { registerCreditsHooks, releaseReservationOnThrow, runMetered } from "./hooks.js";
+import { computeCoins, registerCreditsHooks, releaseReservationOnThrow, runMetered } from "./hooks.js";
+import { loadUsageConfig } from "../usage/config.js";
 import type { CreditProvider, CreditsConfig } from "./types.js";
 import type { UsageStore } from "../usage/index.js";
 
@@ -314,4 +315,75 @@ test("a metered run that fails releases its reservation", async () => {
     /model down/,
   );
   assert.deepEqual(provider.charges.map((c) => c.amount), [0]);
+});
+
+test("credits charge metered units at credits.unitCoins, on top of tokens", async () => {
+  // No minimum, so the difference between the two runs is exactly the units' price.
+  const priced = { ...config, unitCoins: { browserAction: 2 }, minimumCharge: 0 };
+  const hooks = new HookEmitter();
+  const provider = createProvider();
+  registerCreditsHooks(hooks, provider, priced);
+
+  await hooks.emit("run_completed", { runId: "tokens-only", userId: "user-1", response: response("completed") });
+  await hooks.emit("run_completed", {
+    runId: "with-browser",
+    userId: "user-1",
+    response: response("completed"),
+    units: { browserAction: 5, somethingUnpriced: 100 },
+  });
+
+  const [tokensOnly, withBrowser] = provider.charges;
+  assert.equal(withBrowser.amount, tokensOnly.amount + 10, "5 actions × 2 coins; unpriced units are free");
+});
+
+test("computeCoins adds units at their price and ignores unpriced ones", () => {
+  const priced = { ...config, unitCoins: { browserAction: 2 }, minimumCharge: 0 };
+  const usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+  const usageConfig = loadUsageConfig();
+  assert.equal(computeCoins(usage, "gpt-5.4-mini", priced, usageConfig), 0);
+  assert.equal(computeCoins(usage, "gpt-5.4-mini", priced, usageConfig, { browserAction: 3 }), 6);
+  assert.equal(computeCoins(usage, "gpt-5.4-mini", priced, usageConfig, { unpriced: 9 }), 0);
+  assert.equal(computeCoins(usage, "gpt-5.4-mini", config, usageConfig, { browserAction: 3 }), 1, "no unitCoins: only the minimum");
+});
+
+test("credits bill a failed run's metered units too", async () => {
+  const priced = { ...config, unitCoins: { browserAction: 3 }, minimumCharge: 0 };
+  const hooks = new HookEmitter();
+  const provider = createProvider();
+  registerCreditsHooks(hooks, provider, priced);
+  await hooks.emit("run_failed", {
+    runId: "failed-after-browsing",
+    userId: "user-1",
+    error: new Error("boom"),
+    usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+    model: "gpt-5.4-mini",
+    units: { browserAction: 4 },
+  });
+  assert.equal(provider.charges[0].amount, 12);
+});
+
+test("credits config keeps only valid unit prices", async () => {
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { loadCreditsConfig, resetCreditsConfig } = await import("./config.js");
+  const { resetConfigCache } = await import("../utils/index.js");
+  const saved = process.env.CONFIG_FILE_JSON;
+  const file = join(mkdtempSync(join(tmpdir(), "afe-credits-")), "c.json");
+  writeFileSync(file, JSON.stringify({ credits: {
+    enabled: true, balanceUrl: "https://c.test/b", consumeUrl: "https://c.test/c", reserveUrl: "https://c.test/r",
+    settleUrl: "https://c.test/s", serviceKey: "k",
+    unitCoins: { browserAction: 2, typo: "abc", refund: -5, free: 0, inf: 1e400 },
+  } }));
+  process.env.CONFIG_FILE_JSON = file;
+  resetConfigCache();
+  resetCreditsConfig();
+  try {
+    assert.deepEqual(loadCreditsConfig().unitCoins, { browserAction: 2, free: 0 });
+  } finally {
+    if (saved === undefined) delete process.env.CONFIG_FILE_JSON;
+    else process.env.CONFIG_FILE_JSON = saved;
+    resetConfigCache();
+    resetCreditsConfig();
+  }
 });

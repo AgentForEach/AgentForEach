@@ -38,7 +38,13 @@ export interface HookEventMap {
   };
 
   /** Emitted after a successful run completes. */
-  run_completed: { runId: string; userId?: string; response: SendResponse };
+  run_completed: {
+    runId: string;
+    userId?: string;
+    response: SendResponse;
+    /** Metered actions besides tokens (e.g. { browserAction: 4 }), priced by credits.unitCoins. */
+    units?: Record<string, number>;
+  };
 
   /** Emitted when a run fails with an error. */
   run_failed: {
@@ -49,6 +55,8 @@ export interface HookEventMap {
     /** Tokens the run spent before failing (billed like a completed run). */
     usage?: UsageStats;
     model?: string;
+    /** Metered actions the run took before failing, billed too. */
+    units?: Record<string, number>;
   };
 
   // ── Session lifecycle ──────────────────────────────────────────────────

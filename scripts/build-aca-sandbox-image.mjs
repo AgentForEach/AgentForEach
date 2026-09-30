@@ -16,10 +16,13 @@
  * Usage (same env as scripts/test-aca-sandboxes-live.mjs):
  *   ACA_SANDBOX_SUBSCRIPTION_ID=... ACA_SANDBOX_RESOURCE_GROUP=... \
  *   ACA_SANDBOX_GROUP=... ACA_SANDBOX_REGION=... \
- *   [SANDBOX_IMAGE_FULL=1] node scripts/build-aca-sandbox-image.mjs
+ *   [SANDBOX_IMAGE_FULL=1] [SANDBOX_IMAGE_BROWSER=1] node scripts/build-aca-sandbox-image.mjs
+ *
+ * SANDBOX_IMAGE_BROWSER=1 adds Chromium, Xvfb and the afe-browser driver from
+ * gateway/sandbox-container/browser/ for the `browser` tool (docs/Browser.md).
  */
 
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import {
   AcaSandboxesClient,
   ACA_SANDBOXES_API_VERSION,
@@ -103,7 +106,8 @@ async function call(method, path, body) {
   return text ? JSON.parse(text) : {};
 }
 
-const name = `agentforeach-sandbox-${new Date().toISOString().slice(0, 10)}`;
+const BROWSER = process.env.SANDBOX_IMAGE_BROWSER === "1";
+const name = `agentforeach-sandbox${BROWSER ? "-browser" : ""}-${new Date().toISOString().slice(0, 10)}`;
 const builderId = `image-builder-${Date.now()}`;
 const builder = clientFor({ networkAccess: "enabled" });
 const ident = builder.resolveIdentifier(builderId);
@@ -113,10 +117,27 @@ try {
   console.log("Provisioning build sandbox…");
   const script = readFileSync(new URL("../gateway/sandbox-container/provision-aca.sh", import.meta.url), "utf8");
   await builder.fileWrite({ filename: "provision-aca.sh", content: script }, ident);
-  const full = process.env.SANDBOX_IMAGE_FULL === "1" ? "SANDBOX_IMAGE_FULL=1 " : "";
-  // apt can take a while; run in the background and poll so no single call nears the HTTP limit.
-  await builder.exec({ command: `${full}nohup bash provision-aca.sh > provision.log 2>&1; echo $? > provision.exit &` }, ident);
+  if (BROWSER) {
+    const dir = new URL("../gateway/sandbox-container/browser/", import.meta.url);
+    for (const file of readdirSync(dir).filter((f) => f === "package.json" || (f.endsWith(".mjs") && !f.endsWith(".test.mjs")))) {
+      await builder.fileWrite(
+        { filename: `agentforeach-browser/${file}`, content: readFileSync(new URL(file, dir), "utf8") },
+        ident,
+      );
+    }
+  }
+  const flags =
+    (process.env.SANDBOX_IMAGE_FULL === "1" ? "SANDBOX_IMAGE_FULL=1 " : "") +
+    (BROWSER ? "SANDBOX_IMAGE_BROWSER=1 BROWSER_SRC=/mnt/data/agentforeach-browser " : "");
+  // apt and the browser download take minutes: detach the whole script (its own session, so the exec's
+  // timeout can't kill it) and poll, so no single call nears the HTTP limit.
+  await builder.exec(
+    { command: `setsid nohup sh -c '${flags}bash provision-aca.sh > provision.log 2>&1; echo $? > provision.exit' > /dev/null 2>&1 < /dev/null &` },
+    ident,
+  );
+  const provisionDeadline = Date.now() + 45 * 60_000;
   for (;;) {
+    if (Date.now() > provisionDeadline) throw new Error("provisioning did not finish within 45 minutes");
     await new Promise((r) => setTimeout(r, 10_000));
     const done = await builder.exec({ command: "cat provision.exit 2>/dev/null || echo running" }, ident);
     const status = done.stdout.trim();
@@ -129,7 +150,10 @@ try {
     if (status !== "0") throw new Error(`provisioning failed (exit ${status})`);
     break;
   }
-  await builder.exec({ command: "rm -f /mnt/data/provision-aca.sh /mnt/data/provision.log /mnt/data/provision.exit" }, ident);
+  await builder.exec(
+    { command: "rm -rf /mnt/data/provision-aca.sh /mnt/data/provision.log /mnt/data/provision.exit /mnt/data/agentforeach-browser" },
+    ident,
+  );
 
   const owned = await call("GET", `/sandboxes?labels=${encodeURIComponent(`agentforeach-user=${labelHash(builderId)}`)}`);
   const builderSandbox = (Array.isArray(owned) ? owned : owned.value)[0];
@@ -166,6 +190,12 @@ try {
   );
   console.log(r.stdout);
   if (r.stdout.includes("MISSING")) throw new Error("image is missing tools");
+  if (BROWSER) {
+    // Launches Chromium on Xvfb with egress denied: no page, just proof the browser starts.
+    const b = await verifier.exec({ command: "afe-browser status" }, verifier.resolveIdentifier(verifyUser));
+    console.log(b.stdout.trim());
+    if (!b.stdout.includes('"ok":true')) throw new Error(`the browser does not start: ${b.stdout}${b.stderr}`);
+  }
 } finally {
   await verifier.deleteUserSandboxes(verifyUser).catch(() => {});
 }
