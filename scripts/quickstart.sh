@@ -11,6 +11,13 @@
 #   ./scripts/quickstart.sh [stack]          # default stack name: trial
 #   ./scripts/quickstart.sh [stack] --token  # print a fresh login for a stack you deployed
 #
+# Optional environment:
+#   OPENAI_API_KEY               the model key (otherwise it asks)
+#   QUICKSTART_OPENAI_BASE_URL   an OpenAI-compatible endpoint instead of OpenAI, e.g.
+#                                Azure OpenAI: https://<resource>.openai.azure.com/openai/v1/
+#   QUICKSTART_MODEL             the model, or with Azure OpenAI the deployment name
+#   QUICKSTART_YES=1             don't ask before creating the Azure resources
+#
 # Remove everything it created:
 #   cd infra && pulumi destroy --stack <stack>
 #
@@ -125,9 +132,12 @@ fi
 has_setting agentforeach:nameSuffix ||
   pulumi config set agentforeach:nameSuffix "$(openssl rand -hex 3)" --stack "$STACK"
 if ! has_setting agentforeach:openaiApiKey; then
-  read -rsp "OpenAI API key (sk-...): " key
-  echo
-  [[ -n "$key" ]] || die "An OpenAI API key is needed. For Azure OpenAI or another provider, see docs/getting-started.md."
+  key="${OPENAI_API_KEY:-}"
+  if [[ -z "$key" ]]; then
+    read -rsp "OpenAI API key (sk-...): " key
+    echo
+  fi
+  [[ -n "$key" ]] || die "A model API key is needed (OpenAI, or Azure OpenAI with QUICKSTART_OPENAI_BASE_URL)."
   printf '%s' "$key" | pulumi config set --secret agentforeach:openaiApiKey --stack "$STACK"
 fi
 # The free Web PubSub tier (20 connections) costs nothing while you try it.
@@ -151,6 +161,17 @@ node --input-type=module -e '
   };
   // The trial stack has no AI Search index.
   config.knowledge = { ...config.knowledge, enabled: false };
+  // Only one model key: failing over to Anthropic would only add errors.
+  config.llms.providers.anthropic = { ...config.llms.providers.anthropic, enabled: false };
+  config.llms.failover = { ...config.llms.failover, enabled: false };
+  const baseUrl = process.env.QUICKSTART_OPENAI_BASE_URL;
+  const model = process.env.QUICKSTART_MODEL;
+  if (baseUrl) {
+    // Chat and embeddings both go to the endpoint (same key).
+    config.llms.providers.openai = { ...config.llms.providers.openai, baseUrl };
+    config.llms.embedding = { ...config.llms.embedding, baseUrl };
+  }
+  if (model) config.llms.providers.openai = { ...config.llms.providers.openai, defaultModel: model };
   writeFileSync(`${dir}/${name}`, JSON.stringify(config, null, 2) + "\n");
 ' "$ROOT/gateway/config" "$CONFIG_NAME" "$ISSUER" "$AUDIENCE"
 
@@ -158,7 +179,7 @@ node --input-type=module -e '
 # Deploy
 # ----------------------------------------------------------------------------
 say "Creating the Azure resources. Pulumi shows what it will create and asks before it does (about 5-10 minutes)."
-pulumi up --stack "$STACK"
+pulumi up --stack "$STACK" ${QUICKSTART_YES:+--yes}
 
 say "Deploying the gateway"
 "$ROOT/scripts/deploy-gateway.sh" "$STACK"
