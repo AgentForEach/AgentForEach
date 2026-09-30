@@ -120,24 +120,24 @@ Memory, the reminder at 7pm, the tool loop, approvals and the per-user sandbox c
 <table>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/assets/icons/use-app.svg" width="56" alt=""><br>
+      <img src="docs/assets/agents/app.svg" width="56" alt=""><br>
       <b>Your own Muse</b><br>
       A consumer personal-agent app under your brand. Every user's agent remembers them, works while they're away and follows up on its own.
     </td>
     <td width="50%" valign="top">
-      <img src="docs/assets/icons/use-concierge.svg" width="56" alt=""><br>
+      <img src="docs/assets/agents/concierge.svg" width="56" alt=""><br>
       <b>An agent for every customer</b><br>
       Give each customer of your bank, telco or store their own agent in your app or on WhatsApp, with their history and an approval step before anything that matters.
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/assets/icons/use-tutor.svg" width="56" alt=""><br>
+      <img src="docs/assets/agents/tutor.svg" width="56" alt=""><br>
       <b>A tutor for every student</b><br>
       A vertical agent product: memory of what each student knows, reminders to practise, a sandbox to run their code and your course material as a knowledge base.
     </td>
     <td width="50%" valign="top">
-      <img src="docs/assets/icons/use-team.svg" width="56" alt=""><br>
+      <img src="docs/assets/agents/team.svg" width="56" alt=""><br>
       <b>An assistant for every employee</b><br>
       Roll out an agent to everyone in your company, with skills that call your internal APIs. Credentials are injected by the platform and never reach the model.
     </td>
