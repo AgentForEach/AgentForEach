@@ -11,10 +11,16 @@ import { join } from "node:path";
 import {
   BrowserToolHandler,
   checkBrowserArgs,
+  handoffDriverUserId,
+  handoffOutcome,
   isBrowserEnabled,
+  isBrowserHandoffCall,
   parseDriverOutput,
   type BrowserGuards,
+  type HandoffRelay,
 } from "./handler.js";
+import { viewerBaseUrl, viewerHeaders, viewerHtml, viewerLink } from "./viewer.js";
+import { createHash } from "node:crypto";
 import type { BrowserConfig } from "./types.js";
 import { SandboxToolHandler } from "../sandbox/handler.js";
 import { AcaSandboxesClient } from "../sandbox/aca-sandboxes-client.js";
@@ -36,6 +42,7 @@ const CONFIG: BrowserConfig = {
   maxActionsPerTurn: 30,
   maxActionsPerScheduledRun: 10,
   showScreenshots: true,
+  handoff: { enabled: true, maxMinutes: 10, hub: "agentforeach-browser", viewerBaseUrl: "https://gw.example" },
 };
 
 /** A sandbox that records what it was asked to run and answers with canned driver output. */
@@ -48,7 +55,10 @@ class FakeSandbox implements SandboxBackend {
     this.commands.push(args);
     return { stdout: "", stderr: "", exitCode: 0, timedOut: false, truncated: false, durationMs: 1, sessionId: "s", ...this.reply };
   }
-  async fileWrite() { return { success: true, filename: "", sizeBytes: 0, sessionId: "s" }; }
+  async fileWrite(args: { filename: string; content: string }) {
+    this.files[args.filename] = args.content;
+    return { success: true, filename: args.filename, sizeBytes: args.content.length, sessionId: "s" };
+  }
   async fileRead() { return { content: "", filename: "", sizeBytes: 0, sessionId: "s" }; }
   async fileList() { return []; }
   async fileReadBinary(args: { filename: string }) {
@@ -61,8 +71,9 @@ class FakeSandbox implements SandboxBackend {
   isReady() { return true; }
 }
 
-function payloadOf(command: string): { args: Record<string, unknown>; [k: string]: unknown } {
-  const [, , b64] = command.split(" ");
+function payloadOf(command: string, files: Record<string, string> = {}): { args: Record<string, unknown>; [k: string]: unknown } {
+  const [, , arg] = command.split(" ");
+  const b64 = arg.startsWith("@/mnt/data/") ? files[arg.slice("@/mnt/data/".length)] : arg;
   return JSON.parse(Buffer.from(b64, "base64").toString("utf8"));
 }
 
@@ -558,4 +569,173 @@ test("config: SANDBOX_BROWSER_ENABLED from the IaC overrides agentforeach.json",
   process.env.SANDBOX_BROWSER_ENABLED = "false";
   withConfigFile({ browser: { enabled: true } });
   assert.equal(loadSkillsConfig().sandbox?.browser?.enabled, false);
+});
+
+// ============================================================================
+// Handoff to the user
+// ============================================================================
+
+const relay = (calls: Array<{ user: string; group: string; ttl: number }> = []): HandoffRelay => ({
+  async issue(user, group, ttl) {
+    calls.push({ user, group, ttl });
+    return { driverUrl: `wss://wps.example/client/hubs/h?access_token=DRIVER-${group}`, viewerUrl: `wss://wps.example/client/hubs/h?access_token=VIEWER-${group}` };
+  },
+});
+
+test("checkBrowserArgs: handoff needs a reason; the kind defaults to other", () => {
+  assert.deepEqual(checkBrowserArgs("handoff", { reason: " Log in, then press Done. ", kind: "login" }), {
+    args: { reason: "Log in, then press Done.", kind: "login" },
+  });
+  assert.deepEqual(checkBrowserArgs("handoff", { reason: "Pay", kind: "steal" }), { args: { reason: "Pay", kind: "other" } });
+  assert.ok("error" in checkBrowserArgs("handoff", { kind: "login" }));
+});
+
+test("handoff: starts the live view, then asks the runner to pause on a form that shows it", async () => {
+  const issued: Array<{ user: string; group: string; ttl: number }> = [];
+  const units: Record<string, number> = {};
+  const { backend, browser } = setup(undefined, { userId: "u1", units, handoff: { relay: relay(issued) } });
+  backend.reply = { stdout: JSON.stringify({ ok: true, handled: true, action: "handoff_start", handoff: "started" }) };
+  const before = Date.now();
+  const result = await browser.run({ action: "handoff", reason: "Log in to Amazon, then press Done.", kind: "login" });
+
+  const { command } = backend.commands[0];
+  assert.match(command, /^afe-browser handoff_start @\/mnt\/data\/\.browser\/in-[0-9a-f]{24}\.b64$/, "the token goes up as a file, not on the command line");
+  assert.doesNotMatch(command, /access_token/);
+  const sent = payloadOf(command, backend.files).args as Record<string, unknown>;
+  assert.equal(sent.kind, "login", "the driver knows the kind (payment handoffs stop screenshots of the site)");
+  assert.match(String(sent.group), /^bh-[0-9a-f]{32}$/, "a fresh unguessable group");
+  assert.equal(sent.relayUrl, `wss://wps.example/client/hubs/h?access_token=DRIVER-${sent.group}`, "the driver gets the driver's token");
+  assert.equal(sent.viewerUserId, "u1", "only the user's own input is accepted");
+  assert.ok(Number(sent.expiresAt) >= before + 10 * 60_000 - 1000 && Number(sent.expiresAt) <= Date.now() + 10 * 60_000);
+  assert.deepEqual(issued, [{ user: "u1", group: sent.group, ttl: 11 }]);
+
+  const form = result.inputRequest!;
+  assert.equal(form.formType, "browser_handoff");
+  assert.equal(form.formName, "Log in");
+  assert.equal(form.intent, "Log in to Amazon, then press Done.");
+  assert.equal(form.timeoutSeconds, 600);
+  const link = String(form.proposedArgs.viewerUrl);
+  const [page, fragment] = link.split("#");
+  assert.equal(page, "https://gw.example/api/browser/view", "no secret in the part a server sees");
+  const q = new URLSearchParams(fragment);
+  assert.equal(q.get("r"), `wss://wps.example/client/hubs/h?access_token=VIEWER-${sent.group}`, "the viewer gets its own token");
+  assert.equal(q.get("g"), sent.group);
+  assert.equal(q.get("d"), handoffDriverUserId("u1"), "the viewer only believes the driver");
+  assert.equal(q.get("embed"), "1");
+  assert.equal(JSON.parse(result.output).handoff, "waiting");
+  assert.doesNotMatch(result.output, /access_token/, "no token reaches the model");
+  assert.deepEqual(units, { browserAction: 1, browserHandoff: 1 });
+});
+
+test("handoff: refused where it can't happen, without using the browser or a cap", async () => {
+  const cases: Array<[string, BrowserGuards, BrowserConfig]> = [
+    ["turned off", { userId: "u1", handoff: { relay: relay() } }, { ...CONFIG, handoff: { ...CONFIG.handoff, enabled: false } }],
+    ["scheduled run", { userId: "u1", scheduled: true, handoff: { relay: relay() } }, CONFIG],
+    ["no form surface (a message channel)", { userId: "u1" }, CONFIG],
+    ["no viewer address", { userId: "u1", handoff: { relay: relay() } }, { ...CONFIG, handoff: { enabled: true, maxMinutes: 10, hub: "h" } }],
+  ];
+  const saved = process.env.WEBSITE_HOSTNAME;
+  delete process.env.WEBSITE_HOSTNAME;
+  try {
+    for (const [label, guards, config] of cases) {
+      const units: Record<string, number> = {};
+      const { backend, browser } = setup(undefined, { ...guards, units }, { ...config, maxActionsPerTurn: 1 });
+      const result = await browser.run({ action: "handoff", reason: "Log in", kind: "login" });
+      assert.ok(JSON.parse(result.output).error, label);
+      assert.equal(result.inputRequest, undefined, label);
+      assert.equal(backend.commands.length, 0, label);
+      assert.deepEqual(units, {}, label);
+      assert.ok(!JSON.parse((await browser.run({ action: "tabs" })).output).error, `${label}: the refusal used no cap`);
+    }
+  } finally {
+    if (saved !== undefined) process.env.WEBSITE_HOSTNAME = saved;
+  }
+});
+
+test("handoff: a live view that can't connect is an error, not a form", async () => {
+  const { backend, browser } = setup(undefined, { userId: "u1", handoff: { relay: relay() } });
+  backend.reply = { stdout: JSON.stringify({ ok: false, handled: true, error: "The live view could not connect." }) };
+  const result = await browser.run({ action: "handoff", reason: "Log in", kind: "login" });
+  assert.match(JSON.parse(result.output).error, /could not connect/);
+  assert.equal(result.inputRequest, undefined);
+
+  const failing: HandoffRelay = { issue: async () => { throw new Error("no Web PubSub"); } };
+  const second = setup(undefined, { userId: "u1", handoff: { relay: failing } });
+  const r2 = await second.browser.run({ action: "handoff", reason: "Log in", kind: "login" });
+  assert.match(JSON.parse(r2.output).error, /could not be set up: no Web PubSub/);
+  assert.equal(second.backend.commands.length, 0);
+});
+
+test("handoffOutcome: done, cancelled, or late, with the user's note", () => {
+  const now = 1_000_000;
+  const done = JSON.parse(handoffOutcome({ data: { done: true, note: "logged in" } }, now + 60_000, now));
+  assert.equal(done.handoff, "done");
+  assert.equal(done.userNote, "logged in");
+  assert.match(done.message, /never re-enter passwords or payment details/);
+  assert.equal(JSON.parse(handoffOutcome({ cancelled: true }, now + 60_000, now)).handoff, "cancelled");
+  assert.equal(JSON.parse(handoffOutcome({ data: { done: true } }, now - 120_000, now)).handoff, "expired");
+});
+
+test("isBrowserHandoffCall and the driver's relay identity", () => {
+  assert.equal(isBrowserHandoffCall({ name: "browser", arguments: { action: "handoff" } }), true);
+  assert.equal(isBrowserHandoffCall({ name: "browser", arguments: { action: "click" } }), false);
+  assert.equal(isBrowserHandoffCall({ name: "request_user_input", arguments: { action: "handoff" } }), false);
+  const id = handoffDriverUserId("alice@example.com");
+  assert.match(id, /^browser-driver:[0-9a-f]{24}$/);
+  assert.doesNotMatch(id, /alice/, "no user id in the relay");
+});
+
+test("viewer: the page runs only its own script, connects only to our relay and carries no secret", () => {
+  const html = viewerHtml("afe-wps.webpubsub.azure.com");
+  const headers = viewerHeaders("afe-wps.webpubsub.azure.com");
+  assert.match(headers["Content-Security-Policy"], /connect-src wss:\/\/afe-wps\.webpubsub\.azure\.com(;|$)/, "pinned to this deployment's relay");
+  assert.match(html, /<meta name="afe-relay-host" content="afe-wps.webpubsub.azure.com">/);
+  assert.match(html, /new URL\(relayUrl\)\.host !== relayHost/, "the script refuses a link to another relay");
+  assert.match(html, /msg\.fromUserId !== driverId/, "and believes only the driver");
+  assert.equal(viewerHtml('evil"><script>').includes('evil"><script>'), false, "the host can't break out of the attribute");
+  const script = /<script>([\s\S]*)<\/script>/.exec(html)![1];
+  const hash = createHash("sha256").update(script).digest("base64");
+  assert.match(headers["Content-Security-Policy"], new RegExp(`script-src 'sha256-${hash.replace(/[+/]/g, "\\$&")}'`));
+  assert.match(headers["Content-Security-Policy"], /default-src 'none'/);
+  assert.equal(headers["Cache-Control"], "no-store");
+  assert.doesNotMatch(html, /access_token|wss:\/\/[a-z]/, "the page itself holds no token or relay URL");
+  assert.match(html, /history\.replaceState/, "the token is cleared from the address bar");
+});
+
+test("viewer: links carry everything in the fragment; the base comes from config or the Function App", () => {
+  const link = viewerLink("https://gw.example", { relayUrl: "wss://x/?access_token=T", group: "bh-1", expiresAt: 5, reason: "Pay", driverUserId: "browser-driver:ab" });
+  assert.equal(link.split("#")[0], "https://gw.example/api/browser/view");
+  assert.equal(new URLSearchParams(link.split("#")[1]).get("r"), "wss://x/?access_token=T");
+  const saved = process.env.WEBSITE_HOSTNAME;
+  process.env.WEBSITE_HOSTNAME = "afe-func.azurewebsites.net";
+  try {
+    assert.equal(viewerBaseUrl(undefined), "https://afe-func.azurewebsites.net");
+    assert.equal(viewerBaseUrl("https://chat.example.com/"), "https://chat.example.com");
+  } finally {
+    if (saved === undefined) delete process.env.WEBSITE_HOSTNAME;
+    else process.env.WEBSITE_HOSTNAME = saved;
+  }
+});
+
+test("config: handoff defaults, a clamped time limit, and the relay host let through deny-mode egress", () => {
+  withConfigFile({ browser: { enabled: true, handoff: { maxMinutes: 90 } } });
+  let cfg = loadSkillsConfig().sandbox!;
+  assert.equal(cfg.browser?.handoff.enabled, true);
+  assert.equal(cfg.browser?.handoff.maxMinutes, 30);
+  assert.equal(cfg.browser?.handoff.hub, "agentforeach_browser", "its own hub, apart from chat's (letters, digits, underscores)");
+  withConfigFile({ browser: { enabled: true, handoff: { maxMinutes: "ten" } } });
+  assert.equal(loadSkillsConfig().sandbox!.browser?.handoff.maxMinutes, 10, "a non-number falls back to the default");
+
+  const saved = process.env.WEBPUBSUB_CONNECTION_STRING;
+  process.env.WEBPUBSUB_CONNECTION_STRING = "Endpoint=https://afe-wps.webpubsub.azure.com;AccessKey=abc;Version=1.0;";
+  try {
+    withConfigFile({ browser: { enabled: true }, sandboxes: { egressAllowHosts: ["pypi.org"] } });
+    cfg = loadSkillsConfig().sandbox!;
+    assert.deepEqual(cfg.sandboxes?.egressAllowHosts, ["pypi.org", "afe-wps.webpubsub.azure.com"]);
+    withConfigFile({ browser: { enabled: false } });
+    assert.deepEqual(loadSkillsConfig().sandbox!.sandboxes?.egressAllowHosts, [], "only when the browser can hand off");
+  } finally {
+    if (saved === undefined) delete process.env.WEBPUBSUB_CONNECTION_STRING;
+    else process.env.WEBPUBSUB_CONNECTION_STRING = saved;
+  }
 });

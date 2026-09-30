@@ -27,6 +27,21 @@ export function snapshotInPage(opts) {
     "slider", "spinbutton", "treeitem",
   ]);
   const TYPED_INPUTS = new Set(["date", "time", "datetime-local", "month", "week", "email", "tel", "url", "number", "color"]);
+  // Card fields: the same test as cardFieldFilledInPage (which must stay in step with this one).
+  const CARD_HINT = /(card|cc)[-_ ]?(num|number|no\b)|cardnumber|credit.?card|\bcvc\b|\bcvv\b|\bcsc\b|\bpan\b|security.?code|card.?code|exp(iry|iration)?[-_ ]?(date|month|year|mm|yy)|\bmm\s*\/\s*yy\b/i;
+  function luhnOk(digits) {
+    let sum = 0, dbl = false;
+    for (let i = digits.length - 1; i >= 0; i--) { let n = +digits[i]; if (dbl) { n *= 2; if (n > 9) n -= 9; } sum += n; dbl = !dbl; }
+    return sum % 10 === 0;
+  }
+  function isCard(el, value) {
+    if ((el.getAttribute("autocomplete") ?? "").toLowerCase().startsWith("cc-")) return true;
+    const hints = [el.getAttribute("name"), el.id, el.getAttribute("aria-label"), el.getAttribute("placeholder"), el.getAttribute("data-elements-stable-field-name")]
+      .filter(Boolean).join(" ");
+    if (CARD_HINT.test(hints)) return true;
+    const digits = (value ?? "").replace(/[\s-]/g, "");
+    return /^\d{13,19}$/.test(digits) && luhnOk(digits);
+  }
   const clean = (s, n = 80) => (s ?? "").replace(/\s+/g, " ").trim().slice(0, n);
 
   function visible(el) {
@@ -107,8 +122,8 @@ export function snapshotInPage(opts) {
       } else if (type === "file") {
         if (el.files?.length) parts.push(`files=${el.files.length}`);
       } else if (!["button", "submit", "reset", "image"].includes(type)) {
-        // Never echo a password or card number back into the model's context.
-        const secret = type === "password" || /cc-|card/i.test(el.getAttribute("autocomplete") ?? "");
+        // Never echo a password or card details back into the model's context.
+        const secret = type === "password" || isCard(el, el.value);
         const value = secret ? (el.value ? "••••" : "") : clean(el.value, 60);
         parts.push(`value="${value}"`);
       }
@@ -117,7 +132,7 @@ export function snapshotInPage(opts) {
       const options = [...el.options].slice(0, 12).map((o) => clean(o.textContent, 30));
       parts.push(`options=[${options.join(" | ")}${el.options.length > 12 ? " | …" : ""}]`);
     } else if (el.isContentEditable) {
-      parts.push(`value="${clean(el.innerText, 60)}"`);
+      parts.push(`value="${isCard(el, el.innerText) ? "••••" : clean(el.innerText, 60)}"`);
     }
     if (el.getAttribute("aria-checked") === "true") parts.push("checked");
     if (el.getAttribute("aria-expanded")) parts.push(`expanded=${el.getAttribute("aria-expanded")}`);
@@ -224,4 +239,41 @@ export function labelsInPage(show) {
   }
   document.documentElement.appendChild(layer);
   return n;
+}
+
+/**
+ * Whether a payment-card field on this page (or frame) holds a value: the
+ * card number, expiry or security code, found by its markup or by a value
+ * that passes Luhn, in inputs, text areas and editable elements, including
+ * inside open shadow roots. Screenshots aren't taken while one does, so card
+ * details typed by the user never reach the model. (Closed shadow roots are
+ * out of a page script's reach; a payment handoff also stops screenshots of
+ * its site, see the driver.)
+ */
+export function cardFieldFilledInPage() {
+  // The same test as snapshotInPage's isCard (keep the two in step).
+  const CARD_HINT = /(card|cc)[-_ ]?(num|number|no\b)|cardnumber|credit.?card|\bcvc\b|\bcvv\b|\bcsc\b|\bpan\b|security.?code|card.?code|exp(iry|iration)?[-_ ]?(date|month|year|mm|yy)|\bmm\s*\/\s*yy\b/i;
+  function luhnOk(digits) {
+    let sum = 0, dbl = false;
+    for (let i = digits.length - 1; i >= 0; i--) { let n = +digits[i]; if (dbl) { n *= 2; if (n > 9) n -= 9; } sum += n; dbl = !dbl; }
+    return sum % 10 === 0;
+  }
+  function isCard(el, value) {
+    if ((el.getAttribute("autocomplete") ?? "").toLowerCase().startsWith("cc-")) return true;
+    const hints = [el.getAttribute("name"), el.id, el.getAttribute("aria-label"), el.getAttribute("placeholder"), el.getAttribute("data-elements-stable-field-name")]
+      .filter(Boolean).join(" ");
+    if (CARD_HINT.test(hints)) return true;
+    const digits = (value ?? "").replace(/[\s-]/g, "");
+    return /^\d{13,19}$/.test(digits) && luhnOk(digits);
+  }
+  function fields(root) {
+    const out = [...root.querySelectorAll("input, textarea, [contenteditable='']:not([contenteditable='false']), [contenteditable='true']")];
+    for (const el of root.querySelectorAll("*")) if (el.shadowRoot) out.push(...fields(el.shadowRoot));
+    return out;
+  }
+  for (const el of fields(document)) {
+    const value = "value" in el && typeof el.value === "string" ? el.value : el.innerText;
+    if (value && isCard(el, value)) return true;
+  }
+  return false;
 }

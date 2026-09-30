@@ -1,17 +1,20 @@
 #!/usr/bin/env node
 /**
- * afe-browser <action> [base64-json]
+ * afe-browser <action> [base64-json | @file]
  *
  * What the brain runs through the sandbox's exec API for each `browser` tool
  * call. It starts Xvfb and the driver when they aren't running (a fresh or
  * resumed sandbox), sends the action over 127.0.0.1 and prints one line of
  * JSON. The payload is base64 so page text or a URL can never reach the shell.
+ * "@file" reads the payload from a file under /mnt/data and deletes it at
+ * once: the handoff's relay token goes that way, not on a command line.
  *
  * Payload: { args: {...}, actionMs, navMs, maxChars, viewport, idleSec, protectedHosts }
  */
 
 import { spawn, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync } from "node:fs";
+import { resolve as resolvePath, sep } from "node:path";
 import { request } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -158,7 +161,14 @@ if (!action) {
 
 let payload = {};
 try {
-  payload = encoded ? JSON.parse(Buffer.from(encoded, "base64").toString("utf8")) : {};
+  let b64 = encoded ?? "";
+  if (b64.startsWith("@")) {
+    const file = resolvePath(b64.slice(1));
+    if (!file.startsWith(resolvePath(DATA) + sep)) throw new Error("outside the data folder");
+    b64 = readFileSync(file, "utf8").trim();
+    rmSync(file, { force: true });
+  }
+  payload = b64 ? JSON.parse(Buffer.from(b64, "base64").toString("utf8")) : {};
 } catch {
   print({ ok: false, error: "the payload is not base64 JSON" });
   process.exit(2);

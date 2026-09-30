@@ -10,10 +10,14 @@
  * Prerequisites: those of scripts/test-aca-sandboxes-live.mjs, plus a disk
  * image built with SANDBOX_IMAGE_BROWSER=1.
  *
+ * With WEBPUBSUB_CONNECTION_STRING set, it also hands the browser to a
+ * user: the driver streams out through the sandbox's egress to Web PubSub,
+ * and this script, playing the user, types into the page and presses Done.
+ *
  * Usage:
  *   ACA_SANDBOX_SUBSCRIPTION_ID=... ACA_SANDBOX_RESOURCE_GROUP=... \
  *   ACA_SANDBOX_GROUP=... ACA_SANDBOX_REGION=... ACA_SANDBOX_DISK_IMAGE_ID=... \
- *   node scripts/test-browser-live.mjs
+ *   [WEBPUBSUB_CONNECTION_STRING=...] node scripts/test-browser-live.mjs
  *
  * Creates one sandbox at the default size (1 vCPU / 2 GiB) with open egress and deletes it at the end.
  */
@@ -24,7 +28,8 @@ import {
   labelHash,
 } from "../gateway/dist/gateway/skills/sandbox/aca-sandboxes-client.js";
 import { SandboxToolHandler } from "../gateway/dist/gateway/skills/sandbox/handler.js";
-import { BrowserToolHandler } from "../gateway/dist/gateway/skills/browser/handler.js";
+import { BrowserToolHandler, handoffDriverUserId } from "../gateway/dist/gateway/skills/browser/handler.js";
+import { WebPubSubServiceClient } from "@azure/web-pubsub";
 import { createDefaultTokenProvider } from "../gateway/dist/gateway/utils/azure-token.js";
 
 const env = (k) => {
@@ -63,6 +68,8 @@ const browserConfig = {
   idleShutdownSec: 120,
   maxActionsPerTurn: 30,
   maxActionsPerScheduledRun: 10,
+  showScreenshots: true,
+  handoff: { enabled: true, maxMinutes: 10, viewerBaseUrl: "https://viewer.invalid" },
 };
 const config = {
   enabled: true,
@@ -113,7 +120,20 @@ const userId = `browser-live-${Date.now()}`;
 const client = new AcaSandboxesClient(config, { tokenProvider: tokens });
 const identifier = client.resolveIdentifier(userId);
 const sandbox = new SandboxToolHandler(client, {}, userId);
-const browser = new BrowserToolHandler(sandbox, browserConfig);
+const pubsub = process.env.WEBPUBSUB_CONNECTION_STRING
+  ? new WebPubSubServiceClient(process.env.WEBPUBSUB_CONNECTION_STRING, "browserlive")
+  : undefined;
+const relay = pubsub && {
+  async issue(viewerUserId, group, ttl) {
+    const roles = [`webpubsub.joinLeaveGroup.${group}`, `webpubsub.sendToGroup.${group}`];
+    const [d, v] = await Promise.all([
+      pubsub.getClientAccessToken({ userId: handoffDriverUserId(viewerUserId), roles, expirationTimeInMinutes: ttl }),
+      pubsub.getClientAccessToken({ userId: viewerUserId, roles, expirationTimeInMinutes: ttl }),
+    ]);
+    return { driverUrl: d.url, viewerUrl: v.url };
+  },
+};
+const browser = new BrowserToolHandler(sandbox, browserConfig, { userId, ...(relay ? { handoff: { relay } } : {}) });
 const act = async (args) => JSON.parse(await browser.handle(args));
 const ref = (snapshot, pattern) => new RegExp(`\\[(e\\d+)\\] ${pattern}`).exec(snapshot ?? "")?.[1];
 
@@ -185,6 +205,51 @@ try {
     expect(r.stdout.includes("unauthorized") && r.stdout.trim().endsWith("600"), r.stdout);
     return r.stdout.trim();
   });
+
+  if (relay) {
+    await step("hand the browser to the user: frames out through the egress proxy, their typing in", async () => {
+      let r = await act({ action: "navigate", url: "https://httpbin.org/forms/post" });
+      if (r.error) {
+        // An outside site that drops a connection now and then; one more try before blaming the browser.
+        await new Promise((x) => setTimeout(x, 5000));
+        r = await act({ action: "navigate", url: "https://httpbin.org/forms/post" });
+      }
+      const field = ref(r.snapshot, 'textbox "Customer name');
+      expect(field, `no name field: ${r.error ?? r.snapshot?.slice(0, 300)}`);
+      await act({ action: "click", ref: field }); // the agent puts the cursor there first
+      const handed = await browser.run({ action: "handoff", reason: "Type your name, then press Done.", kind: "other" });
+      const form = handed.inputRequest;
+      expect(form?.formType === "browser_handoff", handed.output);
+      const q = new URLSearchParams(String(form.proposedArgs.viewerUrl).split("#")[1]);
+      const ws = new WebSocket(q.get("r"), "json.webpubsub.azure.v1");
+      const group = q.get("g");
+      let frames = 0;
+      let firstFrameMs;
+      const t0 = Date.now();
+      ws.onmessage = (m) => {
+        const msg = JSON.parse(m.data);
+        if (msg.data?.kind === "frame") {
+          frames++;
+          firstFrameMs ??= Date.now() - t0;
+        }
+      };
+      await new Promise((ok, bad) => { ws.onopen = ok; ws.onerror = () => bad(new Error("viewer could not connect")); });
+      const say = (data) => ws.send(JSON.stringify({ type: "sendToGroup", group, dataType: "json", noEcho: true, data }));
+      ws.send(JSON.stringify({ type: "joinGroup", group, ackId: 1 }));
+      await new Promise((x) => setTimeout(x, 800));
+      say({ kind: "hello" });
+      await new Promise((x) => setTimeout(x, 2500));
+      say({ kind: "text", text: "Ann Live" });
+      await new Promise((x) => setTimeout(x, 2500));
+      say({ kind: "done" });
+      await new Promise((x) => setTimeout(x, 1500));
+      ws.close();
+      expect(frames > 0, "no frames reached the user");
+      const after = await act({ action: "snapshot", query: "customer name" });
+      expect(/value="Ann Live"/.test(after.snapshot), `typing didn't arrive: ${after.snapshot}`);
+      return `first frame after ${firstFrameMs} ms, ${frames} frames; the user's typing reached the page`;
+    });
+  }
 
   await step("set a cookie", async () => {
     const nav = await act({ action: "navigate", url: "https://postman-echo.com/cookies/set?afe_live=1" });

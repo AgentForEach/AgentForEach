@@ -43,7 +43,7 @@ The model works mainly from a **text snapshot** of the page, and takes a [screen
 
 - **Refs are stable.** An element keeps its ref for as long as it is on the page; new elements get new numbers. A ref from an earlier snapshot either still means the same element or, if the element is gone, returns an error; it never silently means a different element.
 - **In view first.** A snapshot lists up to 200 elements, those in the window first, and says how many it didn't list. `query` searches every element on the page (up to 5,000), listed or not.
-- Passwords and card numbers are shown as `••••`, never their values.
+- Passwords and card numbers are shown as `••••`, never their values. A field counts as a card field by its `autocomplete` (`cc-…`), by its name, id, label or placeholder (card number, CVV, expiry, PAN), or by holding a number that passes the card checksum (Luhn); fields inside open shadow roots and editable text areas count too. Page text never carries a card number either.
 - When a page has almost nothing to act on (a result page, an error), the start of its text is included.
 - Snapshots are cut at `maxSnapshotChars` at a line break, with a note on how to see more.
 
@@ -65,6 +65,7 @@ One tool, `browser`, with an `action`:
 | `text` | The page's readable text, or a part of it (`selector`); `offset` reads further |
 | `tabs`, `tab_open`, `tab_focus`, `tab_close` | Tabs, with ids `t1`, `t2`, … A link that opens a new tab switches to it |
 | `screenshot` | Shows the model the page as an image, optionally with refs drawn on it, and gives the user a download link ([Screenshots](#screenshots)) |
+| `handoff` | Gives the browser to the user for a login, a CAPTCHA, a second factor or a payment ([Handing the browser to the user](#handing-the-browser-to-the-user)) |
 | `reset` | Closes the browser and deletes its profile: cookies, logins and history. Downloads and screenshots in `/mnt/data/browser/` stay |
 
 - **Dialogs.** Alerts are accepted; "Are you sure?" confirms and prompts are declined, unless the action passes `accept_dialogs: true`, which the model is told to do only after the user agreed. Every dialog is reported in the result.
@@ -75,12 +76,38 @@ One tool, `browser`, with an `action`:
 
 A snapshot can't show images, charts, prices set in pictures, layout, or a banner covering the page. For those the model takes a screenshot and sees it:
 
-- The driver saves two files in `/mnt/data/browser/screenshots/`: a PNG for the user (the window, or the whole page with `full_page`), which comes back as a download link, and a JPEG of the window for the model. The newest 60 are kept.
+- The driver saves two files in `/mnt/data/browser/screenshots/`: a PNG for the user (the window, or the whole page with `full_page`), which comes back as a download link, and a JPEG of the window for the model. The newest 60 files (30 screenshots) are kept.
 - With `labels`, each element's ref is drawn on the image, so what the model sees lines up with what it can act on.
 - The image travels with the tool's result, in each provider's own form: an image block inside Anthropic's `tool_result`, an `input_image` in the OpenAI Responses `function_call_output`, and, because Chat Completions tool messages are text only, a user message right after the tool messages.
-- **Cost.** A 1280×800 screenshot is roughly 1,000–1,500 input tokens, about a long snapshot. The model sees each one in the round it was taken; later rounds of the same turn get a note in its place instead of the image. With OpenAI's Responses API, which keeps the conversation on OpenAI's side, an image stays in that conversation's context for later turns too, like an image the user sent. The tool description tells the model not to take a screenshot after every step.
+- **Cost.** A 1280×800 screenshot is roughly 1,000–1,500 input tokens, about a long snapshot. The model sees each one in the round it was taken, once; later rounds of the same turn get a note in its place instead of the image. With OpenAI's Responses API, which keeps the conversation on OpenAI's side, an image stays in that conversation's context for later turns too, like an image the user sent. The tool description tells the model not to take a screenshot after every step.
 - **Storage.** Screenshots are never written to session history in Cosmos; only the user's message and the final reply are.
+- **No screenshot of card details.** While any card field on the page (in any frame, including a payment iframe) holds a value, `screenshot` takes no picture at all, for the model or the user, and says why. After a `payment` handoff, screenshots of that site are withheld until the next `reset`.
 - **Models that can't read images.** Set `showScreenshots: false`. The screenshot then only goes to the user as a link, and the model works from snapshots.
+
+## Handing the browser to the user
+
+Some steps are the user's to take, not the agent's: typing a password, solving a CAPTCHA, entering a code sent to their phone, paying. For those the agent calls `handoff` with a `reason` the user reads ("Log in to your Amazon account, then press Done.") and a `kind` (`login`, `captcha`, `2fa`, `payment` or `other`). The user takes over the live browser in the chat, and the agent carries on when they're done. The model is told never to ask for a password or card details, and never to type them itself.
+
+```
+agent ── browser {action: "handoff"} ──▶ gateway: a new random group, two tokens that can only join it
+  ──▶ driver in the sandbox connects OUT to Web PubSub, streams the page (CDP screencast)
+  ──▶ the run pauses on a "browser_handoff" form; web chat shows the live view in it
+user clicks and types in the live view ──▶ Web PubSub ──▶ driver ──▶ Chromium
+user presses Done ──▶ the run resumes: the agent takes a snapshot and continues
+```
+
+- **Relayed, not exposed.** The sandbox takes no inbound connections, and the live view doesn't change that: the driver connects out to the deployment's Web PubSub, as chat replies do. It uses its own hub, `<hub>_browser` (set `handoff.hub` to change it), which has no event handlers, so a handoff token can't reach the chat's upstream events. The gateway issues two tokens for a new random group per handoff, the driver's and the user's, each allowed to join and send to that group only, and valid for the handoff's time limit. The viewer's link, with its token, is delivered on the user's own authenticated real-time connection, in the form; it never passes through the model.
+- **Only the user drives, and only the driver speaks.** Web PubSub stamps each message with the sender's user id from their token. The driver accepts input only from the user the handoff was issued to, and only the kinds it recognises (mouse, keys, text, scroll, dialog answers, Done, Cancel). The viewer, in turn, draws and believes only messages from the driver's id, and connects only to this deployment's Web PubSub host (pinned in the page), so a link pointing at another relay is refused.
+- **The user sees where they are.** The viewer shows the page's host on its own line, apart from the page title, so a long or misleading title can't hide which site is asking for a password.
+- **Nothing reaches the model.** The frames go to the user only. What the user types goes to the browser only. When the agent resumes it reads the outcome (`done`, `cancelled` or `expired`, with the user's `userNote` if the client sent one), and it's told not to redo what the user did and not to screenshot payment forms. Snapshots mask password and card fields, and [card fields block screenshots](#screenshots). Code in the sandbox is another matter: it runs as the same user as the browser, so a script the agent left running there could watch the screen or the keys while the user is in control. The handoff trusts the sandbox as much as the browser itself does.
+- **Time limit.** The user has `handoff.maxMinutes` (10 by default, at most 30). The driver ends the live view at the deadline on its own; if the user presses Done more than 30 s after it, the agent is told the view had closed and checks the page. If the user sends a message instead of pressing Done, the handoff is cancelled, the live view is stopped, and the model sees their message.
+- **The agent takes the browser back** on its next action: the driver closes the live view first, and releases any key or mouse button the user was holding. A new handoff replaces an old one. If the run is aborted or fails while it waits, the live view is stopped.
+- **Dialogs and files.** A "Are you sure?" confirm or a prompt the page opens during the handoff is shown in the viewer, and the user's answer goes back to the page (unanswered, it is declined after 2 minutes). Alerts show as a notice. A file picker can't be shown; the viewer says so, and the user can tell the agent to `upload` the file instead.
+- **Light on the sandbox.** Frames are JPEG at quality 55 and at most about 7 a second. If the viewer hasn't been heard from for 30 s (it pings every 10 s), the driver stops sending frames until it is. A burst of mouse moves collapses to the latest, so a click is never stuck behind them; dialog answers and Done jump the queue. The viewer shows "lost connection" when the driver has been silent for 25 s.
+- **One handoff per turn, on its own.** The handoff must be the only tool call in its round, and not in a turn that already asked the user something; otherwise the tool refuses and the model asks again on its own.
+- **The page.** `GET /api/browser/view` serves the viewer (404 while the browser or the handoff is off, or without Web PubSub). It carries no secret: the relay address and token arrive in the URL fragment, which browsers never send to a server. The page moves them into the tab's session storage and out of the address bar, so a reload reconnects but the link can't be copied from the address bar. It runs only its own script (a hashed Content-Security-Policy), connects only to the relay's `wss:` host, and can be framed by any site (`frame-ancestors *`), since the chat that embeds it may be on any domain; it only listens to `postMessage` from its own parent. It handles mouse, touch (drag to scroll, tap to click), keyboard (Command maps to Control on a Mac, paste works), and a text box for phone keyboards, and it fits the picture to any window size.
+- **Web chat** renders the `browser_handoff` form as the live view with Done and Cancel (`examples/web-chat/`). Another client renders it from the form's `proposedArgs.viewerUrl` (an `iframe` is enough) and answers it like any form (`hitlInputResponse` with `{ data: { done: true } }` or `cancelled`).
+- **Where it's offered.** Only where forms render and the run can pause on one and resume where it stopped: web chat and apps on the real-time protocol, with Web PubSub and the HITL store configured, on a model through the **OpenAI Responses API** with `chainResponses` on (the default). Resuming a paused tool call needs the provider to keep the conversation, which Anthropic and Chat Completions don't do here. Elsewhere, on Telegram and WhatsApp, and in scheduled runs, the agent is told to tell the user what they need to do instead. A handoff counts as one browser action, plus a `browserHandoff` unit for `credits.unitCoins`.
 
 ## Turning it on
 
@@ -177,13 +204,14 @@ A change to the egress policy (for example, a credential revoked mid-conversatio
 - **Nothing the model writes reaches the shell.** The action comes from a fixed list, and every argument travels base64-encoded. Uploads are limited to files under `/mnt/data`.
 - **Cookies and logins live in the sandbox.** Sandbox commands run as root and Chromium runs with Playwright's defaults for root (`--no-sandbox`), so code the model writes, or a page that exploited Chromium, could read them. That is the user's own data, but a prompt-injected agent could leak it: keep `requireCredentialHosts` on, and don't give the agent both open egress and logins it doesn't need.
 - **A crash never repeats an action.** If the driver dies mid-action, the call returns an error ("the browser stopped during this action") rather than sending the action again, so a submit can't happen twice.
+- **Handing off.** The user's live view is relayed through Web PubSub, on a hub of its own, with tokens scoped to one handoff; the viewer only talks to this deployment's relay and only believes the driver. Code in the sandbox can see what the user does in the live view. See [Handing the browser to the user](#handing-the-browser-to-the-user).
 - **Deleting a user** deletes their sandbox, and with it the browser profile.
 
 ## Limits
 
 - **Bot walls.** Some sites block or challenge browsers on cloud IP addresses. In our tests Reddit, IRCTC, Stack Overflow and Booking.com did; Google, Bing, BBC, Amazon.in, Flipkart, GitHub, Wikipedia, LinkedIn and Hacker News worked. The proxy also adds `x-adc-proxy` and `traceparent` headers. The tool reports a wall (by status, title or page text) as `blocked`, and the model is told to tell the user rather than retry. AgentForEach doesn't try to get around bot checks.
 - **Frames and shadow DOM.** Snapshots cover the main page. Buttons inside an iframe (many cookie banners, payment forms) or a closed web component can't be used yet; the snapshot says when a page has frames.
-- **Logins.** The model can type into a login form, but it can't hand the browser to the user for a password, a CAPTCHA or a second factor yet.
+- **Handoff on message channels.** Telegram and WhatsApp can't show the live view yet; sending the viewer link straight to the chat, without it passing through the model, is a follow-up.
 - **Late navigations.** After an action the driver waits for the page to settle (up to about 1.6 s of quiet); a page that navigates later shows the new page on the next call.
 - **Startup.** Chromium starts in 0.35–0.5 s; the first call in a fresh sandbox takes about 5 s (Xvfb, the driver, Chromium and the page). After a suspend, add the resume (about 1.5 s).
 - **Scheduled jobs.** A `main` job (delivered through the heartbeat queue into the user's session) gets the browser with the lower per-run cap. An `isolated` job (the default) is a single model call with no tools at all, so it can't browse, or fetch anything else; see [the scheduler](Crons.md#51-isolated-jobs).
@@ -200,6 +228,8 @@ On a live ACA Sandboxes group in Central India (September 2026), with the image 
 | Image size | About 1 GB more than the plain image (Chromium itself is about 390 MB) |
 | Reachability | No private, link-local or Azure-internal address was reachable in any egress mode |
 | Credential injection | The proxy's header reached the page's server; the secret never entered the sandbox |
+| Handoff, from the sandbox through the egress proxy to Web PubSub | First frame at the user in about 0.8 s; the user's typing reached the page |
+| Handoff relay throughput (spike) | 60–80 KB frames at 5–8 a second without loss, in open and deny-by-default egress; input round trip about 75–80 ms |
 
 Screenshots reaching the model, and the tool driving a real model, were checked with `gpt-5-mini` on Azure AI Foundry (October 2026), through the gateway's own providers, handler and driver:
 
@@ -216,8 +246,8 @@ The proxy dropped connections to some hosts for a minute or two once, for `curl`
 
 ## Testing
 
-- **Unit tests** (in `npm test`, or `npm run test:browser` in `gateway/`): the tool's argument checks, the command it builds, how results reach the model, the guardrails, metering, access and config (`skills/browser/handler.test.ts`), and the driver's URL guard, bot-wall detection and error messages (`sandbox-container/browser/guard.test.mjs`).
-- **Live test** against a real group: build first (`npx tsc -p gateway`), then run `scripts/test-browser-live.mjs` with the four `ACA_SANDBOX_*` variables and `ACA_SANDBOX_DISK_IMAGE_ID` (an image built with the browser). It drives the same path as the agent: search by ref, text, a labelled screenshot, refused local addresses, the driver token, a heavy page at the default size, cookies across a suspend, and `reset`.
+- **Unit tests** (in `npm test`, or `npm run test:browser` in `gateway/`): the tool's argument checks, the command it builds, how results reach the model, the guardrails, metering, access and config (`skills/browser/handler.test.ts`), and the driver's URL guard, bot-wall detection, error messages, card-number masking and which viewer input it accepts (`sandbox-container/browser/guard.test.mjs`).
+- **Live test** against a real group: build first (`npx tsc -p gateway`), then run `scripts/test-browser-live.mjs` with the four `ACA_SANDBOX_*` variables and `ACA_SANDBOX_DISK_IMAGE_ID` (an image built with the browser). It drives the same path as the agent: search by ref, text, a labelled screenshot, refused local addresses, the driver token, a heavy page at the default size, cookies across a suspend, and `reset`. With `WEBPUBSUB_CONNECTION_STRING` set it also hands the browser to a user: frames stream out through the sandbox's egress, and the script, playing the user, types into the page and presses Done.
 - **The driver on your machine**, headless, without Azure (the lock file this creates is git-ignored):
 
   ```bash
@@ -241,11 +271,14 @@ The proxy dropped connections to some hosts for a minute or two once, for `curl`
 | "The action took longer than N s and was stopped" | A page that never finished loading; raise `navigationTimeoutSec` if your sites are slow |
 | The browser did not start | The driver's log is `/tmp/afe-browser/driver.log` in the sandbox (read it with `sandbox_exec`) |
 | The tool isn't offered | The browser is off, the user isn't in `users`, or the backend isn't ACA Sandboxes |
+| "The live view could not connect" | The sandbox can't reach Web PubSub. With deny-by-default egress the gateway adds the host from `WEBPUBSUB_CONNECTION_STRING` to the allowlist; existing sandboxes pick it up on their next call |
+| The agent never offers a handoff | The handoff needs the OpenAI Responses API with `chainResponses` on, a client that renders forms (not Telegram or WhatsApp), Web PubSub and the HITL store |
+| The handoff form shows no picture | The viewer page couldn't join the group: its token expired (after `maxMinutes`), or the gateway's address (`handoff.viewerBaseUrl`, else `WEBSITE_HOSTNAME`) isn't reachable from the user's browser |
 
 ## Not built yet
 
 - **Frames and shadow DOM** in snapshots, so cookie banners in iframes and web components can be used.
-- **Live view and takeover**, so the user can watch and step in for a login, a CAPTCHA or a second factor. The sandbox takes no inbound connections, so this would stream out over Web PubSub.
+- **Handoff on Telegram and WhatsApp**, by sending the viewer link straight to the chat.
 - **Browser access by role or plan**, rather than a list of user ids. Roles don't reach the agent runner today, and scheduled runs have none.
 - **Tools in isolated scheduled jobs.** They are a single model call; see [the scheduler](Crons.md#51-isolated-jobs).
 
@@ -264,10 +297,14 @@ The proxy dropped connections to some hosts for a minute or two once, for `curl`
 | `maxActionsPerTurn` | 30 | Browser actions per run |
 | `maxActionsPerScheduledRun` | 10 | Browser actions per scheduled run |
 | `showScreenshots` | `true` | Show screenshots to the model as images; turn off for models that can't read images |
+| `handoff.enabled` | `true` | Let the agent hand the browser to the user (needs Web PubSub and the HITL store) |
+| `handoff.maxMinutes` | 10 | How long the user has, at most 30 |
+| `handoff.hub` | `<hub>_browser` | The Web PubSub hub for live views: letters, digits and underscores only. Keep it apart from the chat hub |
+| `handoff.viewerBaseUrl` | this Function App | Where the viewer page is served, if not at `https://$WEBSITE_HOSTNAME` |
 | `users` | (everyone) | The only user ids offered the browser |
 
 The per-user limit is `rateLimit.browser` (`perMinute` 30, `perDay` 300). The price per action is `credits.unitCoins.browserAction` (none by default).
 
 ## Code
 
-`gateway/skills/browser/` (the tool, its checks and config types) and `gateway/sandbox-container/browser/` (the driver, the `afe-browser` command, the in-page snapshot and the URL guard). The browser runs through `SandboxToolHandler.runCommand`, so it gets the same per-turn credential rewrite as `sandbox_exec`. Live test against a real group: `scripts/test-browser-live.mjs`.
+`gateway/skills/browser/` (the tool, its checks, config types and the live view page, served by `gateway/handlers/browser-view.ts`) and `gateway/sandbox-container/browser/` (the driver with its handoff relay, the `afe-browser` command, the in-page snapshot and the URL guard). The browser runs through `SandboxToolHandler.runCommand`, so it gets the same per-turn credential rewrite as `sandbox_exec`. Live test against a real group: `scripts/test-browser-live.mjs`.

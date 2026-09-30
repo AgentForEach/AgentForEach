@@ -26,11 +26,13 @@ import type {
 } from "./types.js";
 import { GROUPS } from "./types.js";
 import {
+  resolveConnectionString,
   resolveDefaultTokenTtl,
   resolveMaxTokenTtl,
   resolveDefaultGroups,
 } from "./config.js";
 import { getActiveProvider } from "./providers/index.js";
+import { WebPubSubServiceClient } from "@azure/web-pubsub";
 
 // ============================================================================
 // Token Configuration
@@ -145,4 +147,27 @@ export function getDefaultGroups(
   _clientId: ClientId,
 ): GroupName[] {
   return resolveDefaultGroups(role) as GroupName[];
+}
+
+/**
+ * A client token for one group on a separate hub, for relays between two
+ * parties the gateway introduces (the browser's live view). The hub has no
+ * event handlers, so these tokens can't reach the gateway: they can only join
+ * and send to their one group, until they expire.
+ */
+export async function generateGroupToken(args: {
+  hub: string;
+  userId: string;
+  group: string;
+  ttlMinutes: number;
+}): Promise<{ url: string }> {
+  const connectionString = resolveConnectionString();
+  if (!connectionString) throw new Error("real-time messaging (Web PubSub) isn't configured");
+  const client = new WebPubSubServiceClient(connectionString, args.hub);
+  const token = await client.getClientAccessToken({
+    userId: args.userId,
+    roles: [`webpubsub.joinLeaveGroup.${args.group}`, `webpubsub.sendToGroup.${args.group}`],
+    expirationTimeInMinutes: args.ttlMinutes,
+  });
+  return { url: token.url };
 }

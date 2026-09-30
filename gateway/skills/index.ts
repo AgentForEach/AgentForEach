@@ -114,7 +114,9 @@ export {
   BrowserToolHandler,
   BROWSER_TOOL_NAME,
   getBrowserToolDefinitions,
+  handoffOutcome,
   isBrowserEnabled,
+  isBrowserHandoffCall,
   isBrowserTool,
 } from "./browser/index.js";
 export type { BrowserConfig, BrowserJsonConfig } from "./browser/index.js";

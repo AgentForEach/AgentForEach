@@ -126,6 +126,17 @@ export function resolveConnectionString(): string {
   );
 }
 
+/** The Web PubSub service's host, from its connection string ("Endpoint=https://….webpubsub.azure.com;…"). */
+export function resolveWebPubSubHost(): string | undefined {
+  const endpoint = /(?:^|;)\s*Endpoint=([^;]+)/i.exec(resolveConnectionString())?.[1];
+  if (!endpoint) return undefined;
+  try {
+    return new URL(endpoint.trim()).hostname;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Resolve the Web PubSub hub name.
  * Env var WEBPUBSUB_HUB always wins, then config, then "agentforeach".

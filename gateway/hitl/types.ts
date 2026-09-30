@@ -188,6 +188,22 @@ export interface HitlUiHints {
 // ============================================================================
 
 /**
+ * A form a tool asks the client to render, pausing the turn until the user
+ * answers (request_user_input, the browser's handoff). The runner turns it
+ * into an input_request and saves the run; the answer resumes it.
+ */
+export interface DirectInputForm {
+  formType: string;
+  intent: string;
+  formName?: string;
+  proposedArgs: Record<string, unknown>;
+  options?: Array<{ label: string; value: string; description?: string }>;
+  schema?: Record<string, unknown>;
+  uiHints?: Record<string, unknown>;
+  timeoutSeconds: number;
+}
+
+/**
  * Payload pushed to the client when a tool call needs human input.
  * Sent as a CHAT event with state "input_request".
  */

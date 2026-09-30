@@ -311,6 +311,11 @@ export class SandboxToolHandler {
     return this.client.exec({ command, timeout: timeoutSec }, identifier);
   }
 
+  /** Write a text file under /mnt/data for a command another tool runs next (the browser's handoff payload). */
+  async writeFile(filename: string, content: string): Promise<void> {
+    await this.client.fileWrite({ filename, content }, this.identifier());
+  }
+
   /** A /mnt/data file as base64 (for the model to see an image), or undefined if empty or over `maxBytes`. */
   async readFileBase64(filename: string, maxBytes: number): Promise<string | undefined> {
     const file = await this.client.fileReadBinary({ filename }, this.identifier());

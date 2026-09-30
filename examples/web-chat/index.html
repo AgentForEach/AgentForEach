@@ -53,6 +53,8 @@
   .card button.secondary { background: transparent; color: var(--fg); border: 1px solid var(--line); }
   .card label.check { display: flex; gap: 8px; align-items: center; color: var(--fg); font-size: 15px; }
   .card label.check input { width: auto; }
+  .card.handoff { max-width: 100%; width: 100%; }
+  .card iframe.handoff { width: 100%; height: min(72vh, 720px); border: 0; border-radius: 10px; background: #151827; }
   .reminder { border-color: var(--wake); }
   .reminder::before { content: "Reminder"; display: block; font: 400 11px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--wake-ink); margin-bottom: 4px; }
   form#send { display: flex; gap: 8px; padding-top: 4px; }
@@ -99,7 +101,8 @@
 //   4. the reply streams as { type: "event", event: "chat", payload } frames:
 //      payload.state "delta" (delta, offset), "final" (text), "error", ...
 //   5. a form (payload.state "input_request") is answered by POST /api/chat
-//      with hitlInputResponse { requestId, data | cancelled }
+//      with hitlInputResponse { requestId, data | cancelled }; a "browser_handoff"
+//      form embeds the live view of the agent's browser (docs/Browser.md)
 //   6. a scheduled job's result (a reminder) arrives as event "cron"
 // See docs/Architecture.md, "Real-time protocol", and docs/HITL.md.
 
@@ -154,6 +157,23 @@ function showForm(p) {
   const actions = el("div", { className: "actions" });
 
   const answer = (data, summary) => submitForm(p, card, { data }, summary);
+
+  // The agent handed its browser to the user: show it live; Done or Cancel gives it back.
+  if (p.formType === "browser_handoff" && typeof p.proposedArgs?.viewerUrl === "string" && p.proposedArgs.viewerUrl.startsWith("http")) {
+    card.classList.add("handoff");
+    const view = el("iframe", { src: p.proposedArgs.viewerUrl, className: "handoff", title: "The agent's browser" });
+    view.setAttribute("allow", "clipboard-read; clipboard-write");
+    const handBack = (message) => view.contentWindow?.postMessage(message, new URL(view.src).origin);
+    card.append(view);
+    actions.append(el("button", { textContent: "Done", onclick: () => { handBack("afe-handoff-done"); answer({ done: true }, "Done"); } }));
+    actions.append(el("button", { className: "secondary", textContent: "Cancel", onclick: () => { handBack("afe-handoff-cancel"); submitForm(p, card, { cancelled: true }, "Cancelled"); } }));
+    card.append(actions);
+    $("log").append(card);
+    card.scrollIntoView({ block: "end" });
+    state.forms.set(p.requestId, card);
+    return;
+  }
+
   const options = Array.isArray(p.options) ? p.options : [];
   const properties = p.schema && typeof p.schema.properties === "object" ? Object.entries(p.schema.properties) : [];
 
@@ -195,6 +215,8 @@ function closeForm(requestId, note) {
   const card = state.forms.get(requestId);
   if (!card) return;
   card.querySelectorAll("button, input").forEach((n) => (n.disabled = true));
+  // A live view closes with its form, just after it has passed Done or Cancel on to the browser.
+  card.querySelectorAll("iframe").forEach((n) => setTimeout(() => n.remove(), 500));
   if (note) card.append(el("p", { textContent: note }));
   state.forms.delete(requestId);
 }

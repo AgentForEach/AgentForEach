@@ -29,6 +29,13 @@ export interface ProviderCapabilities {
    * has `image_url` but no file input at all.
    */
   nativeDocuments: boolean;
+  /**
+   * Keeps each response on the provider's side and continues from it by id
+   * (OpenAI Responses' previous_response_id). A run paused on a form can then
+   * resume the exact response that asked; without it, the answer arrives as a
+   * new message. The browser's handoff needs it.
+   */
+  chainsResponses?: boolean;
 }
 
 // ============================================================================

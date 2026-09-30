@@ -237,6 +237,8 @@ Five built-in form types the client must support:
 
 Deployments can add their own types for `request_user_input` with `hitl.customFormTypes` (name → description shown to the model); the client must know how to render them.
 
+The browser's handoff pauses the run on a `browser_handoff` form, answered like any other (`hitlInputResponse` with `{ data: { done: true } }` or `cancelled`). Its `proposedArgs.viewerUrl` is the live view of the agent's browser for the client to embed; see [Browser.md](Browser.md#handing-the-browser-to-the-user).
+
 ### 4.4 UI hints
 
 ```typescript

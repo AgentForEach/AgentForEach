@@ -17,6 +17,7 @@ import type {
   SandboxProvider,
 } from "./sandbox/types.js";
 import type { BrowserConfig, BrowserJsonConfig } from "./browser/types.js";
+import { resolveHub, resolveWebPubSubHost } from "../websocket/config.js";
 
 // ============================================================================
 // Defaults
@@ -71,6 +72,7 @@ const BROWSER_DEFAULTS = {
   maxActionsPerTurn: 30,
   maxActionsPerScheduledRun: 10,
   showScreenshots: true,
+  handoffMinutes: 10,
 };
 
 /** SANDBOX_BROWSER_ENABLED (from the IaC) wins over agentforeach.json. */
@@ -87,6 +89,17 @@ function resolveBrowser(json: BrowserJsonConfig = {}): BrowserConfig {
     maxActionsPerTurn: json.maxActionsPerTurn ?? BROWSER_DEFAULTS.maxActionsPerTurn,
     maxActionsPerScheduledRun: json.maxActionsPerScheduledRun ?? BROWSER_DEFAULTS.maxActionsPerScheduledRun,
     showScreenshots: json.showScreenshots ?? BROWSER_DEFAULTS.showScreenshots,
+    handoff: {
+      enabled: json.handoff?.enabled ?? true,
+      maxMinutes: Math.min(
+        Math.max(Number.isFinite(json.handoff?.maxMinutes) ? json.handoff!.maxMinutes! : BROWSER_DEFAULTS.handoffMinutes, 1),
+        30,
+      ),
+      // Its own hub, with no event handlers: a relay token can't reach the gateway.
+      // (Hub names allow letters, digits and underscores only.)
+      hub: json.handoff?.hub ?? `${resolveHub()}_browser`,
+      ...(json.handoff?.viewerBaseUrl ? { viewerBaseUrl: json.handoff.viewerBaseUrl } : {}),
+    },
     ...(json.users ? { users: json.users } : {}),
   };
 }
@@ -164,6 +177,12 @@ export function loadSkillsConfig(): SkillsConfig {
       "";
     const provider = resolveProvider(s.provider);
     const acaSandboxes = provider === "aca-sandboxes" ? resolveAcaSandboxes(s.sandboxes) : undefined;
+    const browser = resolveBrowser(s.browser);
+    // A handoff's live view goes out to Web PubSub; let it through a deny-by-default egress policy.
+    const relayHost = browser.enabled && browser.handoff.enabled ? resolveWebPubSubHost() : undefined;
+    if (acaSandboxes && relayHost && !acaSandboxes.egressAllowHosts.includes(relayHost)) {
+      acaSandboxes.egressAllowHosts = [...acaSandboxes.egressAllowHosts, relayHost];
+    }
 
     sandbox = {
       enabled: s.enabled ?? false,
@@ -192,7 +211,7 @@ export function loadSkillsConfig(): SkillsConfig {
         s.exportExpiryHours ?? SANDBOX_DEFAULTS.exportExpiryHours,
       maxExportBytes:
         s.maxExportBytes ?? SANDBOX_DEFAULTS.maxExportBytes,
-      browser: resolveBrowser(s.browser),
+      browser,
     };
   }
 

@@ -42,3 +42,7 @@ test("a tool result with an image sends an output list with input_text and input
   });
   assert.equal(input[1]!.output, "plain");
 });
+
+test("OpenAI Responses keeps responses to resume from (previous_response_id)", () => {
+  assert.equal(provider.capabilities.chainsResponses, true);
+});

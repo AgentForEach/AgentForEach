@@ -21,6 +21,7 @@ import "./handlers/ws-disconnect.js";
 // — HTTP API handler —
 import "./handlers/api.js";
 import "./handlers/durable-purge.js";
+import "./handlers/browser-view.js";
 import "./account/handlers.js";
 
 // — Cron system (Durable Functions orchestrator, activities, timers, HTTP API) —

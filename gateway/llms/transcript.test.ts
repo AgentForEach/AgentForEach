@@ -33,22 +33,12 @@ test("tool outputs become one user message of tool_result blocks after the prior
   });
 });
 
-test("only the latest round's tool images are kept; earlier ones become a note", () => {
-  const round1 = transcriptThroughInput({
-    input: [{ type: "function_call_output", callId: "a", output: "first shot", images: [{ mediaType: "image/jpeg", data: "AAAA" }] }],
-    conversation: { messages: [{ role: "user", content: "q" }] },
-  } as ProviderRequest);
-  const kept = (round1[1]!.content as Array<{ images?: unknown[] }>)[0]!;
-  assert.equal(kept.images?.length, 1, "the round's own image is kept for the model to see");
-
-  const round2 = transcriptThroughInput({
-    input: [{ type: "function_call_output", callId: "b", output: "second shot", images: [{ mediaType: "image/jpeg", data: "AAAA" }] }],
-    conversation: { messages: round1 },
-  } as ProviderRequest);
-  const earlier = (round2[1]!.content as Array<{ content: string; images?: unknown[] }>)[0]!;
-  assert.equal(earlier.images, undefined, "the earlier image is not resent");
-  assert.equal(earlier.content, `first shot\n${SEEN_IMAGE_NOTE}`);
-  const latest = (round2[2]!.content as Array<{ images?: unknown[] }>)[0]!;
-  assert.equal(latest.images?.length, 1);
-  assert.equal((round1[1]!.content as Array<{ images?: unknown[] }>)[0]!.images?.length, 1, "earlier transcripts aren't mutated");
+test("the saved transcript never holds a tool's image: it went in that round's own input", () => {
+  const input = [{ type: "function_call_output", callId: "a", output: "first shot", images: [{ mediaType: "image/jpeg", data: "AAAA" }] }];
+  const request = { input, conversation: { messages: [{ role: "user", content: "q" }] } } as ProviderRequest;
+  const saved = transcriptThroughInput(request);
+  const block = (saved[1]!.content as Array<{ content: string; images?: unknown[] }>)[0]!;
+  assert.equal(block.images, undefined);
+  assert.equal(block.content, `first shot\n${SEEN_IMAGE_NOTE}`);
+  assert.equal((input[0] as { images?: unknown[] }).images?.length, 1, "the request's own input isn't mutated");
 });

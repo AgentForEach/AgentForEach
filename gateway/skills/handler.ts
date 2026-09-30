@@ -35,9 +35,13 @@ import type { ExportBlobStore } from "./sandbox/export-store.js";
 import {
   BrowserToolHandler,
   getBrowserToolDefinitions,
+  handoffDriverUserId,
   isBrowserEnabled,
   isBrowserTool,
+  type HandoffRelay,
 } from "./browser/index.js";
+import { generateGroupToken } from "../websocket/auth.js";
+import type { DirectInputForm } from "../hitl/types.js";
 import { getScopedRateLimiter } from "../ratelimit/index.js";
 import type { ToolResultImage } from "../llms/types.js";
 
@@ -240,8 +244,10 @@ export class SkillToolHandler {
     /**
      * scheduled: this run is a scheduled job or heartbeat (tighter browser cap, nobody to confirm).
      * units: the run's meter for billable actions (credits.unitCoins).
+     * handoffSurface: the client renders forms and the run can pause on one, so the browser can
+     * be handed to the user.
      */
-    options: { scheduled?: boolean; units?: Record<string, number> } = {},
+    options: { scheduled?: boolean; units?: Record<string, number>; handoffSurface?: boolean } = {},
   ) {
     this.store = store;
     this.blobStore = blobStore;
@@ -270,6 +276,7 @@ export class SkillToolHandler {
           units: options.units,
           // Resolved on first use, so building the handler never touches the database.
           limiter: { check: (id) => getScopedRateLimiter("browser").check(id) },
+          ...(options.handoffSurface ? { handoff: { relay: webPubSubRelay(sandboxConfig.browser.handoff.hub) } } : {}),
         });
       }
     }
@@ -289,15 +296,24 @@ export class SkillToolHandler {
     return (await this.handleWithImages(toolName, args, userId)).output;
   }
 
+  /** End a live view this run started (the run stopped before the user got it). */
+  async stopBrowserHandoff(): Promise<void> {
+    await this.browserHandler?.stopHandoff();
+  }
+
   /** As handle, plus any images the tool returned for the model (browser screenshots). */
   async handleWithImages(
     toolName: string,
     args: Record<string, unknown>,
     userId: string,
-  ): Promise<{ output: string; images?: ToolResultImage[] }> {
+  ): Promise<{ output: string; images?: ToolResultImage[]; inputRequest?: DirectInputForm }> {
     if (isBrowserTool(toolName) && this.browserHandler) {
-      const { output, images } = await this.browserHandler.run(args);
-      return { output: redactCredentialValues(output, this.userCredentials), ...(images ? { images } : {}) };
+      const { output, images, inputRequest } = await this.browserHandler.run(args);
+      return {
+        output: redactCredentialValues(output, this.userCredentials),
+        ...(images ? { images } : {}),
+        ...(inputRequest ? { inputRequest } : {}),
+      };
     }
     return { output: redactCredentialValues(await this.dispatch(toolName, args, userId), this.userCredentials) };
   }
@@ -695,4 +711,21 @@ export class SkillToolHandler {
         .every((c) => !!config.credentials[c.key]?.trim()),
     });
   }
+}
+
+/**
+ * Handoff tokens from the gateway's Web PubSub, on the live-view hub (which
+ * has no event handlers), each limited to the one handoff group: the driver
+ * joins as a hashed id, the viewer as the user.
+ */
+function webPubSubRelay(hub: string): HandoffRelay {
+  return {
+    async issue(viewerUserId, group, ttlMinutes) {
+      const [driver, viewer] = await Promise.all([
+        generateGroupToken({ hub, userId: handoffDriverUserId(viewerUserId), group, ttlMinutes }),
+        generateGroupToken({ hub, userId: viewerUserId, group, ttlMinutes }),
+      ]);
+      return { driverUrl: driver.url, viewerUrl: viewer.url };
+    },
+  };
 }

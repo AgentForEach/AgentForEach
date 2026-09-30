@@ -152,3 +152,18 @@ test("a tool result with an image becomes a tool_result holding text and an imag
   });
   assert.equal(results[1]!.content, "plain", "results without images stay plain text");
 });
+
+test("across rounds each screenshot reaches the model once", () => {
+  const shot = (n: string) => ({ type: "function_call_output", callId: `toolu_${n}`, output: `shot ${n}`, images: [{ mediaType: "image/jpeg", data: `IMG${n}` }] });
+  const r1 = { input: [shot("1")], conversation: { messages: [{ role: "user", content: "look" }] } } as unknown as ProviderRequest;
+  const resp1 = mapResponse({ id: "m1", model: "claude-sonnet-5", stop_reason: "tool_use", usage: { input_tokens: 1, output_tokens: 1 },
+    content: [{ type: "tool_use", id: "toolu_2", name: "browser", input: {} }] }, r1);
+  const r2 = { input: [shot("2")], conversation: { messages: resp1.conversationState!.messages } } as unknown as ProviderRequest;
+  const wire = JSON.stringify((build(r2) as { messages: unknown }).messages);
+  assert.equal((wire.match(/IMG1/g) ?? []).length, 0, "round 1's image isn't sent again");
+  assert.equal((wire.match(/IMG2/g) ?? []).length, 1);
+});
+
+test("only OpenAI Responses keeps responses to resume from (a browser handoff needs it)", () => {
+  assert.equal((provider as { capabilities?: { chainsResponses?: boolean } }).capabilities?.chainsResponses, undefined);
+});

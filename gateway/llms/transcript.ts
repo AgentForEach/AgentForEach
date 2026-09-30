@@ -17,7 +17,7 @@ import type {
 
 /** Earlier rounds' transcript plus what this request adds, oldest first. */
 export function transcriptThroughInput(request: ProviderRequest): ConversationMessage[] {
-  const messages: ConversationMessage[] = withoutToolImages(request.conversation?.messages ?? []);
+  const messages: ConversationMessage[] = [...(request.conversation?.messages ?? [])];
   const input = request.input;
   if (typeof input === "string") {
     messages.push({ role: "user", content: input });
@@ -30,6 +30,10 @@ export function transcriptThroughInput(request: ProviderRequest): ConversationMe
         ...(item.images?.length ? { images: item.images } : {}),
       }));
       messages.push({ role: "user", content: results });
+      // The saved transcript is what the next round sends as history. This round's images
+      // reached the model in this request's own input, so history keeps a note, not the
+      // image: each screenshot is sent once.
+      return withoutToolImages(messages);
     } else {
       // The runner sends history oldest first, then the new message.
       messages.push(...(input as ConversationMessage[]));

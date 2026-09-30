@@ -120,7 +120,9 @@ import {
   type ResolvedSkills,
   SkillToolHandler,
   getSkillToolDefinitions,
+  handoffOutcome,
   isBrowserEnabled,
+  isBrowserHandoffCall,
   resolveUserSkills,
 } from "../skills/index.js";
 import type { UserSkillStore, SkillBlobStore, SandboxBackend } from "../skills/index.js";
@@ -141,6 +143,7 @@ import {
 import {
   type HitlStore,
   type InputRequest,
+  type DirectInputForm,
   type SerializableSendRequest,
   type HitlRunState,
   getHitlPolicy,
@@ -497,6 +500,9 @@ export async function runAgentTurn(
   // Metered actions besides tokens (browser actions), billed by credits.unitCoins
   // on every exit that settles, like usageSoFar.
   const units: Record<string, number> = {};
+  // Set while a browser handoff this run started hasn't reached the user: if the run stops
+  // first (aborted, failed), its live view is closed instead of streaming to nobody.
+  let stopUnfinishedHandoff: (() => Promise<void>) | undefined;
   let leasedSessionId: string | undefined;
   // The session instance this run leased; /new replaces it.
   let leasedInstanceId: string | undefined;
@@ -684,7 +690,7 @@ export async function runAgentTurn(
         if (
           runState?.status === "pending" &&
           runState.sessionId === session.sessionId &&
-          runState.pendingToolCall.name === REQUEST_USER_INPUT_TOOL_NAME &&
+          isDirectInputCall(runState.pendingToolCall) &&
           runState.conversationState.previousResponseId
         ) {
           directHitlRunState = runState;
@@ -703,35 +709,44 @@ export async function runAgentTurn(
       }
     }
 
+    // A form the user answered with a new message instead: cancel it, so a late
+    // answer can't resume a response the conversation has moved past. Pausing
+    // on the form already cleared the session's chain, so look whether or not
+    // there is one (a single-partition query).
     let forceLocalHistoryForStaleHitl = false;
     const hitlStore = deps.hitlStore;
-    if (
-      !isContinuation &&
-      !directHitlRunState &&
-      session.conversationState?.previousResponseId &&
-      hitlStore
-    ) {
+    if (!isContinuation && !directHitlRunState && hitlStore) {
       try {
         const pendingHitl = await hitlStore.listPending(request.userId);
         const pendingInputRequests = pendingHitl.filter(
           (state) =>
             state.sessionId === session.sessionId &&
-            state.pendingToolCall.name === REQUEST_USER_INPUT_TOOL_NAME,
+            isDirectInputCall(state.pendingToolCall),
         );
 
         if (pendingInputRequests.length > 0) {
-          forceLocalHistoryForStaleHitl = true;
           console.warn(
-            `[runner] stale_hitl_chain_break session=${redactId(session.sessionId)} ` +
+            `[runner] stale_hitl_cancelled session=${redactId(session.sessionId)} ` +
               `pending=${pendingInputRequests.map((state) => state.requestId).join(",")}`,
           );
 
-          await deps.sessionStore.appendMessages(
-            request.userId,
-            session.sessionId,
-            [],
-            null,
-          );
+          if (session.conversationState?.previousResponseId) {
+            forceLocalHistoryForStaleHitl = true;
+            await deps.sessionStore.appendMessages(
+              request.userId,
+              session.sessionId,
+              [],
+              null,
+            );
+          }
+
+          // A browser handoff the user never finished: close its live view now, not at the deadline.
+          if (pendingInputRequests.some((state) => isBrowserHandoffCall(state.pendingToolCall)) && deps.sandboxClient) {
+            const sandbox = deps.sandboxClient;
+            void sandbox
+              .exec({ command: "afe-browser handoff_stop", timeout: 30 }, sandbox.resolveIdentifier(request.userId, session.sessionId))
+              .catch(() => {});
+          }
 
           await Promise.allSettled(
             pendingInputRequests.map((state) =>
@@ -1241,7 +1256,18 @@ export async function runAgentTurn(
           session?.sessionId,
           deps.exportStore,
           resolvedSkills?.credentialBindings ?? {},
-          { scheduled: isScheduledRun(request, sessionType), units },
+          {
+            scheduled: isScheduledRun(request, sessionType),
+            units,
+            // The browser can be handed to the user where forms render and the run can pause on one,
+            // on a provider whose response the user's Done can resume (a chained response).
+            handoffSurface:
+              request.hitlWidgets !== false &&
+              Boolean(deps.hitlStore) &&
+              !isScheduledRun(request, sessionType) &&
+              activeProvider.capabilities?.chainsResponses === true &&
+              chainResponsesEnabled(),
+          },
         )
       : undefined;
 
@@ -1309,16 +1335,22 @@ export async function runAgentTurn(
           {
             type: "function_call_output" as const,
             callId: directHitlRunState.pendingToolCall.callId,
-            output: request.hitlInputResponse?.cancelled
-              ? JSON.stringify({
-                  ok: false,
-                  cancelled: true,
-                  message: "User cancelled this input request.",
-                })
-              : JSON.stringify({
-                  ok: true,
-                  userInput: request.hitlInputResponse?.data ?? {},
-                }),
+            output: isBrowserHandoffCall(directHitlRunState.pendingToolCall)
+              ? handoffOutcome(
+                  request.hitlInputResponse,
+                  // The live view closes this long after the pause began.
+                  directHitlRunState.createdAt + (directHitlRunState.timeoutSeconds ?? 600) * 1000,
+                )
+              : request.hitlInputResponse?.cancelled
+                ? JSON.stringify({
+                    ok: false,
+                    cancelled: true,
+                    message: "User cancelled this input request.",
+                  })
+                : JSON.stringify({
+                    ok: true,
+                    userInput: request.hitlInputResponse?.data ?? {},
+                  }),
           },
           // Other calls from the same response, already run before the pause.
           ...(directHitlRunState.completedToolResults ?? []).map((r) => ({
@@ -1889,6 +1921,74 @@ export async function runAgentTurn(
           // Images a tool returned for the model (browser screenshots); only skill tools return them.
           let images: ToolResultImage[] | undefined;
 
+          // Pause this turn on a form the client renders. The answer arrives as a later
+          // request's hitlInputResponse and resumes this exact response as this call's result
+          // (see directHitlRunState). request_user_input and the browser's handoff use it.
+          const raiseDirectInput = async (toolName: string, form: DirectInputForm): Promise<string> => {
+            const hitlRequestId = randomUUID();
+            const inputPayload = {
+              state: "input_request" as const,
+              requestId: hitlRequestId,
+              runId,
+              sessionId: session.sessionId,
+              toolName,
+              toolCallId: call.callId,
+              ...form,
+            };
+            // Buffer the form push — flushed AFTER the final assistant
+            // text has streamed, so the client renders text first, form
+            // last. (Previously emitted immediately, which raced with the
+            // model's closing message and made the form appear mid-stream.)
+            pendingInputRequestPayload = {
+              callId: call.callId,
+              ws: inputPayload as unknown as Record<string, unknown>,
+              stream: {
+                type: "input_request",
+                requestId: hitlRequestId,
+                toolName,
+                intent: form.intent,
+                proposedArgs: form.proposedArgs,
+                formType: form.formType as InputRequest["formType"],
+                formName: form.formName,
+                options: form.options,
+                // Absent for most forms, as before; the event type declares it for the form type that has one.
+                schema: form.schema as Record<string, unknown>,
+                uiHints: form.uiHints,
+                timeoutSeconds: form.timeoutSeconds,
+              },
+            };
+            if (deps.hitlStore) {
+              const runState: HitlRunState = {
+                requestId: hitlRequestId,
+                orchestrationId: `direct-${hitlRequestId}`,
+                originalRequest: serializeSendRequest(request),
+                runId,
+                sessionId: session.sessionId,
+                toolRound: round,
+                pendingToolCall: {
+                  callId: call.callId,
+                  name: toolName,
+                  arguments: args,
+                },
+                completedToolResults: [],
+                independentToolCalls: [],
+                conversationState: {
+                  previousResponseId,
+                  containerId,
+                },
+                providerId: effectiveProviderId,
+                model: responseModel || model,
+                usage: usage as Record<string, unknown> | undefined,
+                createdAt: Date.now(),
+                status: "pending",
+                timeoutSeconds: form.timeoutSeconds,
+              };
+              await deps.hitlStore.create(runState);
+            }
+            hitlInputSentThisTurn = true;
+            return hitlRequestId;
+          };
+
           // Policy is enforced here, not just on the list the model saw.
           const notOffered = rejectUnofferedToolCall(call.name, offeredToolNames);
           if (notOffered) {
@@ -1971,8 +2071,40 @@ export async function runAgentTurn(
             );
           } else if (isWebTool(call.name) && webHandler) {
             result = await webHandler.handle(call.name, args, request.userId, session.sessionId);
+          } else if (
+            skillHandler &&
+            isBrowserHandoffCall({ name: call.name, arguments: args }) &&
+            (hitlInputSentThisTurn || functionCalls.length > 1)
+          ) {
+            // Checked before anything starts: another call alongside could end the live view
+            // the user is about to get, and a second form this turn can't be shown.
+            result = JSON.stringify({
+              error: true,
+              message: hitlInputSentThisTurn
+                ? "Only one request for the user's input is allowed per turn. Wait for their answer first."
+                : "Hand the browser over on its own: call handoff alone, with no other tool calls in the same response.",
+            });
           } else if (skillHandler && skillHandler.isSkillTool(call.name)) {
-            ({ output: result, images } = await skillHandler.handleWithImages(call.name, args, request.userId));
+            let inputRequest: DirectInputForm | undefined;
+            ({ output: result, images, inputRequest } = await skillHandler.handleWithImages(call.name, args, request.userId));
+            if (inputRequest) {
+              if (hitlInputSentThisTurn) {
+                result = JSON.stringify({
+                  error: true,
+                  message: "Only one request for the user's input is allowed per turn. Wait for their answer first.",
+                });
+                if (isBrowserHandoffCall({ name: call.name, arguments: args })) await skillHandler.stopBrowserHandoff();
+              } else {
+                const requestId = await raiseDirectInput(call.name, inputRequest);
+                if (isBrowserHandoffCall({ name: call.name, arguments: args })) {
+                  const handler = skillHandler;
+                  stopUnfinishedHandoff = async () => {
+                    await handler.stopBrowserHandoff();
+                    await deps.hitlStore?.updateStatus(requestId, request.userId, "cancelled").catch(() => {});
+                  };
+                }
+              }
+            }
           } else if (isDigestTool(call.name) && digestHandler) {
             result = await digestHandler.handle(call.name, args, request.userId);
           } else if (isKnowledgeTool(call.name) && deps.knowledgeLayer) {
@@ -2035,16 +2167,8 @@ export async function runAgentTurn(
                 message: "Only one request_user_input call is allowed per turn. Wait for the user's response before requesting more input.",
               });
             } else {
-            const hitlRequestId = randomUUID();
             const formType = (args.type as string) ?? "text_input";
-
-            const inputPayload = {
-              state: "input_request" as const,
-              requestId: hitlRequestId,
-              runId,
-              sessionId: session.sessionId,
-              toolName: REQUEST_USER_INPUT_TOOL_NAME,
-              toolCallId: call.callId,
+            await raiseDirectInput(REQUEST_USER_INPUT_TOOL_NAME, {
               intent: (args.subtitle as string) ?? "",
               proposedArgs: (args.proposedData as Record<string, unknown>) ?? {},
               formType,
@@ -2053,60 +2177,7 @@ export async function runAgentTurn(
               schema: (args.schema as Record<string, unknown>) ?? undefined,
               uiHints: (args.uiHints as Record<string, unknown>) ?? undefined,
               timeoutSeconds: loadHitlConfig().defaultTimeoutSeconds,
-            };
-
-            // Buffer the form push — flushed AFTER the final assistant
-            // text has streamed, so the client renders text first, form
-            // last. (Previously emitted immediately, which raced with the
-            // model's closing message and made the form appear mid-stream.)
-            pendingInputRequestPayload = {
-              callId: call.callId,
-              ws: inputPayload as unknown as Record<string, unknown>,
-              stream: {
-                type: "input_request",
-                requestId: hitlRequestId,
-                toolName: REQUEST_USER_INPUT_TOOL_NAME,
-                intent: inputPayload.intent,
-                proposedArgs: inputPayload.proposedArgs as Record<string, unknown>,
-                formType: inputPayload.formType as InputRequest["formType"],
-                formName: inputPayload.formName,
-                options: inputPayload.options,
-                schema: inputPayload.schema,
-                uiHints: inputPayload.uiHints as Record<string, unknown> | undefined,
-                timeoutSeconds: inputPayload.timeoutSeconds,
-              },
-            };
-
-            if (deps.hitlStore) {
-              const runState: HitlRunState = {
-                requestId: hitlRequestId,
-                orchestrationId: `direct-${hitlRequestId}`,
-                originalRequest: serializeSendRequest(request),
-                runId,
-                sessionId: session.sessionId,
-                toolRound: round,
-                pendingToolCall: {
-                  callId: call.callId,
-                  name: REQUEST_USER_INPUT_TOOL_NAME,
-                  arguments: args,
-                },
-                completedToolResults: [],
-                independentToolCalls: [],
-                conversationState: {
-                  previousResponseId,
-                  containerId,
-                },
-                providerId: effectiveProviderId,
-                model: responseModel || model,
-                usage: usage as Record<string, unknown> | undefined,
-                createdAt: Date.now(),
-                status: "pending",
-                timeoutSeconds: inputPayload.timeoutSeconds,
-              };
-              await deps.hitlStore.create(runState);
-            }
-
-            hitlInputSentThisTurn = true;
+            });
             result = JSON.stringify({
               sent: true,
               formType,
@@ -2349,7 +2420,9 @@ export async function runAgentTurn(
             );
         }
         if (!responseText.trim()) {
-          responseText = "I need one detail before I can continue.";
+          responseText = isBrowserHandoffForm(getPendingInputRequestPayload())
+            ? "Your turn: take over the browser below, then press Done."
+            : "I need one detail before I can continue.";
         }
         console.log(
           `[runner] input_request_terminal run=${runId} round=${round} requestId=${terminalInputRequestId} duration=${Date.now() - startTime}ms`,
@@ -2429,6 +2502,7 @@ export async function runAgentTurn(
     // receives an explicit "aborted" realtime event and may have kept any
     // partial text locally.
     if (request.abortSignal?.aborted) {
+      await stopUnfinishedHandoff?.().catch(() => {});
       const abortedResponse: SendResponse = {
         runId,
         text: responseText,
@@ -2700,6 +2774,7 @@ export async function runAgentTurn(
     //      otherwise the answer races the settle and gets a false
     //      "out of credits".
     const inputRequestPayloadToFlush = getPendingInputRequestPayload();
+    stopUnfinishedHandoff = undefined; // the form (and its live view) goes to the user below
     if (inputRequestPayloadToFlush) {
       const buffered = inputRequestPayloadToFlush;
       pendingInputRequestPayload = null;
@@ -2820,6 +2895,8 @@ export async function runAgentTurn(
       errorResponse.text = err.message;
     }
 
+    await stopUnfinishedHandoff?.().catch(() => {});
+
     const failure =
       err instanceof SessionBusyError
         ? { code: "session_busy", message: err.message, retryable: true }
@@ -2938,6 +3015,16 @@ export async function runAgentTurn(
  * the UI acts on: offering "try again" for a failure that will fail the same
  * way every time is worse than saying so plainly.
  */
+/** A paused call the user answers through a form, resuming this exact response (request_user_input, a browser handoff). */
+function isDirectInputCall(call: { name: string; arguments?: Record<string, unknown> }): boolean {
+  return call.name === REQUEST_USER_INPUT_TOOL_NAME || isBrowserHandoffCall(call);
+}
+
+/** Whether a buffered form is a browser handoff's. */
+function isBrowserHandoffForm(payload: { ws: Record<string, unknown> } | null): boolean {
+  return payload?.ws.formType === "browser_handoff";
+}
+
 /**
  * Whether nobody is waiting on this run: a cron session, or a job or
  * heartbeat delivered into the user's session. A resumed HITL run is also

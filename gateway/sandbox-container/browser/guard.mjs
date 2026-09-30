@@ -180,3 +180,97 @@ export function explainError(message) {
   }
   return first;
 }
+
+// ============================================================================
+// Handoff: input from the user's live view
+// ============================================================================
+
+/** Named keys the live view may press (Playwright names, as KeyboardEvent.key gives them). */
+const NAMED_KEYS = new Set([
+  "Enter", "Tab", "Backspace", "Delete", "Escape", "Space", "Home", "End", "PageUp", "PageDown",
+  "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Shift", "Control", "Alt", "Meta", "Insert",
+  "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
+]);
+const MOUSE_TYPES = new Set(["move", "down", "up", "wheel"]);
+const BUTTONS = new Set(["left", "right", "middle"]);
+const finite = (n, lo, hi) => typeof n === "number" && Number.isFinite(n) && n >= lo && n <= hi;
+
+/**
+ * A Web PubSub group message from the live view, checked and narrowed, or
+ * null. Only the user the handoff was issued to may drive the browser:
+ * `fromUserId` is set by Web PubSub from the sender's token, not by the sender.
+ */
+export function parseViewerInput(message, viewerUserId) {
+  if (!message || message.type !== "message" || message.from !== "group") return null;
+  if (!viewerUserId || message.fromUserId !== viewerUserId) return null;
+  const d = message.data;
+  if (!d || typeof d !== "object") return null;
+  switch (d.kind) {
+    case "hello":
+    case "ping":
+    case "done":
+    case "cancel":
+      return { kind: d.kind };
+    case "dialog":
+      // The user's answer to a confirm or prompt the page showed.
+      if (typeof d.accept !== "boolean") return null;
+      return { kind: "dialog", accept: d.accept, text: typeof d.text === "string" ? d.text.slice(0, 500) : "" };
+    case "mouse": {
+      if (!MOUSE_TYPES.has(d.type) || !finite(d.x, 0, 10000) || !finite(d.y, 0, 10000)) return null;
+      const out = { kind: "mouse", type: d.type, x: d.x, y: d.y, button: BUTTONS.has(d.button) ? d.button : "left" };
+      if (d.type === "wheel") {
+        out.deltaX = finite(d.deltaX, -5000, 5000) ? d.deltaX : 0;
+        out.deltaY = finite(d.deltaY, -5000, 5000) ? d.deltaY : 0;
+      }
+      return out;
+    }
+    case "key": {
+      if (d.type !== "down" && d.type !== "up") return null;
+      const key = typeof d.key === "string" ? d.key : "";
+      // One printable character, or a named key: never a chord string the page didn't send.
+      if (!(NAMED_KEYS.has(key) || [...key].length === 1)) return null;
+      return { kind: "key", type: d.type, key: key === " " ? "Space" : key };
+    }
+    case "text": {
+      if (typeof d.text !== "string" || !d.text || d.text.length > 2000) return null;
+      return { kind: "text", text: d.text };
+    }
+    default:
+      return null;
+  }
+}
+
+// ============================================================================
+// Card numbers
+// ============================================================================
+
+/** The Luhn check every payment card number passes. */
+export function luhn(digits) {
+  let sum = 0;
+  let double = false;
+  for (let i = digits.length - 1; i >= 0; i--) {
+    let n = digits.charCodeAt(i) - 48;
+    if (n < 0 || n > 9) return false;
+    if (double) {
+      n *= 2;
+      if (n > 9) n -= 9;
+    }
+    sum += n;
+    double = !double;
+  }
+  return sum % 10 === 0;
+}
+
+/** Whether a value is a payment card number: 13–19 digits (spaces or dashes allowed) that pass Luhn. */
+export function isCardNumber(value) {
+  const digits = String(value ?? "").replace(/[\s-]/g, "");
+  return /^\d{13,19}$/.test(digits) && luhn(digits);
+}
+
+/**
+ * Hide anything in text that is a card number, so page text, labels and
+ * field values the model reads never carry one (the user may have typed it).
+ */
+export function maskCardNumbers(text) {
+  return String(text).replace(/\d(?:[ -]?\d){12,18}/g, (run) => (isCardNumber(run) ? "••••" : run));
+}

@@ -3,7 +3,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { blockedAddress, checkUrl, checkUrlResolved, explainError, hostMatches, isTransientNetError, looksBlocked, truncate } from "./guard.mjs";
+import { blockedAddress, checkUrl, checkUrlResolved, explainError, hostMatches, isCardNumber, isTransientNetError, looksBlocked, maskCardNumbers, parseViewerInput, truncate } from "./guard.mjs";
 
 test("checkUrl allows public http and https URLs", () => {
   for (const url of ["https://example.com/a?b=c", "http://en.wikipedia.org/wiki/Azure", "https://93.184.215.14/"]) {
@@ -129,4 +129,49 @@ test("explainError keeps the reason Playwright gives", () => {
   assert.match(explainError("locator.fill: Malformed value\n"), /HH:MM/);
   assert.match(explainError("locator.click: Timeout 1ms exceeded."), /Take a snapshot/);
   assert.equal(explainError("page.goto: net::ERR_NAME_NOT_RESOLVED at https://x/"), "net::ERR_NAME_NOT_RESOLVED at https://x/");
+});
+
+test("parseViewerInput accepts only the handoff's user", () => {
+  const msg = (fromUserId, data) => ({ type: "message", from: "group", group: "bh-x", fromUserId, dataType: "json", data });
+  assert.deepEqual(parseViewerInput(msg("alice", { kind: "hello" }), "alice"), { kind: "hello" });
+  assert.equal(parseViewerInput(msg("mallory", { kind: "text", text: "hi" }), "alice"), null, "another user");
+  assert.equal(parseViewerInput(msg(undefined, { kind: "text", text: "hi" }), "alice"), null, "anonymous");
+  assert.equal(parseViewerInput({ type: "message", from: "server", fromUserId: "alice", data: { kind: "done" } }, "alice"), null);
+  assert.equal(parseViewerInput(msg("alice", { kind: "hello" }), ""), null, "no viewer configured");
+});
+
+test("parseViewerInput narrows mouse, key and text input", () => {
+  const msg = (data) => ({ type: "message", from: "group", fromUserId: "alice", data });
+  assert.deepEqual(parseViewerInput(msg({ kind: "mouse", type: "down", x: 10, y: 20, button: "right" }), "alice"),
+    { kind: "mouse", type: "down", x: 10, y: 20, button: "right" });
+  assert.deepEqual(parseViewerInput(msg({ kind: "mouse", type: "wheel", x: 1, y: 1, deltaY: 120, extra: "x" }), "alice"),
+    { kind: "mouse", type: "wheel", x: 1, y: 1, button: "left", deltaX: 0, deltaY: 120 });
+  assert.equal(parseViewerInput(msg({ kind: "mouse", type: "down", x: -5, y: 1 }), "alice"), null);
+  assert.equal(parseViewerInput(msg({ kind: "mouse", type: "teleport", x: 1, y: 1 }), "alice"), null);
+  assert.deepEqual(parseViewerInput(msg({ kind: "key", type: "down", key: "Enter" }), "alice"), { kind: "key", type: "down", key: "Enter" });
+  assert.deepEqual(parseViewerInput(msg({ kind: "key", type: "down", key: "é" }), "alice"), { kind: "key", type: "down", key: "é" });
+  assert.deepEqual(parseViewerInput(msg({ kind: "key", type: "up", key: " " }), "alice"), { kind: "key", type: "up", key: "Space" });
+  assert.equal(parseViewerInput(msg({ kind: "key", type: "down", key: "Control+Shift+I" }), "alice"), null, "no chords");
+  assert.equal(parseViewerInput(msg({ kind: "text", text: "x".repeat(2001) }), "alice"), null);
+  assert.equal(parseViewerInput(msg({ kind: "eval", js: "1" }), "alice"), null);
+});
+
+test("parseViewerInput takes the viewer's heartbeat and dialog answers", () => {
+  const msg = (data) => ({ type: "message", from: "group", fromUserId: "alice", data });
+  assert.deepEqual(parseViewerInput(msg({ kind: "ping" }), "alice"), { kind: "ping" });
+  assert.deepEqual(parseViewerInput(msg({ kind: "dialog", accept: true, text: "x".repeat(600) }), "alice"),
+    { kind: "dialog", accept: true, text: "x".repeat(500) });
+  assert.deepEqual(parseViewerInput(msg({ kind: "dialog", accept: false }), "alice"), { kind: "dialog", accept: false, text: "" });
+  assert.equal(parseViewerInput(msg({ kind: "dialog", accept: "yes" }), "alice"), null);
+});
+
+test("card numbers are recognised by Luhn and hidden from text", () => {
+  assert.equal(isCardNumber("4111 1111 1111 1111"), true);
+  assert.equal(isCardNumber("4242-4242-4242-4242"), true);
+  assert.equal(isCardNumber("4111111111111112"), false, "fails Luhn");
+  assert.equal(isCardNumber("12345"), false);
+  assert.equal(maskCardNumbers('textbox "Card" value="4111 1111 1111 1111"'), 'textbox "Card" value="••••"');
+  assert.equal(maskCardNumbers("Order 1234567890123 and card 5555555555554444."), "Order 1234567890123 and card ••••.",
+    "an order number that fails Luhn stays");
+  assert.equal(maskCardNumbers("Call +91 98765 43210"), "Call +91 98765 43210");
 });

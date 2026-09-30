@@ -8,6 +8,10 @@
 export {
   BrowserToolHandler,
   BROWSER_ACTION_UNIT,
+  BROWSER_HANDOFF_UNIT,
+  handoffDriverUserId,
+  handoffOutcome,
+  isBrowserHandoffCall,
   BROWSER_TOOL_NAME,
   checkBrowserArgs,
   getBrowserToolDefinitions,
@@ -16,5 +20,6 @@ export {
   parseDriverOutput,
 } from "./handler.js";
 export { BROWSER_ACTIONS } from "./types.js";
-export type { BrowserGuards, BrowserLimiter } from "./handler.js";
+export type { BrowserGuards, BrowserLimiter, HandoffRelay } from "./handler.js";
+export { viewerBaseUrl, viewerHeaders, viewerHtml, viewerLink } from "./viewer.js";
 export type { BrowserAction, BrowserConfig, BrowserDriverResult, BrowserJsonConfig } from "./types.js";

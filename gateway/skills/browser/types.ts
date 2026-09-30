@@ -34,6 +34,26 @@ export interface BrowserJsonConfig {
    */
   showScreenshots?: boolean;
   /**
+   * Handing the browser to the user for what the agent must not or can't do:
+   * a login, a CAPTCHA, a second factor, a payment. The user takes over in a
+   * live view relayed through Web PubSub. Needs real-time and a client that
+   * renders forms (web chat).
+   */
+  handoff?: {
+    /** Default: true (it still needs Web PubSub and the HITL store). */
+    enabled?: boolean;
+    /** How long the user has to finish, in minutes. Default: 10 (at most 30). */
+    maxMinutes?: number;
+    /** Where the gateway's viewer page is served; default: this Function App (WEBSITE_HOSTNAME). */
+    viewerBaseUrl?: string;
+    /**
+     * The Web PubSub hub for live views. Default: the chat hub's name + "_browser" (hub names
+     * allow letters, digits and underscores). It must have no event handlers, so a relay token
+     * can't send events to the gateway.
+     */
+    hub?: string;
+  };
+  /**
    * The only user ids offered the browser, e.g. a pilot group or a paid plan.
    * Omit it to offer the browser to every user.
    */
@@ -51,6 +71,7 @@ export interface BrowserConfig {
   maxActionsPerTurn: number;
   maxActionsPerScheduledRun: number;
   showScreenshots: boolean;
+  handoff: { enabled: boolean; maxMinutes: number; hub: string; viewerBaseUrl?: string };
   /** Allowed user ids; undefined means every user. */
   users?: string[];
 }
@@ -73,8 +94,13 @@ export const BROWSER_ACTIONS = [
   "tab_focus",
   "tab_close",
   "screenshot",
+  "handoff",
   "reset",
 ] as const;
+
+/** What the agent hands the browser over for. */
+export const HANDOFF_KINDS = ["login", "captcha", "2fa", "payment", "other"] as const;
+export type HandoffKind = (typeof HANDOFF_KINDS)[number];
 
 export type BrowserAction = (typeof BROWSER_ACTIONS)[number];
 

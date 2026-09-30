@@ -23,9 +23,11 @@ import {
   hostMatches,
   isTransientNetError,
   looksBlocked,
+  maskCardNumbers,
+  parseViewerInput,
   truncate,
 } from "./guard.mjs";
-import { labelsInPage, snapshotInPage, textInPage } from "./snapshot.mjs";
+import { cardFieldFilledInPage, labelsInPage, snapshotInPage, textInPage } from "./snapshot.mjs";
 
 const require = createRequire(import.meta.url);
 const { chromium } = require("playwright-core");
@@ -190,11 +192,24 @@ let downloadsInFlight = 0;
 let acceptDialogs = false;
 /** HTTP status of each tab's last main-frame navigation. */
 const statusOf = new WeakMap();
+/** The live view while the user has the browser (see Handoff below), and how the last one ended. */
+let handoff;
+let lastHandoff;
+/** The site a payment handoff was for: no screenshots of it reach the model while the page is there. */
+let paymentOrigin;
 
 function track(page) {
   if (tabIds.has(page)) return;
   tabIds.set(page, `t${nextTab++}`);
   openedDuringAction = page;
+  // The user opened a tab in the live view: show them that tab.
+  if (handoff) {
+    current = page;
+    streamPage(page).catch(() => {});
+  }
+  page.on("framenavigated", (frame) => {
+    if (handoff?.page === page && frame === page.mainFrame()) sendStatus();
+  });
   page.on("response", (response) => {
     try {
       if (response.request().isNavigationRequest() && response.frame() === page.mainFrame()) {
@@ -220,6 +235,7 @@ function track(page) {
   });
   page.on("dialog", async (dialog) => {
     const type = dialog.type();
+    if (handoff) return askViewer(dialog);
     // Alerts would freeze the page. Confirms and prompts are declined unless the agent said to accept them.
     const accept = acceptDialogs || type === "alert" || type === "beforeunload";
     pendingNotes.push(
@@ -227,8 +243,15 @@ function track(page) {
     );
     await (accept ? dialog.accept() : dialog.dismiss()).catch(() => {});
   });
+  // A file chooser can't be shown in the live view: tell the user, not the page.
+  page.on("filechooser", () => {
+    if (handoff) {
+      relaySend({ kind: "notice", text: "This page asked for a file. Uploading from the live view isn't possible yet: tell the agent, it can upload a file you've shared in the chat." });
+    }
+  });
   page.on("close", () => {
     if (current === page) current = context.pages().at(-1);
+    if (handoff?.page === page && current) streamPage(current).catch(() => {});
   });
 }
 
@@ -349,7 +372,8 @@ async function describe(p, { query, maxChars } = {}) {
   }
   const blocked = looksBlocked({ status: statusOf.get(p), title: snap.title, text: snap.lead });
   return {
-    snapshot: truncate(lines.join("\n"), maxChars, "use snapshot with query to find what you need").text,
+    // A card number the user typed (in any field or editable element) never reaches the model.
+    snapshot: truncate(maskCardNumbers(lines.join("\n")), maxChars, "use snapshot with query to find what you need").text,
     ...(blocked ? { blocked: true } : {}),
   };
 }
@@ -475,7 +499,7 @@ async function run(action, args, t) {
         throw new ActionError(`Could not read the text: ${explainError(err.message)}`);
       }
       const offset = Math.max(0, Math.floor(Number(args.offset) || 0));
-      const chunk = full.slice(offset, offset + t.maxChars);
+      const chunk = maskCardNumbers(full.slice(offset, offset + t.maxChars));
       const more = full.length - offset - chunk.length;
       const text = more > 0 ? `${chunk}\n… [${more} more characters: use text with offset ${offset + chunk.length}]` : chunk;
       return { ...(await state(p, { snapshot: false })), text, length: full.length };
@@ -518,6 +542,20 @@ async function run(action, args, t) {
         await p.evaluate(snapshotInPage, { maxList: 0 }).catch(() => {});
         await p.evaluate(labelsInPage, true).catch(() => {});
       }
+      // Card details the user typed must never reach the model or the sandbox's disk: no screenshot at all
+      // while a card field holds a value, or of the site a payment handoff was for.
+      let origin = "";
+      try {
+        origin = new URL(p.url()).origin;
+      } catch {
+        // about:blank
+      }
+      if (await cardFieldFilled(p)) {
+        return { ...(await state(p, { snapshot: false })), withheld: "A payment card field on this page holds a value, so no screenshot was taken. Work from the snapshot." };
+      }
+      if (paymentOrigin && origin === paymentOrigin) {
+        return { ...(await state(p, { snapshot: false })), withheld: "This is the site the user paid on, so no screenshot was taken. Work from the snapshot." };
+      }
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
       const rel = `${OUTPUT}/screenshots/${stamp}.png`;
       // For the model: the window only (a full page can be too tall to read once scaled), as a smaller JPEG.
@@ -532,7 +570,18 @@ async function run(action, args, t) {
       pruneScreenshots();
       return { ...(await state(p, { snapshot: false })), screenshot: rel, ...(view ? { view } : {}) };
     }
+    case "handoff_start":
+      return startHandoff(args);
+    case "handoff_stop": {
+      const had = Boolean(handoff);
+      await stopHandoff("stopped");
+      return { handoff: had ? "stopped" : "none", last: lastHandoff };
+    }
+    case "handoff_status":
+      return { handoff: handoff ? "active" : "none", ...(handoff ? { expiresAt: handoff.expiresAt } : {}), last: lastHandoff };
     case "reset":
+      paymentOrigin = undefined;
+      await stopHandoff("reset");
       // Delete the profile before answering, and take no more calls: the next one starts a fresh driver.
       resetting = true;
       server.close();
@@ -561,6 +610,275 @@ function withDeadline(work, ms) {
 }
 
 // ============================================================================
+// Handoff: the user drives the browser through a live view
+// ============================================================================
+
+/*
+ * For a login, a CAPTCHA, a second factor or a payment, the agent hands the
+ * browser to the user. The driver connects OUT to Web PubSub (the sandbox
+ * takes no inbound connections), joins the handoff's group, streams the page
+ * as JPEG frames (CDP screencast, sent only when the screen changes) and
+ * applies the user's mouse and keyboard input. Only messages Web PubSub
+ * stamps with the user's own id are accepted.
+ */
+async function cardFieldFilled(p) {
+  for (const frame of p.frames()) {
+    try {
+      if (await frame.evaluate(cardFieldFilledInPage)) return true;
+    } catch {
+      // a frame that went away, or one we can't read
+    }
+  }
+  return false;
+}
+
+/** Input waiting to be applied, oldest first; moves coalesce so a burst can't delay a click. */
+const pendingInput = [];
+let draining = false;
+const MAX_PENDING_INPUT = 200;
+/** Frames are only sent while a viewer has spoken recently, and no faster than this. */
+const VIEWER_QUIET_MS = 30_000;
+const FRAME_INTERVAL_MS = 150;
+
+function relaySend(data, h = handoff) {
+  if (h?.ws.readyState === 1) {
+    h.ws.send(JSON.stringify({ type: "sendToGroup", group: h.group, dataType: "json", noEcho: true, data }));
+  }
+}
+
+function sendStatus() {
+  const h = handoff;
+  if (!h?.page) return;
+  h.page
+    .title()
+    .catch(() => "")
+    .then((title) =>
+      relaySend({
+        kind: "status",
+        url: h.page.url().slice(0, 300),
+        title: String(title).slice(0, 200),
+        tab: tabIds.get(h.page),
+        tabs: context.pages().length,
+        expiresAt: h.expiresAt,
+        reason: h.reason,
+      }, h),
+    );
+}
+
+/** A frame now, for a viewer that just joined (the screencast only sends when the screen changes). */
+async function sendFullFrame() {
+  const h = handoff;
+  if (!h?.cdp) return;
+  const shot = await h.cdp.send("Page.captureScreenshot", { format: "jpeg", quality: 60 }).catch(() => undefined);
+  if (shot) relaySend({ kind: "frame", seq: h.seq++, w: VIEW_W, h: VIEW_H, jpeg: shot.data }, h);
+}
+
+async function streamPage(p) {
+  const h = handoff;
+  if (!h || h.page === p) return;
+  if (h.cdp) {
+    await h.cdp.send("Page.stopScreencast").catch(() => {});
+    await h.cdp.detach().catch(() => {});
+  }
+  h.page = p;
+  const cdp = await context.newCDPSession(p);
+  h.cdp = cdp;
+  cdp.on("Page.screencastFrame", ({ data, metadata, sessionId }) => {
+    // Acking late paces the screencast: at most one frame per FRAME_INTERVAL_MS, however busy the page.
+    setTimeout(() => cdp.send("Page.screencastFrameAck", { sessionId }).catch(() => {}), FRAME_INTERVAL_MS);
+    if (handoff !== h || h.cdp !== cdp) return;
+    // Nobody is watching (the tab was closed): send nothing until a viewer says hello again.
+    if (Date.now() - h.viewerSeen > VIEWER_QUIET_MS) return;
+    // A viewer on a slow link falls behind: drop this frame, the next one replaces it.
+    if (h.ws.bufferedAmount > 2_000_000) return;
+    relaySend({ kind: "frame", seq: h.seq++, w: Math.round(metadata.deviceWidth), h: Math.round(metadata.deviceHeight), jpeg: data }, h);
+  });
+  await cdp.send("Page.startScreencast", { format: "jpeg", quality: 55, maxWidth: VIEW_W, maxHeight: VIEW_H, everyNthFrame: 1 });
+  sendStatus();
+  await sendFullFrame();
+}
+
+/** A confirm or prompt during a handoff: the user answers it in the live view (two minutes, then it's declined). */
+function askViewer(dialog) {
+  const h = handoff;
+  const type = dialog.type();
+  if (type === "alert") {
+    relaySend({ kind: "notice", text: `The page said: ${dialog.message().slice(0, 200)}` }, h);
+    dialog.accept().catch(() => {});
+    return;
+  }
+  const timer = setTimeout(() => {
+    if (h.dialog?.dialog === dialog) h.dialog = undefined;
+    dialog.dismiss().catch(() => {});
+  }, 120_000);
+  h.dialog = { dialog, timer };
+  relaySend({ kind: "dialog", type, message: dialog.message().slice(0, 500), defaultValue: dialog.defaultValue?.() ?? "" }, h);
+}
+
+async function applyInput(input) {
+  const h = handoff;
+  if (!h) return;
+  const p = h.page;
+  switch (input.kind) {
+    case "hello":
+      sendStatus();
+      await sendFullFrame();
+      break;
+    case "ping":
+      break;
+    case "dialog": {
+      const pending = h.dialog;
+      if (!pending) break;
+      h.dialog = undefined;
+      clearTimeout(pending.timer);
+      await (input.accept ? pending.dialog.accept(input.text || undefined) : pending.dialog.dismiss()).catch(() => {});
+      break;
+    }
+    case "done":
+    case "cancel":
+      await stopHandoff(input.kind === "done" ? "done" : "cancelled");
+      break;
+    case "mouse":
+      await p.mouse.move(input.x, input.y);
+      if (input.type === "down") {
+        await p.mouse.down({ button: input.button });
+        h.buttons.add(input.button);
+      } else if (input.type === "up") {
+        await p.mouse.up({ button: input.button });
+        h.buttons.delete(input.button);
+      } else if (input.type === "wheel") await p.mouse.wheel(input.deltaX, input.deltaY);
+      break;
+    case "key":
+      if (input.type === "down") {
+        await p.keyboard.down(input.key);
+        h.keys.add(input.key);
+      } else {
+        await p.keyboard.up(input.key);
+        h.keys.delete(input.key);
+      }
+      break;
+    case "text":
+      await p.keyboard.insertText(input.text);
+      break;
+  }
+}
+
+function onRelayMessage(raw) {
+  let message;
+  try {
+    message = JSON.parse(String(raw));
+  } catch {
+    return;
+  }
+  const input = parseViewerInput(message, handoff?.viewerUserId);
+  if (!input) return;
+  touch();
+  handoff.viewerSeen = Date.now();
+  // Answers to a dialog, and Done or Cancel, can't wait in line: the click that opened a
+  // dialog doesn't finish until the dialog is answered.
+  if (input.kind === "dialog" || input.kind === "done" || input.kind === "cancel") {
+    applyInput(input).catch(() => {});
+    return;
+  }
+  // A burst of moves collapses to the latest; a flood can't push a click out of reach.
+  const last = pendingInput.at(-1);
+  if (input.kind === "mouse" && input.type === "move" && last?.kind === "mouse" && last.type === "move") {
+    pendingInput[pendingInput.length - 1] = input;
+  } else if (pendingInput.length < MAX_PENDING_INPUT) {
+    pendingInput.push(input);
+  }
+  drainInput();
+}
+
+/** Apply queued input in order: a key down lands before its key up. */
+async function drainInput() {
+  if (draining) return;
+  draining = true;
+  try {
+    while (pendingInput.length) {
+      await applyInput(pendingInput.shift()).catch(() => {});
+    }
+  } finally {
+    draining = false;
+  }
+}
+
+async function startHandoff({ relayUrl, group, viewerUserId, expiresAt, reason, kind }) {
+  await stopHandoff("replaced");
+  if (typeof relayUrl !== "string" || !relayUrl.startsWith("wss://") || !group || !viewerUserId) {
+    throw new ActionError("The handoff is missing its live-view connection.");
+  }
+  const until = Number(expiresAt) || Date.now() + 10 * 60_000;
+  if (until <= Date.now() + 5_000) throw new ActionError("The handoff's deadline has already passed.");
+  const ws = new WebSocket(relayUrl, "json.webpubsub.azure.v1");
+  await new Promise((ok, fail) => {
+    const timer = setTimeout(() => fail(new ActionError("The live view could not connect (timed out).")), 15_000);
+    ws.onopen = () => {
+      clearTimeout(timer);
+      ok();
+    };
+    ws.onerror = () => {
+      clearTimeout(timer);
+      fail(new ActionError("The live view could not connect. If sandbox egress is restricted, allow the Web PubSub host."));
+    };
+  });
+  handoff = {
+    ws,
+    group,
+    viewerUserId,
+    expiresAt: until,
+    reason: String(reason ?? "").slice(0, 200),
+    seq: 0,
+    viewerSeen: Date.now(),
+    keys: new Set(),
+    buttons: new Set(),
+  };
+  const h = handoff;
+  if (kind === "payment") {
+    try {
+      paymentOrigin = new URL((await page()).url()).origin;
+    } catch {
+      // not on a web page yet
+    }
+  }
+  ws.send(JSON.stringify({ type: "joinGroup", group, ackId: 1 }));
+  ws.onmessage = (m) => onRelayMessage(m.data);
+  ws.onclose = () => {
+    if (handoff === h) stopHandoff("disconnected").catch(() => {});
+  };
+  h.timer = setTimeout(() => stopHandoff("expired").catch(() => {}), Math.max(until - Date.now(), 1000));
+  // A heartbeat, so the viewer can tell the browser is still there.
+  h.heartbeat = setInterval(sendStatus, 10_000);
+  await streamPage(await page());
+  return { handoff: "started", expiresAt: until };
+}
+
+async function stopHandoff(reason) {
+  const h = handoff;
+  if (!h) return;
+  handoff = undefined;
+  clearTimeout(h.timer);
+  clearInterval(h.heartbeat);
+  pendingInput.length = 0;
+  if (h.dialog) {
+    clearTimeout(h.dialog.timer);
+    await h.dialog.dialog.dismiss().catch(() => {});
+  }
+  // Let go of anything the user held down, or the agent's next key would come with a stuck Shift.
+  for (const key of h.keys) await h.page?.keyboard.up(key).catch(() => {});
+  for (const button of h.buttons) await h.page?.mouse.up({ button }).catch(() => {});
+  relaySend({ kind: "ended", reason }, h);
+  await h.cdp?.send("Page.stopScreencast").catch(() => {});
+  await h.cdp?.detach().catch(() => {});
+  try {
+    h.ws.close();
+  } catch {
+    // already closed
+  }
+  lastHandoff = { outcome: reason, at: new Date().toISOString() };
+}
+
+// ============================================================================
 // Server
 // ============================================================================
 
@@ -570,7 +888,7 @@ let busy = 0;
 function touch() {
   clearTimeout(idleTimer);
   idleTimer = setTimeout(() => {
-    if (busy) return touch();
+    if (busy || handoff) return touch();
     context.close().catch(() => process.exit(0));
   }, IDLE_MS);
 }
@@ -619,6 +937,11 @@ const server = createServer((req, res) => {
       acceptDialogs = msg.args?.acceptDialogs === true;
       try {
         await setProtectedHosts(msg.protectedHosts);
+        // The agent is acting again, so the user's turn with the browser is over.
+        if (handoff && !String(msg.action).startsWith("handoff_") && msg.action !== "reset") {
+          await stopHandoff("agent_resumed");
+          pendingNotes.push("The live view was closed: you have the browser again.");
+        }
         const result = await withDeadline(run(String(msg.action), msg.args ?? {}, t), Math.max(t.navMs, t.actionMs) + 25_000);
         const extra = {};
         if (pendingDownloads.length) extra.downloads = pendingDownloads.splice(0);

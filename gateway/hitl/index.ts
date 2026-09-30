@@ -10,6 +10,7 @@ export type {
   HitlUiHints,
   InputRequest,
   InputResponse,
+  DirectInputForm,
   HitlRunState,
   SerializableSendRequest,
 } from "./types.js";

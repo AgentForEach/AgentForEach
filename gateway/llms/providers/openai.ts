@@ -68,7 +68,7 @@ export function isOpenAIReasoningModel(model: string): boolean {
 export class OpenAIProvider implements Provider {
   readonly id = PROVIDER_ID;
   // PDF only — Azure OpenAI documents no support for DOCX/XLSX as input_file.
-  readonly capabilities = { nativeDocuments: true };
+  readonly capabilities = { nativeDocuments: true, chainsResponses: true };
 
   private client: OpenAI;
   private config: OpenAIProviderConfig;

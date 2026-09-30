@@ -36,12 +36,17 @@ import type { ToolResultImage } from "../../llms/types.js";
 
 /** Largest screenshot sent to the model (Anthropic accepts up to 5 MB; a 1280×800 JPEG is far smaller). */
 const MAX_MODEL_IMAGE_BYTES = 3 * 1024 * 1024;
+import { createHash, randomBytes } from "node:crypto";
 import {
   BROWSER_ACTIONS,
+  HANDOFF_KINDS,
   type BrowserAction,
   type BrowserConfig,
   type BrowserDriverResult,
+  type HandoffKind,
 } from "./types.js";
+import { viewerBaseUrl, viewerLink } from "./viewer.js";
+import type { DirectInputForm } from "../../hitl/types.js";
 
 export const BROWSER_TOOL_NAME = "browser";
 
@@ -78,7 +83,10 @@ const BROWSER_TOOL: ToolDefinition = {
     'Pages\' "Are you sure?" dialogs are declined unless you pass accept_dialogs: true, which you should only do after the ' +
     "user agreed. " +
     "Browsing is limited per turn and per day, so go straight to what you need. " +
-    "If a site shows a bot check or asks you to log in, stop and tell the user; don't try to get around it. " +
+    "When the next step is the user's to do (a login, a CAPTCHA, a code sent to their phone, a payment), use handoff: " +
+    "they take over the live browser in the chat and press Done, and you continue from there. Never ask for their " +
+    "password or card details, and never type them yourself. " +
+    "If a site blocks automated browsing, don't try to get around it. " +
     "For plain reading or an API, prefer web_fetch or http_fetch; they're faster. " +
     "screenshot shows you the page as an image (with labels, refs drawn on it) and gives the user a download link. " +
     "Use it when the snapshot isn't enough: images, charts, prices in pictures, layout, or something covering the page. " +
@@ -97,7 +105,8 @@ const BROWSER_TOOL: ToolDefinition = {
           "upload (ref of a file input, path under /mnt/data) · press (key, e.g. Enter, Escape, ArrowDown, Control+A) · " +
           "scroll (direction up|down|top|bottom, or ref) · back · wait (text to wait for, or ms) · " +
           "text (optional offset, selector) · tabs · tab_open (optional url) · tab_focus (tab) · tab_close (tab) · " +
-          "screenshot (optional labels, full_page) · reset (close the browser and clear cookies and logins)",
+          "screenshot (optional labels, full_page) · handoff (reason, kind: give the user the browser) · " +
+          "reset (close the browser and clear cookies and logins)",
       },
       url: { type: "string", description: 'URL for navigate or tab_open, e.g. "https://example.com".' },
       ref: { type: "string", description: 'Element ref from the latest snapshot, e.g. "e12".' },
@@ -112,6 +121,15 @@ const BROWSER_TOOL: ToolDefinition = {
       path: { type: "string", description: 'upload: a file under /mnt/data, e.g. "report.pdf" or "/mnt/data/out/cv.pdf".' },
       offset: { type: "number", description: "text: start reading at this character (the result says where to go on)." },
       selector: { type: "string", description: 'text: read only this part of the page, a CSS selector like "main" or "#results".' },
+      reason: {
+        type: "string",
+        description: 'handoff: what the user should do, shown to them, e.g. "Log in to your Amazon account, then press Done."',
+      },
+      kind: {
+        type: "string",
+        enum: [...HANDOFF_KINDS],
+        description: "handoff: login, captcha, 2fa (a code or approval on their phone), payment, or other.",
+      },
       accept_dialogs: {
         type: "boolean",
         description: "click, press, type, select: accept a confirm dialog this action opens. Only after the user agreed.",
@@ -154,6 +172,59 @@ export function isBrowserEnabled(
 
 /** The unit browser actions are metered as, for credits.unitCoins. */
 export const BROWSER_ACTION_UNIT = "browserAction";
+/** The unit a handoff to the user is metered as (on top of its browserAction). */
+export const BROWSER_HANDOFF_UNIT = "browserHandoff";
+
+const HANDOFF_TITLES: Record<HandoffKind, string> = {
+  login: "Log in",
+  captcha: "Solve a check",
+  "2fa": "Confirm it's you",
+  payment: "Complete the payment",
+  other: "Your turn in the browser",
+};
+
+/**
+ * Issues the two Web PubSub tokens a handoff needs, both limited to its one
+ * group: the driver's, and the viewer's (whose user id is the user's own, so
+ * the driver can tell their input from anyone else's). Injectable for tests.
+ */
+export interface HandoffRelay {
+  issue(viewerUserId: string, group: string, ttlMinutes: number): Promise<{ driverUrl: string; viewerUrl: string }>;
+}
+
+/** The Web PubSub user id the sandbox's driver connects as (a hash: no user ids in the relay). */
+export function handoffDriverUserId(userId: string): string {
+  return `browser-driver:${createHash("sha256").update(userId).digest("hex").slice(0, 24)}`;
+}
+
+/** Whether a paused tool call is a browser handoff (resumed by the user's Done or Cancel). */
+export function isBrowserHandoffCall(call: { name: string; arguments?: Record<string, unknown> }): boolean {
+  return call.name === BROWSER_TOOL_NAME && call.arguments?.action === "handoff";
+}
+
+/** What the model reads when the user answers a handoff. */
+export function handoffOutcome(
+  response: { cancelled?: boolean; data?: Record<string, unknown> } | undefined,
+  expiresAt: number | undefined,
+  now = Date.now(),
+): string {
+  if (response?.cancelled) {
+    return JSON.stringify({
+      handoff: "cancelled",
+      message: "The user cancelled the handoff. Ask them how they'd like to continue; don't retry on your own.",
+    });
+  }
+  const note = typeof response?.data?.note === "string" ? response.data.note.slice(0, 500) : undefined;
+  const late = expiresAt !== undefined && now > expiresAt + 30_000;
+  return JSON.stringify({
+    handoff: late ? "expired" : "done",
+    ...(note ? { userNote: note } : {}),
+    message: late
+      ? "The live view had closed before the user pressed Done, so they may not have finished. Take a snapshot to see where things are."
+      : "The user says they've finished. You have the browser again: take a snapshot to see the page. " +
+        "Don't redo what they did (never re-enter passwords or payment details), and don't take a screenshot of payment forms.",
+  });
+}
 
 // ============================================================================
 // Argument checks
@@ -270,6 +341,14 @@ export function checkBrowserArgs(action: BrowserAction, given: Record<string, un
     }
     case "screenshot":
       return { args: { labels: raw.labels === true, fullPage: raw.full_page === true } };
+    case "handoff": {
+      const reason = str(raw.reason)?.trim().slice(0, 200);
+      if (!reason) {
+        return { error: 'handoff needs a reason the user will read, e.g. "Log in to your Amazon account, then press Done."' };
+      }
+      const kind = (HANDOFF_KINDS as readonly string[]).includes(String(raw.kind)) ? (raw.kind as HandoffKind) : "other";
+      return { args: { reason, kind } };
+    }
     case "text": {
       const offset = typeof raw.offset === "number" && raw.offset > 0 ? Math.floor(raw.offset) : 0;
       const selector = str(raw.selector)?.trim().slice(0, 200);
@@ -314,7 +393,16 @@ export interface BrowserGuards {
   limiter?: BrowserLimiter;
   /** The run's meter: each action that reaches the sandbox adds one browserAction. */
   units?: Record<string, number>;
+  /**
+   * Can this run hand the browser to the user? Only on a surface that renders
+   * forms (web chat) with the HITL store to resume from, and a relay.
+   */
+  handoff?: { relay: HandoffRelay };
 }
+
+type RunResult = { output: string; images?: ToolResultImage[]; inputRequest?: DirectInputForm };
+
+const fail = (error: string): RunResult => ({ output: JSON.stringify({ error }) });
 
 export class BrowserToolHandler {
   /** Actions taken in this run; one handler lives for one run. */
@@ -331,22 +419,56 @@ export class BrowserToolHandler {
     return (await this.run(args)).output;
   }
 
-  /** The tool result, plus a screenshot for the model to see when the action took one. */
-  async run(args: Record<string, unknown>): Promise<{ output: string; images?: ToolResultImage[] }> {
-    const fail = (error: string) => ({ output: JSON.stringify({ error }) });
+  /**
+   * The tool result, plus a screenshot for the model to see when the action
+   * took one, or a form for the runner to show when the agent hands off.
+   */
+  async run(args: Record<string, unknown>): Promise<RunResult> {
     const action = String(args.action ?? "");
     if (!(BROWSER_ACTIONS as readonly string[]).includes(action)) {
       return fail(`Unknown browser action "${action}". Use one of: ${BROWSER_ACTIONS.join(", ")}.`);
     }
     const checked = checkBrowserArgs(action as BrowserAction, args);
     if ("error" in checked) return fail(checked.error);
+    // Before the limits: a handoff that can't happen here shouldn't count as an action.
+    const unavailable = action === "handoff" ? this.handoffUnavailable() : undefined;
+    if (unavailable) return fail(unavailable);
 
     const refused = await this.refusal();
     if (refused) return fail(refused);
+    if (action === "handoff") return this.handoff(checked.args);
 
+    const driverArgs =
+      action === "screenshot" && this.config.showScreenshots ? { ...checked.args, forModel: true } : checked.args;
+    const sent = await this.send(action, driverArgs);
+    if ("error" in sent) return fail(sent.error);
+    const result = sent.result;
+    const images = await this.screenshotForModel(result);
+    const out = await this.present(result);
+    if (images) out.seen = "The screenshot is attached: you can see the page as it looks now.";
+    else if (result.view) out.seen = "The screenshot could not be shown to you; work from the snapshot.";
+    return { output: JSON.stringify(out), ...(images ? { images } : {}) };
+  }
+
+  /** End a live view this run started; nothing if there's none. */
+  async stopHandoff(): Promise<void> {
+    await this.send("handoff_stop", {}).catch(() => {});
+  }
+
+  /**
+   * Run one driver action in the sandbox; the result, or why there is none.
+   * With `viaFile`, the payload goes up as a file the driver reads and deletes
+   * at once, rather than on the command line, where any process in the sandbox
+   * (and the exec API's own records) could see it: for the handoff's token.
+   */
+  private async send(
+    action: string,
+    args: Record<string, unknown>,
+    viaFile = false,
+  ): Promise<{ result: BrowserDriverResult } | { error: string }> {
     const c = this.config;
     const payload = {
-      args: action === "screenshot" && c.showScreenshots ? { ...checked.args, forModel: true } : checked.args,
+      args,
       actionMs: c.actionTimeoutSec * 1000,
       navMs: c.navigationTimeoutSec * 1000,
       maxChars: c.maxSnapshotChars,
@@ -354,18 +476,30 @@ export class BrowserToolHandler {
       idleSec: c.idleShutdownSec,
       protectedHosts: this.sandbox.injectedHosts(),
     };
-    // The action is from a fixed list and the payload is base64, so nothing the model wrote reaches the shell.
-    const command = `afe-browser ${action} ${Buffer.from(JSON.stringify(payload)).toString("base64")}`;
+    const encoded = Buffer.from(JSON.stringify(payload)).toString("base64");
+    let argument = encoded;
+    if (viaFile) {
+      const file = `.browser/in-${randomBytes(12).toString("hex")}.b64`;
+      try {
+        await this.sandbox.writeFile(file, encoded);
+      } catch (err: unknown) {
+        return { error: err instanceof Error ? err.message : "The browser call failed" };
+      }
+      argument = `@/mnt/data/${file}`;
+    }
+    // The action is ours (from a fixed list) and the payload is base64 or our own file path,
+    // so nothing the model wrote reaches the shell.
+    const command = `afe-browser ${action} ${argument}`;
     const timeoutSec = Math.max(c.navigationTimeoutSec, c.actionTimeoutSec) + STARTUP_SLACK_SEC;
 
     let exec;
     try {
       exec = await this.sandbox.runCommand(command, timeoutSec);
     } catch (err: unknown) {
-      return fail(err instanceof Error ? err.message : "The browser call failed");
+      return { error: err instanceof Error ? err.message : "The browser call failed" };
     }
     if (exec.exitCode === 127 || /afe-browser: (command )?not found/.test(exec.stderr)) {
-      return fail(NO_BROWSER_IMAGE);
+      return { error: NO_BROWSER_IMAGE };
     }
     const result = parseDriverOutput(exec.stdout);
     // Billed only when the browser received the action (it answered), not for calls that never reached it.
@@ -373,17 +507,93 @@ export class BrowserToolHandler {
     if (result?.handled && units) units[BROWSER_ACTION_UNIT] = (units[BROWSER_ACTION_UNIT] ?? 0) + 1;
     if (!result) {
       const detail = (exec.stderr || exec.stdout).trim().slice(-500);
-      return fail(
-        exec.timedOut
+      return {
+        error: exec.timedOut
           ? `The browser did not finish within ${timeoutSec} s.`
           : `The browser gave no result${detail ? `: ${detail}` : "."}`,
+      };
+    }
+    return { result };
+  }
+
+  /** Why the browser can't be handed to the user in this run, or undefined when it can. */
+  private handoffUnavailable(): string | undefined {
+    const { scheduled, userId, handoff } = this.guards;
+    if (!this.config.handoff.enabled) {
+      return "Handing the browser to the user is turned off here. Tell the user what you need instead.";
+    }
+    if (scheduled) {
+      return "Nobody is here to take over the browser in a scheduled run. Report what you need from the user instead.";
+    }
+    if (!handoff || !userId) {
+      return (
+        "The browser can't be handed to the user in this chat (it needs a chat that shows forms, and real-time messaging). " +
+        "Tell the user what you need and where, so they can do it themselves."
       );
     }
-    const images = await this.screenshotForModel(result);
-    const out = await this.present(result);
-    if (images) out.seen = "The screenshot is attached: you can see the page as it looks now.";
-    else if (result.view) out.seen = "The screenshot could not be shown to you; work from the snapshot.";
-    return { output: JSON.stringify(out), ...(images ? { images } : {}) };
+    if (!viewerBaseUrl(this.config.handoff.viewerBaseUrl)) {
+      return "The live view has no address here (skills.sandbox.browser.handoff.viewerBaseUrl). Tell the user what you need instead.";
+    }
+    return undefined;
+  }
+
+  /**
+   * Hand the browser to the user: start the live view in the sandbox, then
+   * ask the runner to pause on a form that shows it. The user's Done or
+   * Cancel resumes the run with handoffOutcome().
+   */
+  private async handoff(args: Record<string, unknown>): Promise<RunResult> {
+    const h = this.config.handoff;
+    const userId = this.guards.userId!;
+    const relay = this.guards.handoff!.relay;
+    const base = viewerBaseUrl(h.viewerBaseUrl)!;
+    const reason = String(args.reason);
+    const kind = args.kind as HandoffKind;
+    // A new random group per handoff: nobody can guess it, and it's useless once this one ends.
+    const group = `bh-${randomBytes(16).toString("hex")}`;
+    const expiresAt = Date.now() + h.maxMinutes * 60_000;
+
+    let tokens;
+    try {
+      tokens = await relay.issue(userId, group, h.maxMinutes + 1);
+    } catch (err: unknown) {
+      return fail(`The live view could not be set up: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    const sent = await this.send(
+      "handoff_start",
+      { relayUrl: tokens.driverUrl, group, viewerUserId: userId, expiresAt, reason, kind },
+      true,
+    );
+    if ("error" in sent) return fail(sent.error);
+    if (!sent.result.ok) return fail(sent.result.error ?? "The live view could not start.");
+    const { units } = this.guards;
+    if (units) units[BROWSER_HANDOFF_UNIT] = (units[BROWSER_HANDOFF_UNIT] ?? 0) + 1;
+
+    return {
+      output: JSON.stringify({
+        handoff: "waiting",
+        expiresAt: new Date(expiresAt).toISOString(),
+        message:
+          "The user now sees the live browser in the chat. End your turn now with one short line telling them what to " +
+          `do there (for example: log in, then press Done). They have ${h.maxMinutes} minutes. Don't use the browser again this turn.`,
+      }),
+      inputRequest: {
+        formType: "browser_handoff",
+        formName: HANDOFF_TITLES[kind],
+        intent: reason,
+        proposedArgs: {
+          viewerUrl: viewerLink(
+            base,
+            { relayUrl: tokens.viewerUrl, group, expiresAt, reason, driverUserId: handoffDriverUserId(userId) },
+            true,
+          ),
+          kind,
+          reason,
+          expiresAt,
+        },
+        timeoutSeconds: h.maxMinutes * 60,
+      },
+    };
   }
 
   /** The window-sized JPEG the driver saved for the model, when it saved one. */
