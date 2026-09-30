@@ -4,7 +4,7 @@ AgentForEach is one stateless Function App in front of Cosmos DB. Every turn loa
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/architecture-dark.svg">
-  <img alt="Architecture. Users reach one Function App on Flex Consumption from an app or the web over HTTP and WebSocket, or from Telegram and WhatsApp webhooks. The app accepts a message in about 0.12 seconds, runs the turn in a Durable orchestration and hands it to the agent runner; a sharded scheduler wakes the runner for reminders and heartbeats. The runner calls model providers, Cosmos DB partitioned by user, Web PubSub, a per-user sandbox and optional AI Search. The reply streams back to every device the user has open. The app is stateless, so any instance serves any user and it scales to zero." src="assets/architecture-light.svg">
+  <img alt="Architecture. Requests come in along the top: users on Telegram, WhatsApp or an app reach one Function App, which runs as 1 to 1,000 identical, stateless instances and scales to zero. It accepts a message in about 0.12 seconds, runs the turn as a durable orchestration and hands it to the agent runner; a sharded scheduler (8 to 128 shards) hands it due reminders and heartbeats. The runner reads and writes Cosmos DB, where every user has their own partition, calls model providers, a per-user sandbox and optional AI Search. The reply goes back along the bottom through Web PubSub to every device the user has open." src="assets/architecture-light.svg">
 </picture>
 
 ## Components
