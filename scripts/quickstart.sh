@@ -180,7 +180,8 @@ node --input-type=module -e '
 # Deploy
 # ----------------------------------------------------------------------------
 say "Creating the Azure resources. Pulumi shows what it will create and asks before it does (about 5-10 minutes)."
-pulumi up --stack "$STACK" ${QUICKSTART_YES:+--yes}
+pulumi up --stack "$STACK" ${QUICKSTART_YES:+--yes} ||
+  die "pulumi up failed (see above). If it's the Web PubSub free tier limit, use the Standard tier: (cd infra && pulumi config set agentforeach:webPubSubSku Standard_S1 --stack $STACK), then run this again."
 
 say "Deploying the gateway"
 "$ROOT/scripts/deploy-gateway.sh" "$STACK"
