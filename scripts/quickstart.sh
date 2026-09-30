@@ -8,7 +8,7 @@
 # before you give it to real users.
 #
 # Usage:
-#   ./scripts/quickstart.sh [stack]          # default stack name: trial
+#   ./scripts/quickstart.sh [stack]          # default stack name: trial (or <org>/<stack>)
 #   ./scripts/quickstart.sh [stack] --token  # print a fresh login for a stack you deployed
 #
 # Optional environment:
@@ -123,7 +123,8 @@ echo "    (another one? az account set --subscription <name-or-id>, then run thi
 # Stack settings (anything already set is kept)
 # ----------------------------------------------------------------------------
 say "Configuring stack \"$STACK\""
-pulumi stack select "$STACK" --create >/dev/null
+pulumi stack select "$STACK" --create >/dev/null ||
+  die "Pulumi couldn't open or create stack \"$STACK\". If your default Pulumi organization has no subscription, put your own account first: ./scripts/quickstart.sh <your-pulumi-user>/$STACK"
 
 if ! has_setting azure-native:location; then
   read -rp "Azure region [eastus]: " region
