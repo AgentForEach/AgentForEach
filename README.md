@@ -28,6 +28,9 @@
 
 <p align="center"><sub>Created by <a href="https://github.com/mohit67890">Mohit Garg</a> · <a href="https://x.com/mohitt_garg">@mohitt_garg</a></sub></p>
 
+<p align="center"><img src="docs/assets/demo.gif" width="760" alt="A web chat with an AgentForEach agent on Azure. Ann says she lives in London and is training for a half marathon, and the agent notes both. She asks for a reminder; a Create reminder card appears, she approves it, and the reminder arrives in the chat. Asked what she is training for, the agent answers from memory."></p>
+<p align="center"><sub>The <a href="examples/web-chat/">web chat sample</a> on a stack deployed with the quickstart: memory, an approval form and a reminder.</sub></p>
+
 ## What it is
 
 A personal AI agent product is much more than a model and a chat window. Behind apps like Muse, Grok and Dots, every user has an agent that remembers them, works on a schedule while they're away, uses tools, runs code, asks before it acts and answers on whichever channel they use. The company runs all of those agents at once, for every user, without a server for each.
