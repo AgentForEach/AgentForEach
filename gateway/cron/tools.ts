@@ -46,6 +46,8 @@ export const CRON_CREATE_TOOL: ToolDefinition = {
     "schedule a recurring task, set a reminder, or run something at a specific time.\n\n" +
     "REMINDER RULES:\n" +
     '- One-time reminders (e.g., "in 20 minutes", "tomorrow at 9") must use schedule.kind="at".\n' +
+    '- For a time relative to now ("in 20 minutes", "in 2 hours"), pass delay_minutes instead of an "at" timestamp: ' +
+    "the platform computes the exact time, so the reminder isn't early or late from rounding.\n" +
     '- Use schedule.kind="every" or "cron" only when the user explicitly asks for recurrence.\n' +
     "- Heartbeats are separate from cron jobs; do not emulate heartbeat behavior with ad-hoc recurring reminders.\n\n" +
     "SCHEDULE TYPES (schedule.kind):\n" +
