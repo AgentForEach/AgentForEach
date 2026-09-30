@@ -46,7 +46,7 @@
     "croner": "^9.0.0",
     "durable-functions": "^3.5.0",
     "langsmith": "^0.10.5",
-    "mammoth": "^1.12.3",
+    "mammoth": "^1.13.0",
     "node-html-markdown": "^2.0.0",
     "openai": "^4.77.0",
     "undici": "^6.29.0",
