@@ -4,8 +4,8 @@ AgentForEach is in preview. This is what we plan to work on next, roughly in ord
 
 ## Make it easier to start
 
-- A short demo of an agent at work
-- A one-click deploy to Azure
+Done: a [one-command quickstart](scripts/quickstart.sh) (with a Codespaces button in the README) and a demo of an agent at work. Next:
+
 - Local development without an Azure account
 - A starter app (web and mobile) that you can rebrand as your own product
 
