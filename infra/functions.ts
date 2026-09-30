@@ -466,6 +466,17 @@ export function createFunctionApp(args: {
 
     siteConfig: {
       appSettings,
+      // On Flex Consumption the Functions host answers CORS preflights
+      // itself, before the gateway runs: with no origins listed it refuses
+      // every browser client on another origin. Mirror the gateway's policy:
+      // the configured origins (with credentials, for App Service sign-in
+      // cookies), or any origin without credentials (bearer tokens).
+      cors: pulumi.output(args.corsAllowedOrigins).apply((origins) => {
+        const list = (origins ?? "").split(",").map((o) => o.trim()).filter(Boolean);
+        return list.length > 0
+          ? { allowedOrigins: list, supportCredentials: true }
+          : { allowedOrigins: ["*"], supportCredentials: false };
+      }),
     },
     // System identity: the RBAC grants on the sandbox group and session pool.
     // User identities (Key Vault references, Cosmos data) are granted before
