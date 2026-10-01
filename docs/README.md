@@ -32,6 +32,7 @@
 | [Skills](Skills_Architecture.md) | `SKILL.md` instruction files, per-user settings and credential handling |
 | [Sandboxes](Sandbox.md) | Per-user code sandboxes and their two backends |
 | [Sandbox backends compared](Sandbox-Migration.md) | Why ACA Sandboxes replaced Dynamic Sessions as the default, and the risks |
+| [Sandboxes on Google Cloud](GCP_Evaluation.md) | GKE Agent Substrate and GKE Agent Sandbox tested as alternatives to ACA Sandboxes, with verdicts |
 | [Browser](Browser.md) | A real browser for the agent, inside each user's sandbox |
 | [Knowledge](Knowledge.md) | The optional, deployment-wide Azure AI Search library |
 
