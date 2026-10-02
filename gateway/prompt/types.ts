@@ -152,6 +152,13 @@ export interface UserData {
   workContext?: string;
   /** Short freeform notes about the user (static context only). */
   notes?: string;
+  /**
+   * What the user has told the agent they prefer, on any subject, as short
+   * statements ("Prefers coffee over tea", "When a website asks for a human
+   * check, hand me the browser without asking"). In every prompt, and
+   * writable in static mode too, so a stated preference always applies.
+   */
+  preferences?: string[];
 }
 
 /**
@@ -627,7 +634,13 @@ export const FIELD_SCHEMAS: Readonly<
     communicationStyle: { type: "string", description: "Communication style preference (e.g. 'concise', 'detailed')" },
     interests: { type: "string[]", description: "Broad topic interests (stable, not ephemeral preferences)" },
     workContext: { type: "string", description: "Stable work context (e.g. 'software developer at Acme')" },
-    notes: { type: "string", description: "Short static notes about the user (for evolving preferences use MEMORY)" },
+    notes: { type: "string", description: "Short static notes about the user (preferences go in preferences)" },
+    preferences: {
+      type: "string[]",
+      description:
+        "What the user has told you they prefer, on any subject, one short statement each (e.g. 'Prefers coffee " +
+        "over tea'). Always followed. The list is replaced as a whole: send every preference, the existing ones too",
+    },
   },
   SOUL: {
     coreTruths: { type: "string[]", description: "Core truths / values the agent lives by" },
@@ -651,7 +664,7 @@ export const FIELD_SCHEMAS: Readonly<
   },
   BOOTSTRAP: {}, // Managed by onboarding system; prompt_update rejects BOOTSTRAP
   MEMORY: {
-    userPreferences: { type: "string[]", description: "Evolving preferences discovered in conversation (not static profile — that goes in USER)" },
+    userPreferences: { type: "string[]", description: "Preferences you've noticed yourself in conversation (ones the user states go in USER.preferences)" },
     keyFacts: { type: "string[]", description: "Important facts to remember long-term" },
     patterns: { type: "string[]", description: "Recurring patterns, workflows, or context the agent has observed over time" },
   },

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { PromptToolHandler, PROMPT_UPDATE_TOOL_NAME } from "./tools.js";
+import { getPromptToolDefinitions, PromptToolHandler, PROMPT_UPDATE_TOOL_NAME } from "./tools.js";
 import type { PromptDocumentStore } from "./store.js";
 import {
   setPromptConfigModeForTest,
@@ -208,6 +208,26 @@ test("static mode: prompt_update allows USER update", async () => {
     assert.equal(result.error, undefined);
     assert.deepEqual(result.updated, ["name"]);
     assert.equal(calls.patchData, 1);
+  } finally {
+    resetPromptConfigModeCache();
+  }
+});
+
+test("static mode: preferences on any subject can be saved, and the tool says where they go", async () => {
+  setPromptConfigModeForTest("static");
+  try {
+    const { store, calls } = makeStoreMock();
+    const handler = new PromptToolHandler(store);
+    const preferences = ["Prefers coffee over tea", "When a website asks for a human check, hand me the browser without asking"];
+    const raw = await handler.handle(PROMPT_UPDATE_TOOL_NAME, { documentType: "USER", updates: { preferences } }, "u", "default");
+    const result = JSON.parse(raw) as { error?: string; updated?: string[] };
+    assert.equal(result.error, undefined);
+    assert.deepEqual(result.updated, ["preferences"]);
+    assert.equal(calls.patchData, 1);
+
+    const description = getPromptToolDefinitions().find((t) => t.name === PROMPT_UPDATE_TOOL_NAME)!.description;
+    assert.match(description, /USER\.preferences = anything the user tells you they prefer/);
+    assert.match(description, /preferences \(string\[\]\)/, "listed among the writable USER fields");
   } finally {
     resetPromptConfigModeCache();
   }

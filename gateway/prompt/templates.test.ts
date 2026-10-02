@@ -85,6 +85,16 @@ test("renderDocumentData USER renders profile fields", () => {
   assert.match(result, /Prefers dark mode/);
 });
 
+test("renderDocumentData USER lists the user's preferences, to be followed", () => {
+  const result = renderDocumentData("USER", {
+    name: "Alice",
+    preferences: ["Prefers coffee over tea", "  ", "When a website asks for a human check, hand me the browser without asking"],
+  });
+  assert.match(result, /## Preferences\nWhat the user has told you they prefer\. Follow these\.\n- Prefers coffee over tea\n- When a website/);
+  assert.doesNotMatch(result, /^- \s*$/m, "blank entries are left out");
+  assert.doesNotMatch(renderDocumentData("USER", { name: "Alice", preferences: [] }), /Preferences/);
+});
+
 test("renderDocumentData USER with empty data returns empty string", () => {
   const result = renderDocumentData("USER", {});
   assert.equal(result, "");

@@ -141,11 +141,13 @@ function buildPromptUpdateTool(staticMode: boolean): ToolDefinition {
       "Changes take effect on the next request.\n\n" +
       "Where to store what:\n" +
       "- USER = stable profile identity (name, timezone, language). Rarely changes.\n" +
+      "- USER.preferences = anything the user tells you they prefer, on any subject; always followed.\n" +
       (staticMode
-        ? ""
-        : "- MEMORY = evolving knowledge learned over time (preferences discovered in conversation, key facts, observed patterns).\n" +
+        ? '- Example: "My name is Alice" → USER.name. "I prefer coffee over tea" → USER.preferences.\n\n'
+        : "- MEMORY = evolving knowledge learned over time (preferences you notice yourself, key facts, observed patterns).\n" +
           "- AGENTS = operational instructions for HOW the agent should behave (not user data or memory content).\n" +
-          '- Example: "My name is Alice" → USER.name. "I prefer dark themes" → MEMORY.userPreferences.\n\n') +
+          '- Example: "My name is Alice" → USER.name. "I prefer coffee over tea" → USER.preferences. ' +
+          "They always ask for metric units (you noticed) → MEMORY.userPreferences.\n\n") +
       "Field types per documentType:\n" +
       buildFieldTypesDescription(staticMode) +
       "\n\nSet any field to null to clear it." +

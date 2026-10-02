@@ -227,6 +227,12 @@ function renderUser(data: Partial<UserData>): string {
   if (typeof data.notes === "string" && data.notes.trim()) {
     lines.push("", "## Notes", data.notes);
   }
+  const preferences = Array.isArray(data.preferences)
+    ? data.preferences.filter((p): p is string => typeof p === "string" && p.trim() !== "")
+    : [];
+  if (preferences.length > 0) {
+    lines.push("", "## Preferences", "What the user has told you they prefer. Follow these.", ...preferences.map((p) => `- ${p}`));
+  }
 
   return lines.join("\n").trim();
 }
