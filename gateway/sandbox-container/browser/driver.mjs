@@ -17,15 +17,16 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import {
+  challengeFrame,
   checkUrl,
   checkUrlResolved,
   explainError,
   hostMatches,
   isTransientNetError,
-  looksBlocked,
   maskCardNumbers,
   parseViewerInput,
   truncate,
+  wallKind,
 } from "./guard.mjs";
 import { cardFieldFilledInPage, labelsInPage, snapshotInPage, textInPage } from "./snapshot.mjs";
 
@@ -190,8 +191,9 @@ const pendingNotes = [];
 let downloadsInFlight = 0;
 /** Accept confirm/prompt dialogs during this action (the agent asked, after the user approved). */
 let acceptDialogs = false;
-/** HTTP status of each tab's last main-frame navigation. */
+/** HTTP status of each tab's last main-frame navigation, and its Cloudflare `cf-mitigated` header. */
 const statusOf = new WeakMap();
+const cfMitigatedOf = new WeakMap();
 /** The live view while the user has the browser (see Handoff below), and how the last one ended. */
 let handoff;
 let lastHandoff;
@@ -214,6 +216,7 @@ function track(page) {
     try {
       if (response.request().isNavigationRequest() && response.frame() === page.mainFrame()) {
         statusOf.set(page, response.status());
+        cfMitigatedOf.set(page, response.headers()["cf-mitigated"]);
       }
     } catch {
       // the frame went away
@@ -281,7 +284,10 @@ async function goto(p, url, navMs) {
       try {
         const timeout = Math.max(navMs - (Date.now() - started), 5000);
         const response = await p.goto(checked.url.href, { waitUntil: "domcontentloaded", timeout });
-        if (response) statusOf.set(p, response.status());
+        if (response) {
+          statusOf.set(p, response.status());
+          cfMitigatedOf.set(p, response.headers()["cf-mitigated"]);
+        }
         await p.waitForLoadState("load", { timeout: 5000 }).catch(() => {});
         return;
       } catch (err) {
@@ -325,15 +331,27 @@ async function settle(p) {
   }
 }
 
+/** A ref is `e12` on the page itself, or `f2e5` inside frame f2 (see readFrames). */
 function locate(p, ref) {
-  if (!/^e\d{1,5}$/.test(ref ?? "")) throw new ActionError(`"${ref}" is not a ref like e12. Take a snapshot to get refs.`);
-  return p.locator(`[data-afe-ref="${ref}"]`);
+  const m = /^(f\d{1,4})?(e\d{1,5})$/.exec(ref ?? "");
+  if (!m) throw new ActionError(`"${ref}" is not a ref like e12 or f2e5. Take a snapshot to get refs.`);
+  const frame = m[1] ? p.frames().find((f) => frameIds.get(f) === m[1]) : p.mainFrame();
+  if (!frame || frame.isDetached()) {
+    throw new ActionError(`Ref ${ref} is no longer on the page (its frame went away). Take a new snapshot and use a ref from it.`);
+  }
+  return frame.locator(`[data-afe-ref="${m[2]}"]`);
 }
 
 async function withRef(p, ref, fn) {
   const target = locate(p, ref);
   if ((await target.count()) === 0) {
     throw new ActionError(`Ref ${ref} is no longer on the page (it changed or went away). Take a new snapshot and use a ref from it.`);
+  }
+  // A click at the centre of an element holding a CAPTCHA would land on its checkbox (snapshots leave
+  // these out, but a ref can predate the widget).
+  const frames = await target.first().evaluate((el) => [...el.querySelectorAll("iframe")].map((f) => f.src)).catch(() => []);
+  if (frames.some((src) => challengeFrame(src))) {
+    throw new ActionError("That element holds a human check (a CAPTCHA). Don't try to solve it: use handoff so the user can.");
   }
   try {
     await fn(target.first());
@@ -342,11 +360,49 @@ async function withRef(p, ref, fn) {
   }
 }
 
-async function describe(p, { query, maxChars } = {}) {
-  let snap;
+/** Frames read per snapshot besides the page itself; a page full of ad frames shouldn't slow every action. */
+const MAX_FRAMES = 12;
+/** Frame ids (`f1`, `f2`, …), kept for a frame's life so its refs stay stable like the page's. */
+const frameIds = new WeakMap();
+let nextFrame = 1;
+
+/** Where a frame sits on the page, or null when it can't be seen (hidden, or a tracking pixel). */
+async function frameBox(frame) {
+  const el = await frame.frameElement().catch(() => null);
+  if (!el) return null;
+  try {
+    if (!(await el.isVisible())) return null;
+    const box = await el.boundingBox();
+    if (!box || box.width < 8 || box.height < 8) return null;
+    return { inView: box.x < VIEW_W && box.y < VIEW_H && box.x + box.width > 0 && box.y + box.height > 0 };
+  } finally {
+    await el.dispose().catch(() => {});
+  }
+}
+
+/** Whether a human-check frame is asking for a person now: a puzzle on screen, or an unticked checkbox. */
+async function asksForPerson(frame, check) {
+  if (check === "puzzle") return true;
+  if (check !== "checkbox") return false;
+  // reCAPTCHA's and hCaptcha's checkbox; an invisible reCAPTCHA's badge has none.
+  const ticked = await frame
+    .evaluate(() => document.querySelector("#recaptcha-anchor, #checkbox")?.getAttribute("aria-checked") ?? null)
+    .catch(() => null);
+  return ticked === "false";
+}
+
+/**
+ * Snapshot the page and every frame on it a person can see (cookie banners,
+ * payment forms and other embeds, cross-origin ones included), each frame's
+ * refs prefixed with its id. Human-check widgets (reCAPTCHA and the like) are
+ * never read, so the agent can't click them; a visible one that is waiting
+ * for a person is returned as `challenge`, for the user to do in a handoff.
+ */
+async function readFrames(p, { query = "", maxList = MAX_LIST } = {}) {
+  let main;
   for (let attempt = 1; ; attempt++) {
     try {
-      snap = await p.evaluate(snapshotInPage, { maxList: MAX_LIST, query: query ?? "" });
+      main = await p.evaluate(snapshotInPage, { maxList, query });
       break;
     } catch (err) {
       // The page navigated mid-snapshot; give it a moment once.
@@ -354,27 +410,96 @@ async function describe(p, { query, maxChars } = {}) {
       await p.waitForLoadState("domcontentloaded", { timeout: 5000 }).catch(() => {});
     }
   }
-  const lines = [`Title: ${snap.title}`, `URL: ${snap.url}`, `Scrolled: ${snap.scroll}% of a ${snap.pageHeight}px page`];
-  if (snap.headings.length && !query) lines.push("Headings:", ...snap.headings);
-  if (snap.messages.length) lines.push("Messages:", ...snap.messages.map((m) => `- ${m}`));
-  const unlisted = snap.matched - snap.elements.length;
+  const frames = [];
+  const unread = new Set(); // frames left out; their own frames are left out with them
+  let unreadable = 0;
+  let skipped = 0;
+  let challenge;
+  // Parents before their children, so a frame left out takes its own frames with it.
+  const order = [];
+  const walk = (f) => f.childFrames().forEach((c) => (order.push(c), walk(c)));
+  walk(p.mainFrame());
+  for (const frame of order) {
+    const parent = frame.parentFrame();
+    if (frame.isDetached() || (parent && unread.has(parent))) {
+      unread.add(frame);
+      continue;
+    }
+    const widget = challengeFrame(frame.url());
+    const box = await frameBox(frame);
+    if (widget || !box) {
+      unread.add(frame);
+      if (widget && box?.inView && !challenge && (await asksForPerson(frame, widget.check))) {
+        challenge = { provider: widget.provider };
+      }
+      continue;
+    }
+    if (frames.length >= MAX_FRAMES) {
+      unread.add(frame);
+      skipped++;
+      continue;
+    }
+    let id = frameIds.get(frame);
+    if (!id) {
+      id = `f${nextFrame++}`;
+      frameIds.set(frame, id);
+    }
+    try {
+      const snap = await frame.evaluate(snapshotInPage, { maxList, query, prefix: id, frameSeen: box.inView });
+      frames.push({ id, frame, snap });
+    } catch {
+      // Navigating, or gone. Its refs, if any, fail with "no longer on the page".
+      unread.add(frame);
+      unreadable++;
+    }
+  }
+  return { main, frames, unreadable, skipped, challenge };
+}
+
+async function describe(p, { query, maxChars } = {}) {
+  const { main, frames, unreadable, skipped, challenge } = await readFrames(p, { query: query ?? "" });
+  const parts = [main, ...frames.map((f) => f.snap)];
+  // In view first across the page and its frames, then the rest.
+  const elements = [
+    ...parts.flatMap((s) => s.elements.slice(0, s.inView)),
+    ...parts.flatMap((s) => s.elements.slice(s.inView)),
+  ].slice(0, MAX_LIST);
+  const total = parts.reduce((n, s) => n + s.total, 0);
+  const matched = parts.reduce((n, s) => n + s.matched, 0);
+  const messages = parts.flatMap((s) => s.messages).slice(0, 5);
+
+  const lines = [`Title: ${main.title}`, `URL: ${main.url}`, `Scrolled: ${main.scroll}% of a ${main.pageHeight}px page`];
+  if (main.headings.length && !query) lines.push("Headings:", ...main.headings);
+  if (messages.length) lines.push("Messages:", ...messages.map((m) => `- ${m}`));
+  const unlisted = matched - elements.length;
   lines.push(
     query
-      ? `Elements matching "${query}" (${snap.matched} of ${snap.total}${unlisted > 0 ? `, ${unlisted} not listed` : ""}):`
-      : `Elements (${snap.total}, in view first${unlisted > 0 ? `; ${unlisted} not listed: scroll, or use snapshot with query` : ""}):`,
-    ...snap.elements,
+      ? `Elements matching "${query}" (${matched} of ${total}${unlisted > 0 ? `, ${unlisted} not listed` : ""}):`
+      : `Elements (${total}, in view first${unlisted > 0 ? `; ${unlisted} not listed: scroll, or use snapshot with query` : ""}):`,
+    ...elements,
   );
-  if (snap.total < 5 && snap.lead) lines.push(`Page text: ${snap.lead}`);
-  if (snap.frames) {
-    lines.push(
-      `Note: ${snap.frames} frame(s) on this page (for example a cookie banner or a payment form) aren't listed, and their buttons can't be used yet.`,
-    );
+  if (total < 5 && main.lead) lines.push(`Page text: ${main.lead}`);
+  const withElements = frames.filter((f) => f.snap.total > 0);
+  if (withElements.length) {
+    const where = withElements.map(({ id, frame }) => {
+      try {
+        return `${id} ${new URL(frame.url()).host || "(embedded)"}`;
+      } catch {
+        return `${id} (embedded)`;
+      }
+    });
+    lines.push(`Frames: ${where.join(", ")}. A ref inside a frame starts with its id, like ${withElements[0].id}e1.`);
   }
-  const blocked = looksBlocked({ status: statusOf.get(p), title: snap.title, text: snap.lead });
+  if (unreadable) lines.push(`Note: ${unreadable} frame(s) on this page couldn't be read (still loading?); a new snapshot may list them.`);
+  if (skipped) lines.push(`Note: only the first ${MAX_FRAMES} frames on this page are listed; ${skipped} more aren't.`);
+  const wall = challenge
+    ? "challenge"
+    : wallKind({ status: statusOf.get(p), title: main.title, text: main.lead, cfMitigated: cfMitigatedOf.get(p) });
   return {
     // A card number the user typed (in any field or editable element) never reaches the model.
     snapshot: truncate(maskCardNumbers(lines.join("\n")), maxChars, "use snapshot with query to find what you need").text,
-    ...(blocked ? { blocked: true } : {}),
+    ...(wall === "blocked" ? { blocked: true } : {}),
+    ...(wall === "challenge" ? { challenge: challenge ?? {} } : {}),
   };
 }
 
@@ -382,7 +507,12 @@ async function state(p, opts = {}) {
   const out = { tab: tabIds.get(p), url: p.url().slice(0, 500), title: (await p.title().catch(() => "")).slice(0, 200) };
   if (statusOf.get(p) !== undefined) out.status = statusOf.get(p);
   if (opts.snapshot !== false) Object.assign(out, await describe(p, opts));
-  if (out.blocked) {
+  if (out.challenge) {
+    // The gateway adds how to involve the user (a handoff, where one is possible).
+    out.note =
+      `This page is asking for a human check${out.challenge.provider ? ` (${out.challenge.provider})` : ""}. ` +
+      "Don't try to solve, click or get around it yourself.";
+  } else if (out.blocked) {
     out.note =
       "This site is showing a bot check or blocked the request. Don't retry or try to get around it; tell the user they can open the page themselves.";
   }
@@ -539,8 +669,10 @@ async function run(action, args, t) {
     }
     case "screenshot": {
       if (args.labels) {
-        await p.evaluate(snapshotInPage, { maxList: 0 }).catch(() => {});
-        await p.evaluate(labelsInPage, true).catch(() => {});
+        // Tag the page and its frames as a snapshot would, then label each in its own frame.
+        const { frames } = await readFrames(p, { maxList: 0 }).catch(() => ({ frames: [] }));
+        await p.evaluate(labelsInPage, { show: true }).catch(() => {});
+        for (const { id, frame } of frames) await frame.evaluate(labelsInPage, { show: true, prefix: id }).catch(() => {});
       }
       // Card details the user typed must never reach the model or the sandbox's disk: no screenshot at all
       // while a card field holds a value, or of the site a payment handoff was for.
@@ -565,7 +697,9 @@ async function run(action, args, t) {
         await p.screenshot({ path: join(DATA, rel), fullPage: Boolean(args.fullPage), timeout: t.actionMs });
         if (view) await p.screenshot({ path: join(DATA, view), type: "jpeg", quality: 70, timeout: t.actionMs });
       } finally {
-        if (args.labels) await p.evaluate(labelsInPage, false).catch(() => {});
+        if (args.labels) {
+          for (const frame of p.frames()) await frame.evaluate(labelsInPage, { show: false }).catch(() => {});
+        }
       }
       pruneScreenshots();
       return { ...(await state(p, { snapshot: false })), screenshot: rel, ...(view ? { view } : {}) };

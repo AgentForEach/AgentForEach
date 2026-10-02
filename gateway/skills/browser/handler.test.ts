@@ -103,7 +103,8 @@ test("checkBrowserArgs: navigate takes public http(s) URLs only", () => {
 
 test("checkBrowserArgs: refs, tabs and keys must look like refs, tabs and keys", () => {
   assert.deepEqual(checkBrowserArgs("click", { ref: "e12" }), { args: { ref: "e12" } });
-  assert.ok("error" in checkBrowserArgs("click", { ref: "#submit" }));
+  assert.deepEqual(checkBrowserArgs("click", { ref: "f2e5" }), { args: { ref: "f2e5" } }, "a ref inside frame f2");
+  for (const ref of ["#submit", "f2", "e5f2", "f e5", "frame2e5"]) assert.ok("error" in checkBrowserArgs("click", { ref }), ref);
   assert.ok("error" in checkBrowserArgs("click", {}));
   assert.deepEqual(checkBrowserArgs("tab_focus", { tab: "t2" }), { args: { tab: "t2" } });
   assert.ok("error" in checkBrowserArgs("tab_close", { tab: "2" }));
@@ -664,6 +665,51 @@ test("handoff: a live view that can't connect is an error, not a form", async ()
   const r2 = await second.browser.run({ action: "handoff", reason: "Log in", kind: "login" });
   assert.match(JSON.parse(r2.output).error, /could not be set up: no Web PubSub/);
   assert.equal(second.backend.commands.length, 0);
+});
+
+const CHALLENGE_PAGE = {
+  ok: true,
+  handled: true,
+  action: "navigate",
+  url: "https://shop.test/login",
+  snapshot: "Title: Sign in",
+  challenge: { provider: "reCAPTCHA" },
+  note: "This page is asking for a human check (reCAPTCHA). Don't try to solve, click or get around it yourself.",
+};
+
+test("challenge: the model follows the user's saved preference, or asks and offers to save the answer", async () => {
+  const { backend, browser } = setup(undefined, { userId: "u1", handoff: { relay: relay() } });
+  backend.reply = { stdout: JSON.stringify(CHALLENGE_PAGE) };
+  const out = JSON.parse(await browser.handle({ action: "navigate", url: "https://shop.test/login" }));
+  assert.deepEqual(out.challenge, { provider: "reCAPTCHA" });
+  assert.match(out.note, /^This page is asking for a human check \(reCAPTCHA\)\. Don't try to solve/);
+  assert.match(out.note, /preferences already say what to do .* do that without asking/);
+  assert.match(out.note, /request_user_input with type single_select/);
+  for (const value of ["handoff", "handoff_always", "skip", "skip_always"]) assert.match(out.note, new RegExp(`\\(${value}\\)`));
+  assert.match(out.note, /save it as one of their preferences with prompt_update \(USER\.preferences\)/);
+  assert.match(out.note, /call handoff with kind "captcha" on its own/);
+});
+
+test("challenge: where no handoff can happen, the model tells the user instead", async () => {
+  for (const [label, guards, config] of [
+    ["scheduled run", { userId: "u1", scheduled: true, handoff: { relay: relay() } }, CONFIG],
+    ["no live view in this chat", { userId: "u1" }, CONFIG],
+    ["handoff off", { userId: "u1", handoff: { relay: relay() } }, { ...CONFIG, handoff: { ...CONFIG.handoff, enabled: false } }],
+  ] as const) {
+    const { backend, browser } = setup(undefined, guards, config);
+    backend.reply = { stdout: JSON.stringify(CHALLENGE_PAGE) };
+    const out = JSON.parse(await browser.handle({ action: "navigate", url: "https://shop.test/login" }));
+    assert.match(out.note, /can't be handed to the user here: tell them the site wants a human check/, label);
+    assert.doesNotMatch(out.note, /request_user_input|call handoff/, label);
+  }
+});
+
+test("challenge: a page that is simply blocked keeps the driver's note", async () => {
+  const { backend, browser } = setup(undefined, { userId: "u1", handoff: { relay: relay() } });
+  const note = "This site is showing a bot check or blocked the request. Don't retry or try to get around it; tell the user they can open the page themselves.";
+  backend.reply = { stdout: JSON.stringify({ ok: true, handled: true, action: "navigate", blocked: true, note }) };
+  const out = JSON.parse(await browser.handle({ action: "navigate", url: "https://shop.test/" }));
+  assert.equal(out.note, note);
 });
 
 test("handoffOutcome: done, cancelled, or late, with the user's note", () => {

@@ -123,7 +123,10 @@ export interface BrowserDriverResult {
   view?: string;
   /** Downloaded files, paths under /mnt/data. */
   downloads?: string[];
+  /** The site refused (a bot wall with nothing to pass). */
   blocked?: boolean;
+  /** The page is asking for a human check (a CAPTCHA), which the user can do in a handoff. */
+  challenge?: { provider?: string };
   note?: string;
   notes?: string[];
   [key: string]: unknown;

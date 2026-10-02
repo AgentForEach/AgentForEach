@@ -43,6 +43,8 @@ The model works mainly from a **text snapshot** of the page, and takes a [screen
 
 - **Refs are stable.** An element keeps its ref for as long as it is on the page; new elements get new numbers. A ref from an earlier snapshot either still means the same element or, if the element is gone, returns an error; it never silently means a different element.
 - **In view first.** A snapshot lists up to 200 elements, those in the window first, and says how many it didn't list. `query` searches every element on the page (up to 5,000), listed or not.
+- **Frames and web components.** Elements inside the frames a person can see (cookie banners, payment forms and other embeds, cross-origin ones included) are listed with the rest, with refs that start with the frame's id: `[f2e5]` is `e5` in frame `f2`, and the snapshot says which site each frame is from (`Frames: f2 js.stripe.com`). Up to 12 frames are read; hidden ones and tracking pixels are skipped. Elements inside open shadow roots are listed like any other. Closed shadow roots are out of a page script's reach.
+- **Human checks are never listed.** Nothing inside a CAPTCHA widget's frame (reCAPTCHA, hCaptcha, Turnstile, Arkose Labs, DataDome) gets a ref, nor does an element that holds one (a click at its centre would land on the checkbox), and the driver refuses an action on such an element even with an older ref. See [Bot walls and human checks](#bot-walls-and-human-checks).
 - Passwords and card numbers are shown as `••••`, never their values. A field counts as a card field by its `autocomplete` (`cc-…`), by its name, id, label or placeholder (card number, CVV, expiry, PAN), or by holding a number that passes the card checksum (Luhn); fields inside open shadow roots and editable text areas count too. Page text never carries a card number either.
 - When a page has almost nothing to act on (a result page, an error), the start of its text is included.
 - Snapshots are cut at `maxSnapshotChars` at a line break, with a note on how to see more.
@@ -86,7 +88,7 @@ A snapshot can't show images, charts, prices set in pictures, layout, or a banne
 
 ## Handing the browser to the user
 
-Some steps are the user's to take, not the agent's: typing a password, solving a CAPTCHA, entering a code sent to their phone, paying. For those the agent calls `handoff` with a `reason` the user reads ("Log in to your Amazon account, then press Done.") and a `kind` (`login`, `captcha`, `2fa`, `payment` or `other`). The user takes over the live browser in the chat, and the agent carries on when they're done. The model is told never to ask for a password or card details, and never to type them itself.
+Some steps are the user's to take, not the agent's: typing a password, solving a CAPTCHA, entering a code sent to their phone, paying. For those the agent calls `handoff` (for a human check, a page's result tells it to; see [Bot walls and human checks](#bot-walls-and-human-checks)) with a `reason` the user reads ("Log in to your Amazon account, then press Done.") and a `kind` (`login`, `captcha`, `2fa`, `payment` or `other`). The user takes over the live browser in the chat, and the agent carries on when they're done. The model is told never to ask for a password or card details, and never to type them itself.
 
 ```
 agent ── browser {action: "handoff"} ──▶ gateway: a new random group, two tokens that can only join it
@@ -209,12 +211,21 @@ A change to the egress policy (for example, a credential revoked mid-conversatio
 
 ## Limits
 
-- **Bot walls.** Some sites block or challenge browsers on cloud IP addresses. In our tests Reddit, IRCTC, Stack Overflow and Booking.com did; Google, Bing, BBC, Amazon.in, Flipkart, GitHub, Wikipedia, LinkedIn and Hacker News worked. The proxy also adds `x-adc-proxy` and `traceparent` headers. The tool reports a wall (by status, title or page text) as `blocked`, and the model is told to tell the user rather than retry. AgentForEach doesn't try to get around bot checks.
-- **Frames and shadow DOM.** Snapshots cover the main page. Buttons inside an iframe (many cookie banners, payment forms) or a closed web component can't be used yet; the snapshot says when a page has frames.
+- **Bot walls.** Some sites block or challenge browsers on cloud IP addresses. In our tests Reddit, IRCTC, Stack Overflow and Booking.com did; Google, Bing, BBC, Amazon.in, Flipkart, GitHub, Wikipedia, LinkedIn and Hacker News worked. The proxy also adds `x-adc-proxy` and `traceparent` headers. See [Bot walls and human checks](#bot-walls-and-human-checks).
+- **Frames.** Up to 12 visible frames are read per snapshot; a page with more says how many it left out. Closed shadow roots (some web components) can't be read.
 - **Handoff on message channels.** Telegram and WhatsApp can't show the live view yet; sending the viewer link straight to the chat, without it passing through the model, is a follow-up.
 - **Late navigations.** After an action the driver waits for the page to settle (up to about 1.6 s of quiet); a page that navigates later shows the new page on the next call.
 - **Startup.** Chromium starts in 0.35–0.5 s; the first call in a fresh sandbox takes about 5 s (Xvfb, the driver, Chromium and the page). After a suspend, add the resume (about 1.5 s).
 - **Scheduled jobs.** A `main` job (delivered through the heartbeat queue into the user's session) gets the browser with the lower per-run cap. An `isolated` job (the default) is a single model call with no tools at all, so it can't browse, or fetch anything else; see [the scheduler](Crons.md#51-isolated-jobs).
+
+## Bot walls and human checks
+
+AgentForEach doesn't try to get around bot checks. The tool tells two kinds of wall apart, and the model is told never to retry either one:
+
+- **`challenge`**: the page asks for a check a person can pass. This means a visible reCAPTCHA or hCaptcha checkbox that isn't ticked yet, a CAPTCHA puzzle on screen, an Arkose Labs or DataDome check, Cloudflare's "Just a moment" page or its `cf-mitigated: challenge` header, PerimeterX's "Press & Hold", DuckDuckGo's and Amazon's checks. Where a [handoff](#handing-the-browser-to-the-user) can happen, the agent asks the user what to do: **Give me the browser**, **Always give me the browser**, **Skip this site** or **Always skip these**. Handing over opens the live view (kind `captcha`); skipping carries on without the page. An "Always" answer is saved as one of the user's preferences (`USER.preferences`, the same list as any other preference they state, like "prefers coffee over tea"), which is in every prompt, so the next check goes straight to the live view, or is skipped, without asking. The user can change it by saying so. Elsewhere (a scheduled run, Telegram, WhatsApp, a model without handoff) the agent tells the user the site wants a human check. The agent itself can't click the check: it isn't in snapshots, and the driver refuses actions on it.
+- **`blocked`**: the site refused (an empty 403, a 429, Akamai's "Access Denied", Reddit's network block). The model tells the user they can open the page themselves.
+
+An invisible reCAPTCHA badge or a Turnstile widget that passes on its own isn't a challenge. A ticked checkbox isn't one either.
 
 ## What we measured
 
@@ -246,7 +257,7 @@ The proxy dropped connections to some hosts for a minute or two once, for `curl`
 
 ## Testing
 
-- **Unit tests** (in `npm test`, or `npm run test:browser` in `gateway/`): the tool's argument checks, the command it builds, how results reach the model, the guardrails, metering, access and config (`skills/browser/handler.test.ts`), and the driver's URL guard, bot-wall detection, error messages, card-number masking and which viewer input it accepts (`sandbox-container/browser/guard.test.mjs`).
+- **Unit tests** (in `npm test`, or `npm run test:browser` in `gateway/`): the tool's argument checks, the command it builds, how results reach the model, the guardrails, metering, access and config (`skills/browser/handler.test.ts`), and the driver's URL guard, bot-wall and human-check detection, error messages, card-number masking and which viewer input it accepts (`sandbox-container/browser/guard.test.mjs`).
 - **Live test** against a real group: build first (`npx tsc -p gateway`), then run `scripts/test-browser-live.mjs` with the four `ACA_SANDBOX_*` variables and `ACA_SANDBOX_DISK_IMAGE_ID` (an image built with the browser). It drives the same path as the agent: search by ref, text, a labelled screenshot, refused local addresses, the driver token, a heavy page at the default size, cookies across a suspend, and `reset`. With `WEBPUBSUB_CONNECTION_STRING` set it also hands the browser to a user: frames stream out through the sandbox's egress, and the script, playing the user, types into the page and presses Done.
 - **The driver on your machine**, headless, without Azure (the lock file this creates is git-ignored):
 
@@ -265,7 +276,8 @@ The proxy dropped connections to some hosts for a minute or two once, for `curl`
 | Every page fails with `ERR_CERT_AUTHORITY_INVALID` | Chromium doesn't trust the proxy's CA. The driver imports it from `/etc/ssl/certs/adc-egress-proxy-ca.crt` at start; check that the file exists and `certutil` is installed |
 | Pages load without images or styles | Deny-mode egress: the page's other hosts aren't in `egressAllowHosts` |
 | `blocked: true` | The site's bot protection refused the cloud IP |
-| "Something on the page covers this element" | A cookie banner, dialog or menu is in the way; if it's in a frame, the agent can't close it yet |
+| `challenge` in a result | The page asks for a human check; the agent hands the browser to the user, or tells them where it can't ([Bot walls and human checks](#bot-walls-and-human-checks)) |
+| "Something on the page covers this element" | A cookie banner, dialog or menu is in the way; the agent can close it, including one in a frame (its refs start with the frame's id) |
 | A run fails after a screenshot with an error about images | The model can't read images (some models behind a Chat Completions endpoint). Set `showScreenshots: false` |
 | "The browser stopped during this action" | The driver or Chromium crashed; the next call starts a new one. Check memory, and `/tmp/afe-browser/driver.log` |
 | "The action took longer than N s and was stopped" | A page that never finished loading; raise `navigationTimeoutSec` if your sites are slow |
@@ -277,7 +289,6 @@ The proxy dropped connections to some hosts for a minute or two once, for `curl`
 
 ## Not built yet
 
-- **Frames and shadow DOM** in snapshots, so cookie banners in iframes and web components can be used.
 - **Handoff on Telegram and WhatsApp**, by sending the viewer link straight to the chat.
 - **Browser access by role or plan**, rather than a list of user ids. Roles don't reach the agent runner today, and scheduled runs have none.
 - **Tools in isolated scheduled jobs.** They are a single model call; see [the scheduler](Crons.md#51-isolated-jobs).

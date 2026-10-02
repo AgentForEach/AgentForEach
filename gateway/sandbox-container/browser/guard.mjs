@@ -94,42 +94,84 @@ export async function checkUrlResolved(raw, resolve = (h) => lookup(h, { all: tr
   return checked;
 }
 
-const WALL_TITLES = [
-  /^just a moment/i,
-  /^attention required/i,
-  /^access denied/i,
-  /^security check/i,
-  /are you a robot/i,
-  /^verify you are human/i,
-  /^403 forbidden/i,
-  /^request blocked/i,
-];
-
-/** What bot walls say on the page (Reddit, DuckDuckGo, Cloudflare, Akamai, PerimeterX, Google). */
-const WALL_TEXT = [
-  /blocked by network security/i,
+/** Walls a person can get past: a check to pass (Cloudflare's interstitial, PerimeterX, DuckDuckGo, Amazon). */
+const CHALLENGE_TITLES = [/^just a moment/i, /are you a robot/i, /^verify you are human/i, /^human verification/i];
+const CHALLENGE_TEXT = [
   /verify (that )?you are (a )?human/i,
+  /confirm (that )?you are (a )?human/i,
   /are you a robot/i,
-  /unusual traffic from your (computer )?network/i,
   /bots use duckduckgo too/i,
   /checking (if the site connection is secure|your browser)/i,
   /press (&|and) hold/i,
+  /enter the characters you see/i,
+];
+
+/** Walls with nothing to pass: the site refused (Akamai, Reddit, Google, Apache). */
+const BLOCK_TITLES = [/^attention required/i, /^access denied/i, /^security check/i, /^403 forbidden/i, /^request blocked/i];
+const BLOCK_TEXT = [
+  /blocked by network security/i,
+  /unusual traffic from your (computer )?network/i,
   /you don't have permission to access .* on this server/i,
   /please enable (javascript and )?cookies to continue/i,
 ];
 
 /**
- * Whether a page looks like a bot wall (Cloudflare, Akamai and friends
- * challenge datacenter IPs). The agent should tell the user, not retry.
- * `text` is the start of the page's visible text; walls often answer 200.
+ * Whether a page is a bot wall (Cloudflare, Akamai and friends challenge
+ * datacenter IPs), and which kind: "challenge" when it asks for a check a
+ * person can do (the user, through a handoff), "blocked" when the site just
+ * refused, or null for an ordinary page. Never something for the agent to
+ * retry or get around. `text` is the start of the page's visible text (walls
+ * often answer 200); `cfMitigated` is Cloudflare's `cf-mitigated` header.
  */
-export function looksBlocked({ status, title, text }) {
-  if (status === 429) return true;
+export function wallKind({ status, title, text, cfMitigated }) {
   const t = (title ?? "").trim();
-  if (WALL_TITLES.some((re) => re.test(t))) return true;
+  const lead = (text ?? "").slice(0, 600);
+  if (String(cfMitigated ?? "").trim().toLowerCase() === "challenge") return "challenge";
+  if (CHALLENGE_TITLES.some((re) => re.test(t)) || CHALLENGE_TEXT.some((re) => re.test(lead))) return "challenge";
+  if (status === 429) return "blocked";
+  if (BLOCK_TITLES.some((re) => re.test(t))) return "blocked";
   // A 403 with a real page (a login form, an error page with links) isn't necessarily a wall; one with little text is.
-  if (status === 403 && (text ?? "").length < 400) return true;
-  return WALL_TEXT.some((re) => re.test((text ?? "").slice(0, 600)));
+  if (status === 403 && (text ?? "").length < 400) return "blocked";
+  return BLOCK_TEXT.some((re) => re.test(lead)) ? "blocked" : null;
+}
+
+/** Whether a page is a bot wall of either kind (see wallKind). */
+export function looksBlocked(page) {
+  return wallKind(page) !== null;
+}
+
+/**
+ * The human-check widget a frame belongs to, by the frame's address, or null.
+ *
+ * The driver never lists anything inside these frames, so the agent can't
+ * click "I'm not a robot" itself, and reports a visible one as a check for
+ * the user. `check` is the part that asks a person for something: the
+ * "checkbox" (a check only while it is unticked: an invisible reCAPTCHA's
+ * badge has none), the "puzzle" that pops up (hidden off-page until then), or
+ * "none". Turnstile is "none": it usually passes on its own, and its
+ * full-page interstitial is caught by its title or header (wallKind).
+ */
+export function challengeFrame(raw) {
+  let url;
+  try {
+    url = new URL(String(raw));
+  } catch {
+    return null;
+  }
+  const host = url.hostname.toLowerCase();
+  const under = (domain) => host === domain || host.endsWith(`.${domain}`);
+  if ((under("google.com") || under("recaptcha.net")) && url.pathname.startsWith("/recaptcha/")) {
+    const part = url.pathname.endsWith("/bframe") ? "puzzle" : url.pathname.endsWith("/anchor") ? "checkbox" : "none";
+    return { provider: "reCAPTCHA", check: part };
+  }
+  if (under("hcaptcha.com")) {
+    const frame = new URLSearchParams(url.hash.slice(1)).get("frame");
+    return { provider: "hCaptcha", check: frame === "challenge" ? "puzzle" : frame === "checkbox" ? "checkbox" : "none" };
+  }
+  if (host === "challenges.cloudflare.com") return { provider: "Cloudflare Turnstile", check: "none" };
+  if (under("arkoselabs.com") || under("funcaptcha.com")) return { provider: "Arkose Labs", check: "puzzle" };
+  if (under("captcha-delivery.com")) return { provider: "DataDome", check: "puzzle" };
+  return null;
 }
 
 /** Network errors worth one quiet retry (the egress proxy drops a connection now and then). */

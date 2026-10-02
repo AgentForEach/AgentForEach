@@ -6,20 +6,35 @@
  */
 
 /**
- * Tag interactive elements and describe the page.
+ * Tag interactive elements and describe the page (or one frame of it).
  *
  * Refs are stable: an element keeps the ref it was given for as long as it is
  * in the document, and new elements get new numbers, so a ref from an earlier
  * snapshot either still means the same element or is gone (an error), never a
  * different element. Every visible element is tagged; `query` searches all of
- * them, and the list shows elements in view first, up to `maxList`.
+ * them, and the list shows elements in view first, up to `maxList`. Elements
+ * inside open shadow roots count too (Playwright's CSS locators reach into
+ * them); closed ones are out of a page script's reach.
  *
- * @param {{ maxList: number, query?: string }} opts
+ * The driver runs this in every frame it reads. `prefix` is the frame's id,
+ * shown before each ref (`[f2e3]`; the element's attribute stays `e3`), and
+ * `frameSeen: false` marks every element offscreen when the frame itself is.
+ *
+ * @param {{ maxList: number, query?: string, prefix?: string, frameSeen?: boolean }} opts
  */
 export function snapshotInPage(opts) {
   const ATTR = "data-afe-ref";
   const MAX_TAGGED = 5000;
   if (typeof window.__afeNextRef !== "number") window.__afeNextRef = 1;
+  const prefix = opts.prefix ?? "";
+
+  // The document and every open shadow root in it, nested ones included.
+  const roots = [document];
+  for (let i = 0; i < roots.length && roots.length < 500; i++) {
+    const walker = document.createTreeWalker(roots[i], NodeFilter.SHOW_ELEMENT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) if (n.shadowRoot) roots.push(n.shadowRoot);
+  }
+  const queryAll = (sel) => roots.flatMap((r) => [...r.querySelectorAll(sel)]);
 
   const INTERACTIVE_ROLES = new Set([
     "button", "link", "checkbox", "radio", "tab", "menuitem", "menuitemcheckbox",
@@ -77,13 +92,15 @@ export function snapshotInPage(opts) {
   function name(el) {
     const aria = el.getAttribute("aria-label");
     if (aria) return clean(aria);
+    // Ids and labels resolve within the element's own tree (its shadow root, or the document).
+    const tree = el.getRootNode();
     const labelledBy = el.getAttribute("aria-labelledby");
     if (labelledBy) {
-      const text = labelledBy.split(/\s+/).map((id) => document.getElementById(id)?.textContent ?? "").join(" ");
+      const text = labelledBy.split(/\s+/).map((id) => tree.getElementById?.(id)?.textContent ?? "").join(" ");
       if (clean(text)) return clean(text);
     }
     if (el.id) {
-      const label = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+      const label = tree.querySelector?.(`label[for="${CSS.escape(el.id)}"]`);
       if (label && clean(label.textContent)) return clean(label.textContent);
     }
     const wrapping = el.closest("label");
@@ -151,44 +168,61 @@ export function snapshotInPage(opts) {
     ...[...INTERACTIVE_ROLES].map((r) => `[role='${r}']`),
   ].join(",");
 
+  // Human-check widgets' frames: the same providers as guard.mjs's challengeFrame (keep the two in step).
+  // An element holding one gets no ref, since a click at its centre would land on the widget's checkbox.
+  const widgets = queryAll("iframe").filter((f) => {
+    try {
+      const u = new URL(f.src, location.href);
+      return (
+        (/(^|\.)(google\.com|recaptcha\.net)$/.test(u.hostname) && u.pathname.startsWith("/recaptcha/")) ||
+        /(^|\.)(hcaptcha\.com|arkoselabs\.com|funcaptcha\.com|captcha-delivery\.com)$/.test(u.hostname) ||
+        u.hostname === "challenges.cloudflare.com"
+      );
+    } catch {
+      return false;
+    }
+  });
+
   const inView = [];
   const offscreen = [];
   let scanned = 0;
-  for (const el of document.querySelectorAll(selector)) {
+  for (const el of queryAll(selector)) {
     if (scanned++ >= MAX_TAGGED) break;
     if (!visible(el)) continue;
+    if (widgets.length && widgets.some((w) => el.contains(w))) continue;
     let ref = el.getAttribute(ATTR);
     if (!ref) {
       ref = `e${window.__afeNextRef++}`;
       el.setAttribute(ATTR, ref);
     }
     const rect = el.getBoundingClientRect();
-    const seen = rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth;
-    const line = [`[${ref}]`, role(el), JSON.stringify(name(el)), state(el), seen ? "" : "(offscreen)"]
+    const seen =
+      opts.frameSeen !== false && rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth;
+    const line = [`[${prefix}${ref}]`, role(el), JSON.stringify(name(el)), state(el), seen ? "" : "(offscreen)"]
       .filter(Boolean)
       .join(" ");
-    (seen ? inView : offscreen).push(line);
+    (seen ? inView : offscreen).push({ line, seen });
   }
   const all = [...inView, ...offscreen];
   const tokens = (opts.query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
   // Match what the element is, not its ref: "4999" shouldn't find [e4999].
   const described = (line) => line.slice(line.indexOf("]") + 1).toLowerCase();
-  const matching = tokens.length ? all.filter((line) => tokens.every((t) => described(line).includes(t))) : all;
+  const matching = tokens.length ? all.filter(({ line }) => tokens.every((t) => described(line).includes(t))) : all;
+  const listed = matching.slice(0, opts.maxList);
 
-  const headings = [...document.querySelectorAll("h1, h2, h3")]
+  const headings = queryAll("h1, h2, h3")
     .filter(visible)
     .slice(0, 20)
     .map((h) => `${"#".repeat(Number(h.tagName[1]))} ${clean(h.textContent, 100)}`)
     .filter((h) => h.trim().length > 2);
 
   // Validation errors, "added to cart" and similar live messages aren't controls, but the agent needs them.
-  const messages = [...document.querySelectorAll("[role=alert], [role=status], [aria-live=assertive], [aria-live=polite]")]
+  const messages = queryAll("[role=alert], [role=status], [aria-live=assertive], [aria-live=polite]")
     .filter(visible)
     .map((m) => clean(m.innerText, 150))
     .filter(Boolean)
     .slice(0, 5);
 
-  const frames = [...document.querySelectorAll("iframe")].filter(visible).length;
   const body = document.body?.innerText ?? "";
   const scrollable = Math.max(document.documentElement.scrollHeight - innerHeight, 0);
   return {
@@ -197,11 +231,12 @@ export function snapshotInPage(opts) {
     scroll: scrollable ? Math.round((scrollY / scrollable) * 100) : 0,
     pageHeight: document.documentElement.scrollHeight,
     headings,
-    elements: matching.slice(0, opts.maxList),
+    elements: listed.map(({ line }) => line),
+    // How many of `elements` are in view (they come first), so the driver can merge frames in-view first.
+    inView: listed.filter(({ seen }) => seen).length,
     total: all.length,
     matched: matching.length,
     messages,
-    frames,
     // For bot-wall detection, and shown when a page has almost nothing to act on.
     lead: clean(body, 600),
   };
@@ -216,22 +251,32 @@ export function textInPage(selector) {
   return root ? root.innerText.replace(/\n{3,}/g, "\n\n").trim() : "";
 }
 
-/** Draw (or remove) numbered labels on tagged elements in view, for a labelled screenshot. */
-export function labelsInPage(show) {
+/**
+ * Draw (or remove) labels on tagged elements in view, for a labelled
+ * screenshot, in this frame: `prefix` is the frame's id, as in snapshots.
+ *
+ * @param {{ show: boolean, prefix?: string }} opts
+ */
+export function labelsInPage({ show, prefix = "" }) {
   const ID = "afe-labels";
   document.getElementById(ID)?.remove();
   if (!show) return 0;
+  const roots = [document];
+  for (let i = 0; i < roots.length && roots.length < 500; i++) {
+    const walker = document.createTreeWalker(roots[i], NodeFilter.SHOW_ELEMENT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) if (n.shadowRoot) roots.push(n.shadowRoot);
+  }
   const layer = document.createElement("div");
   layer.id = ID;
   layer.style.cssText = "position:fixed;inset:0;pointer-events:none;z-index:2147483647";
   let n = 0;
-  for (const el of document.querySelectorAll("[data-afe-ref]")) {
+  for (const el of roots.flatMap((r) => [...r.querySelectorAll("[data-afe-ref]")])) {
     const r = el.getBoundingClientRect();
     if (r.bottom < 0 || r.top > innerHeight || r.right < 0 || r.left > innerWidth) continue;
     const box = document.createElement("div");
     box.style.cssText = `position:fixed;left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;outline:2px solid #F29A1F`;
     const tag = document.createElement("span");
-    tag.textContent = el.getAttribute("data-afe-ref");
+    tag.textContent = `${prefix}${el.getAttribute("data-afe-ref")}`;
     tag.style.cssText = "position:absolute;left:0;top:-14px;font:bold 11px/14px monospace;background:#F29A1F;color:#151827;padding:0 3px";
     box.appendChild(tag);
     layer.appendChild(box);

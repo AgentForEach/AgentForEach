@@ -3,7 +3,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { blockedAddress, checkUrl, checkUrlResolved, explainError, hostMatches, isCardNumber, isTransientNetError, looksBlocked, maskCardNumbers, parseViewerInput, truncate } from "./guard.mjs";
+import { blockedAddress, challengeFrame, checkUrl, checkUrlResolved, explainError, hostMatches, isCardNumber, isTransientNetError, looksBlocked, maskCardNumbers, parseViewerInput, truncate, wallKind } from "./guard.mjs";
 
 test("checkUrl allows public http and https URLs", () => {
   for (const url of ["https://example.com/a?b=c", "http://en.wikipedia.org/wiki/Azure", "https://93.184.215.14/"]) {
@@ -86,6 +86,44 @@ test("looksBlocked spots bot walls seen on real sites", () => {
     true,
     "DuckDuckGo after a form submit",
   );
+});
+
+test("wallKind: a check a person can pass is a challenge, a refusal is blocked", () => {
+  assert.equal(wallKind({ status: 403, title: "Just a moment..." }), "challenge", "Cloudflare interstitial");
+  assert.equal(wallKind({ status: 403, title: "", cfMitigated: "challenge" }), "challenge", "Cloudflare says so in a header");
+  assert.equal(wallKind({ status: 200, title: "", text: "Press & Hold to confirm you are a human (and not a bot)." }), "challenge", "PerimeterX");
+  assert.equal(
+    wallKind({ status: undefined, title: "DuckDuckGo", text: "Unfortunately, bots use DuckDuckGo too. Please complete the following challenge" }),
+    "challenge",
+  );
+  assert.equal(wallKind({ status: 200, title: "Amazon.com", text: "Enter the characters you see below" }), "challenge");
+  assert.equal(wallKind({ status: 403, title: "Access Denied" }), "blocked", "Akamai");
+  assert.equal(wallKind({ status: 429, title: "Too Many Requests" }), "blocked");
+  assert.equal(wallKind({ status: 403, title: "", text: "" }), "blocked", "empty 403");
+  assert.equal(wallKind({ status: 200, title: "", text: "You've been blocked by network security. To continue, log in" }), "blocked");
+  assert.equal(wallKind({ status: 200, title: "Hacker News", text: "Hacker News new | past" }), null);
+  assert.equal(wallKind({ status: 200, title: "Shop", cfMitigated: "block" }), null, "only Cloudflare's challenge value counts");
+});
+
+test("challengeFrame: knows the human-check widgets and which part asks a person", () => {
+  // Frame addresses as seen on the providers' own demo pages (October 2026).
+  const g = "https://www.google.com/recaptcha/api2";
+  assert.deepEqual(challengeFrame(`${g}/anchor?ar=1&k=6Le-wvkSAAAA&size=normal`), { provider: "reCAPTCHA", check: "checkbox" });
+  assert.deepEqual(challengeFrame(`${g}/bframe?hl=en&k=6Le-wvkSAAAA`), { provider: "reCAPTCHA", check: "puzzle" });
+  assert.deepEqual(challengeFrame("https://www.recaptcha.net/recaptcha/enterprise/anchor?k=x"), { provider: "reCAPTCHA", check: "checkbox" });
+  const h = "https://newassets.hcaptcha.com/captcha/v1/0521/static/hcaptcha.html";
+  assert.deepEqual(challengeFrame(`${h}#frame=checkbox&id=0qg3&host=accounts.hcaptcha.com`), { provider: "hCaptcha", check: "checkbox" });
+  assert.deepEqual(challengeFrame(`${h}#frame=challenge&id=0qg3`), { provider: "hCaptcha", check: "puzzle" });
+  assert.deepEqual(
+    challengeFrame("https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/turnstile/f/av0/normal"),
+    { provider: "Cloudflare Turnstile", check: "none" },
+    "Turnstile usually passes on its own",
+  );
+  assert.equal(challengeFrame("https://github-api.arkoselabs.com/fc/gc/?token=x").check, "puzzle");
+  assert.equal(challengeFrame("https://geo.captcha-delivery.com/captcha/?initialCid=x").provider, "DataDome");
+  for (const url of ["https://www.google.com/maps/embed?pb=x", "https://js.stripe.com/v3/elements-inner-card.html", "about:srcdoc", "about:blank", "not a url", "https://evil.test/recaptcha/api2/anchor", "https://notgoogle.com/recaptcha/api2/anchor"]) {
+    assert.equal(challengeFrame(url), null, url);
+  }
 });
 
 test("looksBlocked leaves ordinary pages alone", () => {
