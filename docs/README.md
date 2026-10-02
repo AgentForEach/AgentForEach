@@ -35,6 +35,7 @@
 | [Sandboxes on Google Cloud](GCP_Evaluation.md) | GKE Agent Substrate and GKE Agent Sandbox tested as alternatives to ACA Sandboxes, with verdicts |
 | [Sandboxes on Cloudflare](Cloudflare_Evaluation.md) | Cloudflare Containers tested as an alternative to ACA Sandboxes: starts, snapshots, egress and feedback for the Containers team |
 | [Sandboxes on AWS](AWS_Evaluation.md) | AWS Bedrock AgentCore Runtime tested as an alternative to ACA Sandboxes: sessions, session storage, egress and a five-platform comparison |
+| [D1 on Cloudflare](D1_Evaluation.md) | Why the coming Cloudflare deployment will use PostgreSQL through Hyperdrive, not D1 or Vectorize: vector search measured, throughput, transactions |
 | [Browser](Browser.md) | A real browser for the agent, inside each user's sandbox |
 | [Knowledge](Knowledge.md) | The optional, deployment-wide Azure AI Search library |
 
