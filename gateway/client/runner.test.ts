@@ -207,6 +207,9 @@ test("a tool call that hangs fails the run at its deadline, not when the call re
   ]);
   let release!: () => void;
   const stuck = new Promise<void>((r) => (release = r));
+  // A stuck call still holds its connection open; without that, Node 22 ends the
+  // test when only the run's unref'd deadline timer is left.
+  const connection = setInterval(() => {}, 1000);
   const { deps } = makeDeps(provider, {
     memoryToolHandler: async () => {
       await stuck; // a sandbox that never starts
@@ -222,6 +225,7 @@ test("a tool call that hangs fails the run at its deadline, not when the call re
     assert.equal(provider.requests.length, 1, "the late result never reached the model");
   } finally {
     release();
+    clearInterval(connection);
   }
 });
 

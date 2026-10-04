@@ -128,9 +128,15 @@ test("nothing to delete makes no calls; a refused token, read or delete is an er
 });
 
 test("a registry that never answers fails after the timeout instead of hanging (review R2)", async () => {
+  // A request that never answers still holds its socket open; without that, Node 22
+  // ends the test when only AbortSignal.timeout's unref'd timer is left.
   const hanging = ((_input: RequestInfo | URL, init?: RequestInit) =>
     new Promise<Response>((_resolve, reject) => {
-      init?.signal?.addEventListener("abort", () => reject(init.signal!.reason));
+      const socket = setInterval(() => {}, 1000);
+      init?.signal?.addEventListener("abort", () => {
+        clearInterval(socket);
+        reject(init.signal!.reason);
+      });
     })) as typeof fetch;
   const registry = new SnapshotRegistry({ accountId: "acct", apiToken: "t", timeoutMs: 20, fetch: hanging });
   await assert.rejects(registry.delete("repo", ["x"]), (err: Error) => err.name === "TimeoutError");
