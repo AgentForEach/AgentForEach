@@ -16,20 +16,15 @@
  *   POST   /cron/start      — Start/restart the scheduler
  */
 
-import * as df from "durable-functions";
-import {
-  app,
-  type HttpRequest,
-  type HttpResponseInit,
-  type InvocationContext,
-} from "@azure/functions";
+import type { HandlerContext, HttpRequestLike, HttpResult, RouteDef } from "@agentforeach/platform";
+import { durable } from "../runtime/durable.js";
+import { CRON_RUN_KIND, CRON_SCHEDULER_KIND, wakeOrStartScheduler } from "./orchestrator.js";
+import type { DurableStatus, InstanceInfo } from "@agentforeach/platform";
 import { getCronStore, hasActiveRunningClaim } from "./store.js";
 import {
-  JOBS_CHANGED_EVENT,
   getSchedulerInstanceId,
   getSchedulerShardCount,
   getSchedulerShardForUser,
-  isCronApiEnabled,
   normalizeSchedulerShardId,
 } from "./config.js";
 import type { CronJobCreate, CronJobPatch } from "./types.js";
@@ -43,7 +38,7 @@ import { getScopedRateLimiter } from "../ratelimit/index.js";
 // Helpers
 // ============================================================================
 
-function jsonResponse(body: unknown, status = 200): HttpResponseInit {
+function jsonResponse(body: unknown, status = 200): HttpResult {
   return {
     status,
     headers: { "Content-Type": "application/json" },
@@ -51,22 +46,17 @@ function jsonResponse(body: unknown, status = 200): HttpResponseInit {
   };
 }
 
-function errorResponse(message: string, status: number): HttpResponseInit {
+function errorResponse(message: string, status: number): HttpResult {
   return jsonResponse({ error: message }, status);
 }
 
-/** Register a /cron/* route unless the API is turned off (cron.enabled=false). */
-function registerCronRoute(name: string, options: Parameters<typeof app.http>[1]): void {
-  if (isCronApiEnabled()) app.http(name, options);
-}
-
-async function getUserId(req: HttpRequest): Promise<string | null> {
+async function getUserId(req: HttpRequestLike): Promise<string | null> {
   const auth = await resolveAuthContext(req);
   return auth?.userId ?? null;
 }
 
 /** 401 without a user, 403 without the admin role, null when allowed. */
-async function requireAdmin(req: HttpRequest): Promise<HttpResponseInit | null> {
+async function requireAdmin(req: HttpRequestLike): Promise<HttpResult | null> {
   const auth = await resolveAuthContext(req);
   if (!auth) return errorResponse("Unauthorized", 401);
   if (!isAdmin(auth)) return errorResponse("Forbidden: requires the admin role", 403);
@@ -74,58 +64,61 @@ async function requireAdmin(req: HttpRequest): Promise<HttpResponseInit | null> 
 }
 
 /**
- * Signal the scheduler orchestrator that jobs have changed.
+ * Wake the scheduler shard(s) whose jobs changed, starting any that isn't
+ * running (wakeOrStartScheduler).
  */
 async function signalJobsChanged(
-  ctx: InvocationContext,
+  ctx: HandlerContext,
   opts?: { userId?: string; shardId?: number },
 ): Promise<void> {
-  try {
-    const client = df.getClient(ctx);
-    const shardCount = getSchedulerShardCount();
-    if (typeof opts?.shardId === "number") {
-      const shardId = normalizeSchedulerShardId(opts.shardId, shardCount);
-      await client.raiseEvent(
-        getSchedulerInstanceId(shardId, shardCount),
-        JOBS_CHANGED_EVENT,
-        { shardId },
-      );
-      return;
+  const shardCount = getSchedulerShardCount();
+  const signal = async (shardId: number) => {
+    try {
+      const result = await wakeOrStartScheduler(shardId, shardCount);
+      if (result === "started") ctx.log(`CronScheduler shard=${shardId} wasn't running; started.`);
+    } catch (err) {
+      // The health check starts it on its next cycle.
+      ctx.warn(`Couldn't signal the scheduler for shard=${shardId}: ${err instanceof Error ? err.message : String(err)}`);
     }
-    if (opts?.userId) {
-      const shardId = getSchedulerShardForUser(opts.userId, shardCount);
-      await client.raiseEvent(
-        getSchedulerInstanceId(shardId, shardCount),
-        JOBS_CHANGED_EVENT,
-        { shardId, userId: opts.userId },
-      );
-      return;
-    }
+  };
+  if (typeof opts?.shardId === "number") return signal(normalizeSchedulerShardId(opts.shardId, shardCount));
+  if (opts?.userId) return signal(getSchedulerShardForUser(opts.userId, shardCount));
+  await Promise.all(Array.from({ length: shardCount }, (_, shardId) => signal(shardId)));
+}
 
-    await Promise.all(
-      Array.from({ length: shardCount }, (_, shardId) =>
-        client.raiseEvent(
-          getSchedulerInstanceId(shardId, shardCount),
-          JOBS_CHANGED_EVENT,
-          { shardId },
-        ),
-      ),
-    );
-  } catch {
-    // Orchestrator might not be running yet — health check will start it
-  }
+/** Status names in the cron admin API (they predate the durable port). */
+const STATUS_NAMES: Record<DurableStatus, string> = {
+  pending: "Pending",
+  running: "Running",
+  suspended: "Suspended",
+  completed: "Completed",
+  failed: "Failed",
+  terminated: "Terminated",
+};
+
+function describeShard(shardId: number, instanceId: string, info: InstanceInfo | null) {
+  return {
+    shardId,
+    instanceId,
+    runtimeStatus: info ? STATUS_NAMES[info.status] : "NotFound",
+    createdTime: info?.createdAt,
+    lastUpdatedTime: info?.updatedAt,
+  };
 }
 
 // ============================================================================
 // POST /cron/jobs — Create a job
 // ============================================================================
 
-registerCronRoute("cronCreateJob", {
+/** The /cron/* routes; served unless the API is turned off (cron.enabled=false, see `isCronApiEnabled`). */
+export const routes: RouteDef[] = [];
+
+routes.push({
+  name: "cronCreateJob",
   methods: ["POST"],
   route: "cron/jobs",
-  authLevel: "anonymous",
-  extraInputs: [df.input.durableClient()],
-  handler: async (req: HttpRequest, ctx: InvocationContext) => {
+  durable: true,
+  handler: async (req: HttpRequestLike, ctx: HandlerContext) => {
     const userId = await getUserId(req);
     if (!userId) return errorResponse("Unauthorized", 401);
 
@@ -187,11 +180,11 @@ registerCronRoute("cronCreateJob", {
 // GET /cron/jobs — List jobs
 // ============================================================================
 
-registerCronRoute("cronListJobs", {
+routes.push({
+  name: "cronListJobs",
   methods: ["GET"],
   route: "cron/jobs",
-  authLevel: "anonymous",
-  handler: async (req: HttpRequest) => {
+  handler: async (req: HttpRequestLike) => {
     const userId = await getUserId(req);
     if (!userId) return errorResponse("Unauthorized", 401);
 
@@ -207,11 +200,11 @@ registerCronRoute("cronListJobs", {
 // GET /cron/jobs/{id} — Get a single job
 // ============================================================================
 
-registerCronRoute("cronGetJob", {
+routes.push({
+  name: "cronGetJob",
   methods: ["GET"],
   route: "cron/jobs/{id}",
-  authLevel: "anonymous",
-  handler: async (req: HttpRequest) => {
+  handler: async (req: HttpRequestLike) => {
     const userId = await getUserId(req);
     if (!userId) return errorResponse("Unauthorized", 401);
 
@@ -233,12 +226,12 @@ registerCronRoute("cronGetJob", {
 // PATCH /cron/jobs/{id} — Update a job
 // ============================================================================
 
-registerCronRoute("cronUpdateJob", {
+routes.push({
+  name: "cronUpdateJob",
   methods: ["PATCH"],
   route: "cron/jobs/{id}",
-  authLevel: "anonymous",
-  extraInputs: [df.input.durableClient()],
-  handler: async (req: HttpRequest, ctx: InvocationContext) => {
+  durable: true,
+  handler: async (req: HttpRequestLike, ctx: HandlerContext) => {
     const userId = await getUserId(req);
     if (!userId) return errorResponse("Unauthorized", 401);
 
@@ -277,12 +270,12 @@ registerCronRoute("cronUpdateJob", {
 // DELETE /cron/jobs/{id} — Delete a job
 // ============================================================================
 
-registerCronRoute("cronDeleteJob", {
+routes.push({
+  name: "cronDeleteJob",
   methods: ["DELETE"],
   route: "cron/jobs/{id}",
-  authLevel: "anonymous",
-  extraInputs: [df.input.durableClient()],
-  handler: async (req: HttpRequest, ctx: InvocationContext) => {
+  durable: true,
+  handler: async (req: HttpRequestLike, ctx: HandlerContext) => {
     const userId = await getUserId(req);
     if (!userId) return errorResponse("Unauthorized", 401);
 
@@ -302,12 +295,12 @@ registerCronRoute("cronDeleteJob", {
 // POST /cron/jobs/{id}/run — Force-run a job immediately
 // ============================================================================
 
-registerCronRoute("cronForceRun", {
+routes.push({
+  name: "cronForceRun",
   methods: ["POST"],
   route: "cron/jobs/{id}/run",
-  authLevel: "anonymous",
-  extraInputs: [df.input.durableClient()],
-  handler: async (req: HttpRequest, ctx: InvocationContext) => {
+  durable: true,
+  handler: async (req: HttpRequestLike, ctx: HandlerContext) => {
     const userId = await getUserId(req);
     if (!userId) return errorResponse("Unauthorized", 401);
 
@@ -337,16 +330,12 @@ registerCronRoute("cronForceRun", {
       return errorResponse("Job is already running. Try again later.", 409);
     }
 
-    // Dispatch execution to a one-shot Durable orchestration.
+    // Dispatch execution to a durable job.
     // Returns 202 immediately — the caller polls GET /cron/runs/{id}
-    // to check the result. This avoids Consumption plan HTTP timeout
-    // risk (230s) for long-running jobs.
-    const client = df.getClient(ctx);
+    // to check the result. No HTTP request has to stay open for a
+    // long-running job.
     const instanceId = `force-run-${claimed.id}-${Date.now()}`;
-    await client.startNew("CronForceRunExecution", {
-      instanceId,
-      input: claimed,
-    });
+    await durable().startJob(CRON_RUN_KIND, claimed, instanceId);
 
     // Signal scheduler early so it recomputes wake times.
     await signalJobsChanged(ctx, { userId });
@@ -367,11 +356,11 @@ registerCronRoute("cronForceRun", {
 // GET /cron/runs/{id} — Get run history for a job
 // ============================================================================
 
-registerCronRoute("cronGetRuns", {
+routes.push({
+  name: "cronGetRuns",
   methods: ["GET"],
   route: "cron/runs/{id}",
-  authLevel: "anonymous",
-  handler: async (req: HttpRequest) => {
+  handler: async (req: HttpRequestLike) => {
     const userId = await getUserId(req);
     if (!userId) return errorResponse("Unauthorized", 401);
 
@@ -386,7 +375,7 @@ registerCronRoute("cronGetRuns", {
     const limitParam = req.query.get("limit");
     const limit = limitParam ? parseInt(limitParam, 10) : undefined;
 
-    const runs = await store.getRuns(jobId, limit);
+    const runs = await store.getRuns(jobId, userId, limit);
 
     return jsonResponse({ runs, count: runs.length });
   },
@@ -396,62 +385,28 @@ registerCronRoute("cronGetRuns", {
 // GET /cron/status — Scheduler status
 // ============================================================================
 
-registerCronRoute("cronStatus", {
+routes.push({
+  name: "cronStatus",
   methods: ["GET"],
   route: "cron/status",
-  authLevel: "anonymous",
-  extraInputs: [df.input.durableClient()],
-  handler: async (_req: HttpRequest, ctx: InvocationContext) => {
+  durable: true,
+  handler: async (_req: HttpRequestLike, ctx: HandlerContext) => {
     // Global scheduler state across every user's shard: operators only.
     const denied = await requireAdmin(_req);
     if (denied) return denied;
 
-    const client = df.getClient(ctx);
     const shardCount = getSchedulerShardCount();
     const shardParam = _req.query.get("shardId");
+    const statusOf = async (shardId: number) => {
+      const instanceId = getSchedulerInstanceId(shardId, shardCount);
+      return describeShard(shardId, instanceId, await durable().status(instanceId).catch(() => null));
+    };
 
     if (shardParam !== null) {
-      const shardId = normalizeSchedulerShardId(shardParam, shardCount);
-      const instanceId = getSchedulerInstanceId(shardId, shardCount);
-      try {
-        const status = await client.getStatus(instanceId);
-        return jsonResponse({
-          shardId,
-          instanceId,
-          runtimeStatus: status?.runtimeStatus ?? "NotFound",
-          createdTime: status?.createdTime,
-          lastUpdatedTime: status?.lastUpdatedTime,
-        });
-      } catch {
-        return jsonResponse({
-          shardId,
-          instanceId,
-          runtimeStatus: "NotFound",
-        });
-      }
+      return jsonResponse(await statusOf(normalizeSchedulerShardId(shardParam, shardCount)));
     }
 
-    const statuses = await Promise.all(
-      Array.from({ length: shardCount }, async (_, shardId) => {
-        const instanceId = getSchedulerInstanceId(shardId, shardCount);
-        try {
-          const status = await client.getStatus(instanceId);
-          return {
-            shardId,
-            instanceId,
-            runtimeStatus: status?.runtimeStatus ?? "NotFound",
-            createdTime: status?.createdTime,
-            lastUpdatedTime: status?.lastUpdatedTime,
-          };
-        } catch {
-          return {
-            shardId,
-            instanceId,
-            runtimeStatus: "NotFound",
-          };
-        }
-      }),
-    );
+    const statuses = await Promise.all(Array.from({ length: shardCount }, (_, shardId) => statusOf(shardId)));
 
     return jsonResponse({
       shardCount,
@@ -464,16 +419,16 @@ registerCronRoute("cronStatus", {
 // POST /cron/admin/backfill-due-index — index pre-index jobs once
 // ============================================================================
 
-registerCronRoute("cronBackfillDueIndex", {
+routes.push({
+  name: "cronBackfillDueIndex",
   methods: ["POST"],
   route: "cron/admin/backfill-due-index",
-  authLevel: "anonymous",
-  handler: async (req: HttpRequest, ctx: InvocationContext) => {
+  handler: async (req: HttpRequestLike, ctx: HandlerContext) => {
     const denied = await requireAdmin(req);
     if (denied) return denied;
     const result = await getCronStore().backfillDueIndex();
     ctx.log(`[cron] due-index backfill: ${JSON.stringify(result)}`);
-    return { status: 200, jsonBody: result };
+    return jsonResponse(result, 200);
   },
 });
 
@@ -481,17 +436,16 @@ registerCronRoute("cronBackfillDueIndex", {
 // POST /cron/start — Start or restart the scheduler
 // ============================================================================
 
-registerCronRoute("cronStartScheduler", {
+routes.push({
+  name: "cronStartScheduler",
   methods: ["POST"],
   route: "cron/start",
-  authLevel: "anonymous",
-  extraInputs: [df.input.durableClient()],
-  handler: async (req: HttpRequest, ctx: InvocationContext) => {
+  durable: true,
+  handler: async (req: HttpRequestLike, ctx: HandlerContext) => {
     // Starts or restarts the global scheduler: operators only.
     const denied = await requireAdmin(req);
     if (denied) return denied;
 
-    const client = df.getClient(ctx);
     const shardCount = getSchedulerShardCount();
     const shardParam = req.query.get("shardId");
     const shardIds =
@@ -502,31 +456,33 @@ registerCronRoute("cronStartScheduler", {
     const results = await Promise.all(
       shardIds.map(async (shardId) => {
         const instanceId = getSchedulerInstanceId(shardId, shardCount);
-        try {
-          const status = await client.getStatus(instanceId);
-          const runtimeStatus = status?.runtimeStatus;
+        const info = await durable().status(instanceId).catch(() => null);
 
-          if (runtimeStatus === "Running" || runtimeStatus === "Pending") {
-            return {
-              shardId,
-              instanceId,
-              action: "already-running" as const,
-              runtimeStatus,
-            };
-          }
-
-          // Terminate if in a bad state
-          if (runtimeStatus === "Suspended" || runtimeStatus === "Failed") {
-            await client.terminate(instanceId, "Manual restart");
-          }
-        } catch {
-          // Instance doesn't exist, we'll create it.
+        if (info?.status === "running" || info?.status === "pending") {
+          return {
+            shardId,
+            instanceId,
+            action: "already-running" as const,
+            runtimeStatus: STATUS_NAMES[info.status],
+          };
         }
 
-        await client.startNew("CronScheduler", {
-          instanceId,
-          input: { shardId },
-        });
+        // Terminate if in a bad state
+        if (info?.status === "suspended" || info?.status === "failed") {
+          await durable().terminate(instanceId, "Manual restart");
+        }
+
+        const result = await durable().ensureAlarm(CRON_SCHEDULER_KIND, instanceId, { shardId });
+        if (result !== "started") {
+          // The termination hasn't landed yet (it's queued); the health check
+          // or another /cron/start finishes the restart.
+          return {
+            shardId,
+            instanceId,
+            action: "restart-pending" as const,
+            runtimeStatus: result === "suspended" ? "Suspended" : "Running",
+          };
+        }
         return {
           shardId,
           instanceId,

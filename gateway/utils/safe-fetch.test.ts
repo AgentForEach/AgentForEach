@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
-import { blockedAddressReason, checkUrl, readBodyText, safeFetch, SsrfBlockedError } from "./safe-fetch.js";
+import { blockedAddressReason, checkUrl, fetchTransport, installSafeFetchTransport, readBodyText, safeFetch, safeFetchTransport, SsrfBlockedError, mappedIPv4 } from "./safe-fetch.js";
+// As the Node entry point does: the tests below run on the undici transport,
+// and the fetch transport (Cloudflare Workers) has its own tests at the end.
+import { nodeTransport } from "./safe-fetch-node.js";
 
 // ============================================================================
 // Classification
@@ -167,4 +170,165 @@ test("readBodyText stops at the byte cap without buffering the rest", async () =
   assert.equal(truncated, true);
   assert.equal(text.length, 100_000);
   assert.ok(sent < 50 * 1024 * 1024, "the server was not read to the end");
+});
+
+// ============================================================================
+// Transports
+// ============================================================================
+
+test("importing the Node transport installs it, as the Azure entry point does", () => {
+  assert.equal(safeFetchTransport().name, "node");
+});
+
+test("a Node caller that never imports the Node transport still gets it, on first use", async () => {
+  // A fresh process, importing safe-fetch.ts the way an embedder's createAgentClient does.
+  const { execFile } = await import("node:child_process");
+  const server = (await import("node:http")).createServer((_req, res) => res.end("reached"));
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as { port: number }).port;
+  const script = `
+    const m = await import(${JSON.stringify(new URL("./safe-fetch.js", import.meta.url).href)});
+    const before = m.safeFetchTransport().name;
+    // Only the undici transport connects through this resolver; plain fetch would ask the system DNS.
+    const res = await m.safeFetch("http://app.invalid:${port}/", {
+      resolver: async () => [{ address: "127.0.0.1", family: 4 }],
+      isBlockedAddress: () => null,
+    });
+    console.log(JSON.stringify({ before, body: await res.text() }));`;
+  try {
+    const out = await new Promise<string>((resolve, reject) =>
+      execFile(process.execPath, ["--input-type=module", "-e", script], (err, stdout, stderr) =>
+        err ? reject(new Error(stderr || err.message)) : resolve(stdout),
+      ),
+    );
+    assert.deepEqual(JSON.parse(out), { before: "node", body: "reached" });
+  } finally {
+    server.close();
+  }
+});
+
+/** Run `body` on the fetch-only transport (Cloudflare Workers), then go back. */
+async function onFetchTransport(body: () => Promise<void>): Promise<void> {
+  installSafeFetchTransport(fetchTransport);
+  try {
+    await body();
+  } finally {
+    installSafeFetchTransport(nodeTransport);
+  }
+}
+
+const blocked = (err: Error) => err instanceof SsrfBlockedError || (err.cause as Error) instanceof SsrfBlockedError;
+
+test("fetch transport: a hostname resolving to an internal address is refused before any request", async () => {
+  await onFetchTransport(async () => {
+    let asked = 0;
+    await assert.rejects(
+      safeFetch("http://evil.test/", {
+        resolver: async () => {
+          asked++;
+          return [{ address: "127.0.0.1", family: 4 }];
+        },
+      }),
+      blocked,
+    );
+    assert.equal(asked, 1, "the guard's resolver was consulted");
+  });
+});
+
+test("fetch transport: a mix of public and private answers (DNS rebinding) is refused", async () => {
+  await onFetchTransport(async () => {
+    await assert.rejects(
+      safeFetch("http://rebind.test/", {
+        resolver: async () => [
+          { address: "93.184.216.34", family: 4 },
+          { address: "169.254.169.254", family: 4 },
+        ],
+      }),
+      blocked,
+    );
+  });
+});
+
+test("fetch transport: a hostname with no answers fails as not found, not as allowed", async () => {
+  await onFetchTransport(async () => {
+    await assert.rejects(safeFetch("http://nowhere.test/", { resolver: async () => [] }), /no addresses for nowhere\.test/);
+  });
+});
+
+test("fetch transport: requests go out, redirects are still followed by hand and re-validated", async () => {
+  await onFetchTransport(async () => {
+    let hits = 0;
+    const target = await serve((_req, res) => {
+      hits++;
+      res.writeHead(200, { "content-type": "text/plain" }).end("landed");
+    });
+    const hop = await serve((_req, res) => res.writeHead(302, { location: `${target}/next` }).end());
+    const res = await safeFetch(`${hop}/`, { isBlockedAddress: allowLoopback });
+    assert.equal(res.status, 200);
+    assert.equal(await res.text(), "landed");
+    assert.equal(hits, 1);
+
+    const toMetadata = await serve((_req, res) => {
+      res.writeHead(302, { location: "http://169.254.169.254/latest/meta-data/" }).end();
+    });
+    await assert.rejects(safeFetch(`${toMetadata}/`, { isBlockedAddress: allowLoopback }), SsrfBlockedError);
+  });
+});
+
+test("an IPv4-mapped address is checked as the IPv4 address it maps, in any spelling", () => {
+  // workerd's BlockList lets the expanded spellings through, so the guard doesn't rely on it.
+  for (const ip of ["::ffff:10.0.0.1", "::ffff:a00:1", "0:0:0:0:0:ffff:a00:1", "0000:0000:0000:0000:0000:ffff:0a00:0001", "0:0:0:0:0:ffff:10.0.0.1"]) {
+    assert.equal(mappedIPv4(ip), "10.0.0.1", ip);
+    assert.match(blockedAddressReason(ip) ?? "", /private IP/, ip);
+  }
+  assert.equal(mappedIPv4("0:0:0:0:0:FFFF:7f00:1"), "127.0.0.1");
+  assert.match(blockedAddressReason("0:0:0:0:0:ffff:a9fe:a9fe") ?? "", /metadata/);
+  assert.equal(blockedAddressReason("0:0:0:0:0:ffff:808:808"), null, "a public IPv4 stays allowed");
+  for (const ip of ["::1", "2606:4700::1111", "::ffff:0:a00:1", "1:0:0:0:0:ffff:a00:1", "10.0.0.1", "fe80::1%eth0"]) {
+    assert.equal(mappedIPv4(ip), undefined, ip);
+  }
+});
+
+test("a SIIT-translated address is refused in any spelling, without reaching the BlockList", () => {
+  for (const ip of ["::ffff:0:7f00:1", "::ffff:0:a9fe:a9fe", "::ffff:0:127.0.0.1", "0:0:0:0:ffff:0:a00:1", "0000:0000:0000:0000:FFFF:0000:0a00:0001"]) {
+    assert.match(blockedAddressReason(ip) ?? "", /SIIT/, ip);
+  }
+});
+
+test("an address the lists can't check is refused with a reason, never thrown", () => {
+  // As workerd's BlockList does on some IPv6 spellings.
+  const throwing = { check: () => { throw new TypeError("Invalid IP address: Invalid IPv4 address"); } };
+  const reason = blockedAddressReason("2606:4700::1111", { metadata: throwing, blocked: throwing });
+  assert.match(reason ?? "", /couldn't be checked \(Invalid IP address/);
+});
+
+test("where the Node transport can't be loaded (a single-file bundle), requests fall back to fetch, with a warning", async () => {
+  const { loadNodeTransport } = await import("./safe-fetch.js");
+  const warned: string[] = [];
+  const original = console.warn;
+  console.warn = (...args: unknown[]) => void warned.push(args.map(String).join(" "));
+  try {
+    assert.equal(await loadNodeTransport("./not-bundled.js"), fetchTransport);
+  } finally {
+    console.warn = original;
+  }
+  assert.equal(warned.length, 1);
+  assert.match(warned[0]!, /couldn't be loaded, so requests use the fetch transport/);
+  assert.equal((await loadNodeTransport()).name, "node", "where it exists, it loads");
+});
+
+test("Bun and Deno get the fetch transport, which checks before every hop", async () => {
+  const { execFile } = await import("node:child_process");
+  const url = new URL("./safe-fetch.js", import.meta.url).href;
+  const transportUnder = (runtime: string) =>
+    new Promise<string>((resolve, reject) =>
+      execFile(
+        process.execPath,
+        ["--input-type=module", "-e", `Object.defineProperty(process.versions, ${JSON.stringify(runtime)}, { value: "1.0.0" });
+          const m = await import(${JSON.stringify(url)}); console.log(m.safeFetchTransport().name);`],
+        (err, stdout, stderr) => (err ? reject(new Error(stderr || err.message)) : resolve(stdout.trim())),
+      ),
+    );
+  assert.equal(await transportUnder("bun"), "fetch");
+  assert.equal(await transportUnder("deno"), "fetch");
 });

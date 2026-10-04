@@ -21,7 +21,7 @@
  *   getEpisodeToolDefinitions,
  * } from "./episodes/index.js";
  *
- * const store = new EpisodeStore(db);
+ * const store = new EpisodeStore(getSharedStorage());
  * await store.initialize();
  *
  * // Register tools for LLM to call on-demand

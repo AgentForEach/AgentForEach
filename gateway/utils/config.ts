@@ -4,6 +4,12 @@
  * Shared helper for loading a section from agentforeach.json.
  * Used by auth, llms, and cron config modules to avoid duplicating
  * the file-resolution, read, parse, and cache logic.
+ *
+ * Hosts with a filesystem (Azure, Node) read the file, as below. A host
+ * without one (a Cloudflare Worker) bundles the JSON and calls
+ * `installConfig(raw)` before anything reads config; the file is never
+ * looked for then. Some modules read config at import time, so a host's
+ * entry point installs it in its first import.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -23,6 +29,8 @@ type ConfigJsonRaw = Record<string, unknown>;
 
 let _cachedRaw: ConfigJsonRaw | null = null;
 let _resolvedPath: string | null = null;
+/** The config a host installed (`installConfig`); when set, no file is read. */
+let _installed: ConfigJsonRaw | null = null;
 
 /**
  * Resolve the path to agentforeach.json.
@@ -73,6 +81,7 @@ function resolvePath(): string | null {
  * Returns null if the file doesn't exist or can't be parsed.
  */
 function loadRaw(): ConfigJsonRaw | null {
+  if (_installed !== null) return _installed;
   if (_cachedRaw !== null) return _cachedRaw;
 
   const jsonPath = resolvePath();
@@ -117,7 +126,18 @@ export function loadConfigSection<T>(section: string): T | undefined {
 }
 
 /**
- * Reset all cached config state (for testing).
+ * Use `raw` (the parsed agentforeach.json) as the config, for hosts with no
+ * filesystem to read it from. `null` goes back to reading the file. Section
+ * loaders that cache (most `load*Config()` functions) keep what they already
+ * read, so install before any config is read.
+ */
+export function installConfig(raw: Record<string, unknown> | null): void {
+  _installed = raw;
+}
+
+/**
+ * Reset all cached config state (for testing). An installed config stays
+ * installed: it is the host's, not a cache.
  */
 export function resetConfigCache(): void {
   _cachedRaw = null;

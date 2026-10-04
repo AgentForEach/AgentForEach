@@ -16,8 +16,8 @@
  * memory is genuinely unsafe.
  */
 
-import { PartitionKeyKind } from "@azure/cosmos";
-import type { BaseDocument, ContainerHandle, DatabaseProvider } from "../../database/index.js";
+import { isConflict, type Collection, type CollectionSpec, type StorageAdapter } from "@agentforeach/storage";
+import type { Doc } from "@agentforeach/storage";
 
 // ============================================================================
 // Interface
@@ -106,7 +106,7 @@ export class MemoryTtlStore implements TtlStore {
 // Cosmos
 // ============================================================================
 
-interface KvDocument extends BaseDocument {
+interface KvDocument extends Doc {
   id: string;
   scope: string;
   value: string;
@@ -122,7 +122,7 @@ interface KvDocument extends BaseDocument {
  */
 export class CosmosTtlStore implements TtlStore {
   constructor(
-    private readonly container: ContainerHandle<KvDocument>,
+    private readonly container: Collection<KvDocument>,
     private readonly scope: string,
   ) {}
 
@@ -152,7 +152,7 @@ export class CosmosTtlStore implements TtlStore {
       });
       return true;
     } catch (err) {
-      if (isConflictError(err)) return false;
+      if (isConflict(err)) return false;
       throw err;
     }
   }
@@ -167,38 +167,33 @@ export class CosmosTtlStore implements TtlStore {
   }
 }
 
-/** A Cosmos "document already exists" failure, in the shapes the SDK uses. */
-function isConflictError(err: unknown): boolean {
-  if (!err || typeof err !== "object") return false;
-  const e = err as { code?: unknown; statusCode?: unknown };
-  return e.code === 409 || e.code === "Conflict" || e.statusCode === 409;
-}
-
 /**
- * Container definition shared by every WhatsApp TTL store.
+ * Collection shared by every WhatsApp TTL store.
  *
- * `defaultTtl: -1` enables TTL on the container while leaving each document's
+ * `defaultTtl: -1` enables TTL on the collection while leaving each document's
  * lifetime to its own `ttl` field — the three concerns want very different
  * ones (minutes for a window, days for dedupe).
  */
+export function whatsappStateCollection(containerId = "whatsapp-state"): CollectionSpec {
+  return {
+    name: containerId,
+    partitionKey: "scope",
+    defaultTtl: -1,
+    // Deployed without an indexing policy (the account default).
+    adapterOptions: { cosmosdb: { indexingPolicy: null } },
+  };
+}
+
 export async function createCosmosTtlStore(
   scope: string,
   containerId = "whatsapp-state",
-  database?: DatabaseProvider,
+  storage?: StorageAdapter,
 ): Promise<TtlStore | undefined> {
   try {
-    const db = database ?? (await import("../../database/index.js")).getSharedDatabase();
+    const db = storage ?? (await import("../../database/index.js")).getSharedStorage();
     await db.initialize();
 
-    const container = await db.getOrCreateContainer<KvDocument>({
-      id: containerId,
-      partitionKey: {
-        paths: ["/scope"],
-        kind: PartitionKeyKind.Hash,
-        version: 2,
-      },
-      defaultTtl: -1,
-    });
+    const container = await db.collection<KvDocument>(whatsappStateCollection(containerId));
 
     return new CosmosTtlStore(container, scope);
   } catch (err) {

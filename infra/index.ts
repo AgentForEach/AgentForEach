@@ -577,7 +577,7 @@ createAlerts({
   tags: cfg.tags,
 });
 
-// Cosmos DB connection details (runtime: database/client.ts, memory/config.ts)
+// Cosmos DB connection details (runtime: gateway/database/config.ts and storage.ts)
 export const cosmosEndpoint = cosmosAccount.documentEndpoint;
 export const cosmosDatabaseName = pulumi.output(databaseName);
 export const cosmosContainerNames = runtimeContainerIds;

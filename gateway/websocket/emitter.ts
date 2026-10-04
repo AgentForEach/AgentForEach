@@ -23,7 +23,17 @@ import type {
   EventName,
   GroupName,
   Frame,
+  WebSocketProvider,
 } from "./types.js";
+
+type GroupOperation = "sendToGroup" | "sendToAll" | "addUserToGroup" | "removeUserFromGroup";
+
+/** A group or broadcast operation, which not every provider offers. */
+function supported<K extends GroupOperation>(provider: WebSocketProvider, operation: K): NonNullable<WebSocketProvider[K]> {
+  const fn = provider[operation];
+  if (!fn) throw new Error(`The "${provider.id}" real-time provider doesn't support ${operation}`);
+  return fn as NonNullable<WebSocketProvider[K]>;
+}
 
 // ============================================================================
 // Event Push — Send to User
@@ -46,7 +56,7 @@ export async function sendEventToUser(
   seq?: number,
 ): Promise<void> {
   // No log line here: this runs for every streamed delta.
-  const provider = getActiveProvider();
+  const provider = await getActiveProvider();
   const frame: EventFrame = { type: "event", event, payload, seq };
   await provider.sendToUser(userId, frame);
 }
@@ -60,7 +70,7 @@ export async function sendResponseToUser(
   userId: string,
   response: ResponseFrame,
 ): Promise<void> {
-  const provider = getActiveProvider();
+  const provider = await getActiveProvider();
   await provider.sendToUser(userId, response);
 }
 
@@ -87,9 +97,9 @@ export async function sendEventToGroup(
   payload?: unknown,
   seq?: number,
 ): Promise<void> {
-  const provider = getActiveProvider();
+  const provider = await getActiveProvider();
   const frame: EventFrame = { type: "event", event, payload, seq };
-  await provider.sendToGroup(group, frame);
+  await supported(provider, "sendToGroup").call(provider, group, frame);
 }
 
 // ============================================================================
@@ -107,9 +117,9 @@ export async function sendEventToAll(
   payload?: unknown,
   seq?: number,
 ): Promise<void> {
-  const provider = getActiveProvider();
+  const provider = await getActiveProvider();
   const frame: EventFrame = { type: "event", event, payload, seq };
-  await provider.sendToAll(frame);
+  await supported(provider, "sendToAll").call(provider, frame);
 }
 
 // ============================================================================
@@ -124,7 +134,7 @@ export async function sendFrameToUser(
   userId: string,
   frame: Frame,
 ): Promise<void> {
-  const provider = getActiveProvider();
+  const provider = await getActiveProvider();
   await provider.sendToUser(userId, frame);
 }
 
@@ -142,8 +152,8 @@ export async function addUserToGroup(
   userId: string,
   group: GroupName | string,
 ): Promise<void> {
-  const provider = getActiveProvider();
-  await provider.addUserToGroup(userId, group);
+  const provider = await getActiveProvider();
+  await supported(provider, "addUserToGroup").call(provider, userId, group);
 }
 
 /**
@@ -153,8 +163,8 @@ export async function removeUserFromGroup(
   userId: string,
   group: GroupName | string,
 ): Promise<void> {
-  const provider = getActiveProvider();
-  await provider.removeUserFromGroup(userId, group);
+  const provider = await getActiveProvider();
+  await supported(provider, "removeUserFromGroup").call(provider, userId, group);
 }
 
 // ============================================================================
@@ -168,7 +178,7 @@ export async function removeUserFromGroup(
  * (avoid wasted API calls for offline users).
  */
 export async function isUserOnline(userId: string): Promise<boolean> {
-  const provider = getActiveProvider();
+  const provider = await getActiveProvider();
   return provider.isUserOnline(userId);
 }
 
@@ -182,6 +192,6 @@ export async function disconnectUser(
   userId: string,
   reason?: string,
 ): Promise<void> {
-  const provider = getActiveProvider();
+  const provider = await getActiveProvider();
   await provider.disconnectUser(userId, reason);
 }

@@ -22,7 +22,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { DynamicSessionsClient } from "./sandbox/client.js";
+import { DynamicSessionsClient } from "@agentforeach/platform-azure/sandbox";
 import {
   SandboxToolHandler,
   getSandboxToolDefinitions,
@@ -185,13 +185,15 @@ test("Suite 1: DynamicSessionsClient exec and file operations", { skip: !HAS_ACA
 
   await t.test("resolveIdentifier: userId strategy", () => {
     const id = client.resolveIdentifier("user123");
-    assert.equal(id, "user123");
+    assert.match(id, /^afe-[0-9a-f]{64}$/);
+    assert.equal(id, client.resolveIdentifier("user123", "another-session"), "one per user");
   });
 
   await t.test("resolveIdentifier: sessionId strategy", () => {
     const client2 = buildClient({ identifierStrategy: "sessionId" });
     const id = client2.resolveIdentifier("user123", "sess456");
-    assert.equal(id, "user123:sess456");
+    assert.notEqual(id, client2.resolveIdentifier("user123", "sess789"));
+    assert.notEqual(id, client2.resolveIdentifier("user123:sess456"));
   });
 
   await t.test("isReady returns true for configured client", () => {

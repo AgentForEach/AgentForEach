@@ -8,7 +8,7 @@
  * so the opt-in is explicit rather than "on when local".
  */
 
-import type { HttpRequest } from "@azure/functions";
+import type { HttpRequestLike } from "@agentforeach/platform";
 import { isCloudRuntime, parseEnvBool } from "../../utils/index.js";
 import type {
   AuthProvider,
@@ -27,7 +27,7 @@ export function createInsecureHeaderProvider(
     id: "insecure-header",
     label: "Insecure Header (Dev)",
 
-    resolve(request: HttpRequest): AuthContext | null {
+    resolve(request: HttpRequestLike): AuthContext | null {
       // Never trust a client-supplied user id on App Service, whatever the flag says.
       if (isCloudRuntime()) return null;
       if (!parseEnvBool("AUTH_ALLOW_INSECURE_USER_ID_HEADER", false)) return null;

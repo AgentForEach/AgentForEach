@@ -1,0 +1,37 @@
+{
+  "name": "@agentforeach/storage-postgres",
+  "version": "0.1.0",
+  "description": "PostgreSQL (with pgvector) adapter for the AgentForEach storage SDK.",
+  "type": "module",
+  "private": true,
+  "license": "Apache-2.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./schema": {
+      "types": "./dist/schema.d.ts",
+      "default": "./dist/schema.js"
+    }
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.test.*",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @agentforeach/storage && tsc",
+    "test": "npm run build && node --test dist/*.test.js"
+  },
+  "dependencies": {
+    "@agentforeach/storage": "0.1.0",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.4",
+    "@types/pg": "^8.23.1"
+  }
+}

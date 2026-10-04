@@ -1,15 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import type {
-  BaseDocument,
-  ContainerHandle,
-  ContainerOptions,
-  DatabaseProvider,
-  PatchOperation,
-  QueryOptions,
-  QueryParameter,
-} from "../database/index.js";
+import { InMemoryStorage } from "@agentforeach/storage";
 import {
   SessionStore,
   SessionReplacedError,
@@ -17,458 +9,6 @@ import {
   resetSessionConfigCache,
 } from "./index.js";
 import type { Session, SessionMessage } from "./types.js";
-
-// ============================================================================
-// In-Memory Database Mock
-// ============================================================================
-
-/**
- * In-memory container that is partition-key aware and supports the subset
- * of Cosmos SQL used by SessionStore and MessageStore:
- *
- *   - Equality:           c.sessionId = @sid, c.role = 'user'
- *   - Range:              c.seq >= @from AND c.seq < @to, c.seq > @seq
- *   - ORDER BY:           c.seq DESC/ASC, c.updatedAt DESC
- *   - TOP @limit
- *   - Projection:         c.messageSeq AS messageCount
- *   - Literal equality:   c.idempotencyKey = @key
- *
- * Two containers are created by SessionStore.initialize():
- *   - "sessions"          partition key: /userId
- *   - "session-messages"  partition key: /sessionId
- */
-class InMemoryContainer<T extends BaseDocument> implements ContainerHandle<T> {
-  private docs = new Map<string, T>();
-  private etags = new Map<string, string>();
-  private partitionKeyPath: string;
-
-  constructor(partitionKeyPath = "/userId") {
-    // Strip leading slash: "/userId" -> "userId"
-    this.partitionKeyPath = partitionKeyPath.replace(/^\//, "");
-  }
-
-  // --------------------------------------------------------------------------
-  // CRUD
-  // --------------------------------------------------------------------------
-
-  async create(document: T): Promise<T> {
-    if (this.docs.has(document.id)) {
-      const err: Record<string, unknown> = new Error(
-        "Conflict",
-      ) as unknown as Record<string, unknown>;
-      err.code = 409;
-      throw err;
-    }
-    const etag = `etag-${Date.now()}-${Math.random()}`;
-    this.docs.set(document.id, structuredClone(document));
-    this.etags.set(document.id, etag);
-    return structuredClone(document);
-  }
-
-  async upsert(document: T): Promise<T> {
-    const etag = `etag-${Date.now()}-${Math.random()}`;
-    this.docs.set(document.id, structuredClone(document));
-    this.etags.set(document.id, etag);
-    return structuredClone(document);
-  }
-
-  async read(id: string, partitionKey: string): Promise<T | null> {
-    const doc = this.docs.get(id);
-    if (!doc) return null;
-    if (
-      (doc as Record<string, unknown>)[this.partitionKeyPath] !== partitionKey
-    )
-      return null;
-    return structuredClone(doc);
-  }
-
-  async replace(id: string, partitionKey: string, document: T): Promise<T> {
-    const existing = await this.read(id, partitionKey);
-    if (!existing) throw new Error("not found");
-    const etag = `etag-${Date.now()}-${Math.random()}`;
-    this.docs.set(id, structuredClone(document));
-    this.etags.set(id, etag);
-    return structuredClone(document);
-  }
-
-  async patch(
-    id: string,
-    partitionKey: string,
-    operations: PatchOperation[],
-  ): Promise<T> {
-    const existing = await this.read(id, partitionKey);
-    if (!existing) throw new Error("not found");
-    const target = existing as unknown as Record<string, unknown>;
-
-    for (const op of operations) {
-      const path = op.path.replace(/^\//, "").split("/");
-      if (path.length === 0) continue;
-      if (op.op === "set") {
-        const key = path[path.length - 1];
-        let ptr = target;
-        for (let i = 0; i < path.length - 1; i += 1) {
-          if (!ptr[path[i]] || typeof ptr[path[i]] !== "object") {
-            ptr[path[i]] = {};
-          }
-          ptr = ptr[path[i]] as Record<string, unknown>;
-        }
-        ptr[key] = op.value;
-      }
-    }
-
-    this.docs.set(id, structuredClone(existing));
-    return structuredClone(existing);
-  }
-
-  async delete(id: string, partitionKey: string): Promise<boolean> {
-    const existing = await this.read(id, partitionKey);
-    if (!existing) return false;
-    this.docs.delete(id);
-    this.etags.delete(id);
-    return true;
-  }
-
-  // --------------------------------------------------------------------------
-  // Query
-  // --------------------------------------------------------------------------
-
-  async query<R = T>(
-    _querySpec: unknown,
-    options: QueryOptions = {},
-  ): Promise<R[]> {
-    const partitionKey = options.partitionKey;
-    const out: unknown[] = [];
-    for (const doc of this.docs.values()) {
-      if (
-        partitionKey !== undefined &&
-        (doc as Record<string, unknown>)[this.partitionKeyPath] !== partitionKey
-      ) {
-        continue;
-      }
-      out.push(structuredClone(doc));
-    }
-    return out as R[];
-  }
-
-  /**
-   * Mini SQL evaluator that handles the query patterns used by
-   * SessionStore and MessageStore.
-   */
-  async queryWithParams<R = T>(
-    sql: string,
-    parameters: QueryParameter[] = [],
-    options: QueryOptions = {},
-  ): Promise<R[]> {
-    const paramMap = new Map<string, unknown>();
-    for (const p of parameters) {
-      paramMap.set(p.name, p.value);
-    }
-
-    // Collect all docs, optionally filtered by partition key option
-    let candidates: T[] = [];
-    for (const doc of this.docs.values()) {
-      if (
-        options.partitionKey !== undefined &&
-        (doc as Record<string, unknown>)[this.partitionKeyPath] !==
-          options.partitionKey
-      ) {
-        continue;
-      }
-      candidates.push(structuredClone(doc));
-    }
-
-    // Apply WHERE conditions
-    candidates = candidates.filter((doc) => {
-      const obj = doc as Record<string, unknown>;
-      return this.evaluateWhere(sql, obj, paramMap);
-    });
-
-    // Apply ORDER BY
-    const orderMatch = sql.match(
-      /ORDER\s+BY\s+c\.(\w+)\s+(ASC|DESC)/i,
-    );
-    if (orderMatch) {
-      const field = orderMatch[1];
-      const dir = orderMatch[2].toUpperCase();
-      candidates.sort((a, b) => {
-        const aVal = (a as Record<string, unknown>)[field];
-        const bVal = (b as Record<string, unknown>)[field];
-        if (typeof aVal === "number" && typeof bVal === "number") {
-          return dir === "ASC" ? aVal - bVal : bVal - aVal;
-        }
-        const aStr = String(aVal ?? "");
-        const bStr = String(bVal ?? "");
-        return dir === "ASC"
-          ? aStr.localeCompare(bStr)
-          : bStr.localeCompare(aStr);
-      });
-    }
-
-    // Apply TOP (from SQL or maxResults option)
-    let limit: number | undefined;
-    const topMatch = sql.match(/TOP\s+(@\w+|\d+)/i);
-    if (topMatch) {
-      const topVal = topMatch[1];
-      limit = topVal.startsWith("@")
-        ? (paramMap.get(topVal) as number)
-        : parseInt(topVal, 10);
-    }
-    if (options.maxResults !== undefined) {
-      limit =
-        limit !== undefined
-          ? Math.min(limit, options.maxResults)
-          : options.maxResults;
-    }
-    if (limit !== undefined) {
-      candidates = candidates.slice(0, limit);
-    }
-
-    // Apply projection (c.messageSeq AS messageCount, column selection)
-    if (this.hasProjection(sql)) {
-      return candidates.map((doc) =>
-        this.applyProjection(sql, doc as Record<string, unknown>),
-      ) as unknown as R[];
-    }
-
-    return candidates as unknown as R[];
-  }
-
-  async count(
-    whereClause?: string,
-    parameters?: QueryParameter[],
-    options?: QueryOptions,
-  ): Promise<number> {
-    if (!whereClause) return this.docs.size;
-    // Build a fake SQL so we can reuse evaluateWhere
-    const sql = `SELECT COUNT(1) FROM c WHERE ${whereClause}`;
-    const results = await this.queryWithParams(sql, parameters, options);
-    return results.length;
-  }
-
-  // --------------------------------------------------------------------------
-  // Raw container mock (for appendMessages optimistic concurrency)
-  // --------------------------------------------------------------------------
-
-  getRawContainer(): unknown {
-    const docs = this.docs;
-    const etags = this.etags;
-    const pkPath = this.partitionKeyPath;
-
-    return {
-      item(id: string, partitionKey: string) {
-        return {
-          async read() {
-            const doc = docs.get(id);
-            if (
-              !doc ||
-              (doc as Record<string, unknown>)[pkPath] !== partitionKey
-            ) {
-              return { resource: undefined };
-            }
-            const etag = etags.get(id);
-            return {
-              resource: { ...structuredClone(doc), _etag: etag },
-            };
-          },
-
-          async replace(
-            document: unknown,
-            opts?: {
-              accessCondition?: { type: string; condition: string };
-            },
-          ) {
-            const existing = docs.get(id);
-            if (
-              !existing ||
-              (existing as Record<string, unknown>)[pkPath] !== partitionKey
-            ) {
-              const err: Record<string, unknown> = new Error(
-                "Not found",
-              ) as unknown as Record<string, unknown>;
-              err.code = 404;
-              throw err;
-            }
-            if (opts?.accessCondition?.condition) {
-              const currentEtag = etags.get(id);
-              if (
-                currentEtag &&
-                currentEtag !== opts.accessCondition.condition
-              ) {
-                const err: Record<string, unknown> = new Error(
-                  "Precondition failed",
-                ) as unknown as Record<string, unknown>;
-                err.code = 412;
-                throw err;
-              }
-            }
-            const newEtag = `etag-${Date.now()}-${Math.random()}`;
-            docs.set(id, structuredClone(document) as T);
-            etags.set(id, newEtag);
-            return { resource: structuredClone(document) };
-          },
-        };
-      },
-    };
-  }
-
-  // --------------------------------------------------------------------------
-  // SQL Helpers
-  // --------------------------------------------------------------------------
-
-  /**
-   * Evaluate WHERE clause conditions against a document.
-   * Handles:
-   *   c.field = @param         (parameter equality)
-   *   c.field = 'literal'      (literal equality)
-   *   c.field >= @param        (gte)
-   *   c.field < @param         (lt)
-   *   c.field > @param         (gt)
-   *   Multiple conditions joined by AND
-   */
-  private evaluateWhere(
-    sql: string,
-    obj: Record<string, unknown>,
-    params: Map<string, unknown>,
-  ): boolean {
-    const whereMatch = sql.match(/WHERE\s+(.+?)(?:\s+ORDER\s+BY|\s*$)/i);
-    if (!whereMatch) return true;
-
-    const whereClause = whereMatch[1];
-    // Split on AND (word boundary to avoid matching field names)
-    const conditions = whereClause.split(/\s+AND\s+/i);
-
-    for (const cond of conditions) {
-      const trimmed = cond.trim();
-
-      // c.field >= @param
-      const gteMatch = trimmed.match(/c\.(\w+)\s*>=\s*(@\w+)/);
-      if (gteMatch) {
-        const val = obj[gteMatch[1]];
-        const paramVal = params.get(gteMatch[2]);
-        if (typeof val === "number" && typeof paramVal === "number") {
-          if (val < paramVal) return false;
-        }
-        continue;
-      }
-
-      // c.field > @param
-      const gtMatch = trimmed.match(/c\.(\w+)\s*>\s*(@\w+)/);
-      if (gtMatch) {
-        const val = obj[gtMatch[1]];
-        const paramVal = params.get(gtMatch[2]);
-        if (typeof val === "number" && typeof paramVal === "number") {
-          if (val <= paramVal) return false;
-        }
-        continue;
-      }
-
-      // c.field < @param
-      const ltMatch = trimmed.match(/c\.(\w+)\s*<\s*(@\w+)/);
-      if (ltMatch) {
-        const val = obj[ltMatch[1]];
-        const paramVal = params.get(ltMatch[2]);
-        if (typeof val === "number" && typeof paramVal === "number") {
-          if (val >= paramVal) return false;
-        }
-        continue;
-      }
-
-      // c.field = 'literal'
-      const literalMatch = trimmed.match(/c\.(\w+)\s*=\s*'([^']*)'/);
-      if (literalMatch) {
-        if (obj[literalMatch[1]] !== literalMatch[2]) return false;
-        continue;
-      }
-
-      // c.field = @param
-      const eqMatch = trimmed.match(/c\.(\w+)\s*=\s*(@\w+)/);
-      if (eqMatch) {
-        const val = obj[eqMatch[1]];
-        const paramVal = params.get(eqMatch[2]);
-        if (val !== paramVal) return false;
-        continue;
-      }
-    }
-
-    return true;
-  }
-
-  /**
-   * Check if the SELECT clause is a projection (not SELECT * or SELECT TOP ... *).
-   */
-  private hasProjection(sql: string): boolean {
-    const selectMatch = sql.match(/SELECT\s+(TOP\s+(?:@\w+|\d+)\s+)?(.+?)\s+FROM/i);
-    if (!selectMatch) return false;
-    const columns = selectMatch[2].trim();
-    return columns !== "*" && !columns.startsWith("COUNT");
-  }
-
-  /**
-   * Apply column projection including aliased columns like
-   * "c.messageSeq AS messageCount".
-   */
-  private applyProjection(
-    sql: string,
-    obj: Record<string, unknown>,
-  ): Record<string, unknown> {
-    const selectMatch = sql.match(/SELECT\s+(TOP\s+(?:@\w+|\d+)\s+)?(.+?)\s+FROM/i);
-    if (!selectMatch) return obj;
-
-    const columnsPart = selectMatch[2].trim();
-    const columns = columnsPart.split(",").map((c) => c.trim());
-
-    const result: Record<string, unknown> = {};
-    for (const col of columns) {
-      // c.field AS alias
-      const aliasMatch = col.match(/c\.(\w+)\s+AS\s+(\w+)/i);
-      if (aliasMatch) {
-        result[aliasMatch[2]] = obj[aliasMatch[1]];
-        continue;
-      }
-      // c.field
-      const fieldMatch = col.match(/c\.(\w+)/);
-      if (fieldMatch) {
-        result[fieldMatch[1]] = obj[fieldMatch[1]];
-      }
-    }
-    return result;
-  }
-}
-
-// ============================================================================
-// In-Memory Database Provider
-// ============================================================================
-
-class InMemoryDatabaseProvider implements DatabaseProvider {
-  readonly name = "memory";
-  private containers = new Map<string, InMemoryContainer<BaseDocument>>();
-
-  async initialize(): Promise<void> {
-    return;
-  }
-
-  async getOrCreateContainer<T extends BaseDocument = BaseDocument>(
-    options: ContainerOptions,
-  ): Promise<ContainerHandle<T>> {
-    const id = options.id;
-    if (!id) throw new Error("container id required");
-
-    const existing = this.containers.get(id);
-    if (existing) return existing as unknown as ContainerHandle<T>;
-
-    // Determine partition key path from options
-    const pkPath =
-      options.partitionKey?.paths?.[0] ?? "/id";
-
-    const container = new InMemoryContainer<BaseDocument>(pkPath);
-    this.containers.set(id, container);
-    return container as unknown as ContainerHandle<T>;
-  }
-
-  getDatabaseId(): string {
-    return "memory";
-  }
-}
 
 // ============================================================================
 // Helpers
@@ -493,7 +33,7 @@ async function setupStore(overrides?: {
   compactionRetainCount?: number;
 }): Promise<SessionStore> {
   resetSessionConfigCache();
-  const db = new InMemoryDatabaseProvider();
+  const db = new InMemoryStorage();
   const store = new SessionStore(db, {
     maxHistoryMessages: overrides?.maxHistoryMessages ?? 100,
     ttlSeconds: overrides?.ttlSeconds ?? 86400,
@@ -989,9 +529,9 @@ test("findByIdempotencyKey returns null for non-existent key", async () => {
 // Tests -- tenant isolation (messages are only reachable through the owner's session)
 // ============================================================================
 
-async function setupStoreWithDb(): Promise<{ store: SessionStore; db: InMemoryDatabaseProvider }> {
+async function setupStoreWithDb(): Promise<{ store: SessionStore; db: InMemoryStorage }> {
   resetSessionConfigCache();
-  const db = new InMemoryDatabaseProvider();
+  const db = new InMemoryStorage();
   const store = new SessionStore(db, { maxHistoryMessages: 100, ttlSeconds: 86400 });
   await store.initialize();
   return { store, db };
@@ -1052,7 +592,7 @@ test("a session recreated after TTL expiry doesn't inherit stale history", async
   await store.appendMessages("u1", "whatsapp-9", [msg("user", "stale")]);
 
   // TTL removes the session doc but not its messages.
-  const sessions = await db.getOrCreateContainer<Session>({ id: "sessions" });
+  const sessions = db.getCollection<Session>("sessions");
   await sessions.delete(first.id, "u1");
 
   const fresh = await store.getOrCreate("u1", "default", "whatsapp-9");
@@ -1218,4 +758,166 @@ test("appending is refused for an execution that no longer holds the run lease",
     store.appendMessages("u1", "s-fence", [msg("assistant", "stale")], undefined, undefined, undefined, "lease-a"),
     /Run lease lost/,
   );
+});
+
+// ============================================================================
+// Tests -- storage SDK review: ordering, scoping, races
+// ============================================================================
+
+test("list returns the newest sessions first, exactly `limit` of them", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.UTC(2026, 9, 1) });
+  const store = await setupStore();
+  for (let i = 0; i < 5; i++) {
+    t.mock.timers.tick(1000);
+    await store.getOrCreate("u1", "default", `sess-${i}`);
+    await store.appendMessages("u1", `sess-${i}`, [msg("user", `msg-${i}`)]);
+  }
+  const page = await store.list("u1", undefined, { limit: 3 });
+  assert.deepEqual(page.map((s) => s.sessionId), ["sess-4", "sess-3", "sess-2"]);
+  assert.equal((await store.list("u1", undefined, { limit: 2.7 })).length, 2, "fractional limits are floored");
+  assert.equal((await store.list("u1", undefined, { limit: Number.NaN })).length, 5, "a NaN limit falls back to the default");
+});
+
+test("findLastChannel finds the newest session with a channel and chat, past any number of others", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.UTC(2026, 9, 1) });
+  const { store } = await setupStoreWithDb();
+  await store.getOrCreate("u1", "default", "telegram-42");
+  await store.appendMessages("u1", "telegram-42", [msg("user", "hi")], undefined, { lastChannelName: "telegram", lastChatId: "42" });
+  // Twelve scheduled-run sessions updated since, with a channel name but no chat.
+  for (let i = 0; i < 12; i++) {
+    t.mock.timers.tick(1000);
+    await store.getOrCreate("u1", "default", `cron:job-${i}`);
+    await store.appendMessages("u1", `cron:job-${i}`, [msg("assistant", "ran")], undefined, { lastChannelName: "cron" });
+  }
+  assert.deepEqual(await store.findLastChannel("u1"), { channelName: "telegram", chatId: "42" });
+
+  t.mock.timers.tick(1000);
+  await store.getOrCreate("u1", "default", "whatsapp-7");
+  await store.appendMessages("u1", "whatsapp-7", [msg("user", "yo")], undefined, { lastChannelName: "whatsapp", lastChatId: "7" });
+  assert.deepEqual(await store.findLastChannel("u1"), { channelName: "whatsapp", chatId: "7" }, "the newest wins");
+  assert.equal(await store.findLastChannel("nobody"), undefined);
+});
+
+test("appendMessages retries past a concurrent write: seqs stay contiguous and the other write is kept", async () => {
+  const { store, db } = await setupStoreWithDb();
+  const s = await store.getOrCreate("u1", "default", "s1");
+  await store.appendMessages("u1", "s1", [msg("user", "one")]);
+  const sessions = db.getCollection<Session>("sessions");
+  let raced = false;
+  const remove = sessions.beforeOperation(async ({ op }) => {
+    if (op === "replace" && !raced) {
+      raced = true;
+      const current = sessions.peek<Session>(s.id, "u1")!;
+      await sessions.upsert({ ...current, metadata: { ...current.metadata, note: "concurrent" } });
+    }
+  });
+  await store.appendMessages("u1", "s1", [msg("assistant", "two"), msg("user", "three")]);
+  remove();
+  const after = await store.get("u1", "s1");
+  assert.equal(after?.messageSeq, 3);
+  assert.equal(after?.metadata?.note, "concurrent");
+  assert.deepEqual((await store.getAllMessages("u1", "s1")).map((m) => [m.seq, m.content]), [[0, "one"], [1, "two"], [2, "three"]]);
+});
+
+test("concurrent getOrCreate of one session returns the same instance", async () => {
+  const store = await setupStore();
+  const [a, b, c] = await Promise.all([
+    store.getOrCreate("u1", "default", "same"),
+    store.getOrCreate("u1", "default", "same"),
+    store.getOrCreate("u1", "default", "same"),
+  ]);
+  assert.equal(a.instanceId, b.instanceId);
+  assert.equal(b.instanceId, c.instanceId);
+});
+
+test("findByIdempotencyKey returns the reply that followed that request, not a later one", async () => {
+  const store = await setupStore();
+  const s = await store.getOrCreate("u1", "default", "s1");
+  await store.appendMessages("u1", "s1", [msgWithKey("user", "first", "k1"), msg("assistant", "reply A")]);
+  await store.appendMessages("u1", "s1", [msgWithKey("user", "second", "k2"), msg("assistant", "reply B")]);
+  assert.equal((await store.findByIdempotencyKey(s, "k1"))?.content, "reply A");
+  assert.equal((await store.findByIdempotencyKey(s, "k2"))?.content, "reply B");
+});
+
+test("session and message queries are scoped to one partition", async () => {
+  const { store, db } = await setupStoreWithDb();
+  const s = await store.getOrCreate("u1", "default", "s1");
+  await store.appendMessages("u1", "s1", [msgWithKey("user", "q", "k"), msg("assistant", "a")]);
+  const seen: Array<{ op: string; partitionKey?: string }> = [];
+  for (const name of ["sessions", "session-messages-v2"]) {
+    db.getCollection(name).beforeOperation(({ op, partitionKey }) => {
+      if (op === "find" || op === "count") seen.push({ op, partitionKey });
+    });
+  }
+  await store.list("u1");
+  await store.getMessages("u1", "s1");
+  await store.getAllMessages("u1", "s1");
+  await store.findByRunId(s, "r");
+  await store.findByIdempotencyKey(s, "k");
+  await store.findLastChannel("u1");
+  assert.ok(seen.length >= 6);
+  assert.ok(seen.every((q) => typeof q.partitionKey === "string" && q.partitionKey.startsWith("u1")), JSON.stringify(seen));
+});
+
+test("findLastChannel skips sessions whose channel or chat is null or empty", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.UTC(2026, 9, 1) });
+  const { store, db } = await setupStoreWithDb();
+  await store.getOrCreate("u1", "default", "good");
+  await store.appendMessages("u1", "good", [msg("user", "hi")], undefined, { lastChannelName: "telegram", lastChatId: "42" });
+  t.mock.timers.tick(1000);
+  await store.getOrCreate("u1", "default", "empty-chat");
+  await store.appendMessages("u1", "empty-chat", [msg("user", "x")], undefined, { lastChannelName: "telegram", lastChatId: "" });
+  t.mock.timers.tick(1000);
+  await store.getOrCreate("u1", "default", "empty-channel");
+  await store.appendMessages("u1", "empty-channel", [msg("user", "x")], undefined, { lastChannelName: "", lastChatId: "9" });
+  t.mock.timers.tick(1000);
+  const sessions = db.getCollection<Session>("sessions");
+  for (const [id, metadata] of [
+    ["null-chat", { lastChannelName: "telegram", lastChatId: null }],
+    ["null-channel", { lastChannelName: null, lastChatId: "9" }],
+  ] as const) {
+    const s = await store.getOrCreate("u1", "default", id);
+    await sessions.upsert({ ...s, metadata: metadata as never, updatedAt: new Date(Date.now()).toISOString() });
+  }
+  assert.deepEqual(await store.findLastChannel("u1"), { channelName: "telegram", chatId: "42" });
+});
+
+test("list is capped at 200 sessions", async () => {
+  const { store, db } = await setupStoreWithDb();
+  const sessions = db.getCollection<Session>("sessions");
+  const base = await store.getOrCreate("u1", "default", "s0");
+  for (let i = 1; i <= 205; i++) await sessions.create({ ...base, id: `u1:s${i}`, sessionId: `s${i}` });
+  assert.equal((await store.list("u1", undefined, { limit: 1000 })).length, 200);
+});
+
+test("lease and compaction updates retry past a concurrent write instead of giving up", async () => {
+  const { store, db } = await setupStoreWithDb();
+  const s = await store.getOrCreate("u1", "default", "s1");
+  const sessions = db.getCollection<Session>("sessions");
+  /** One concurrent write (a metadata note) just before the next replace. */
+  const raceNextReplace = () => {
+    let done = false;
+    const remove = sessions.beforeOperation(async ({ op }) => {
+      if (op === "replace" && !done) {
+        done = true;
+        const current = sessions.peek<Session>(s.id, "u1")!;
+        await sessions.upsert({ ...current, metadata: { ...current.metadata, note: "concurrent" } });
+      }
+    });
+    return remove;
+  };
+  const now = Date.now();
+  let remove = raceNextReplace();
+  assert.equal(await store.acquireRunLease("u1", "s1", "lease-1", now + 60_000, now), true);
+  remove();
+  remove = raceNextReplace();
+  assert.equal(await store.renewRunLease("u1", "s1", "lease-1", now + 120_000), true);
+  remove();
+  remove = raceNextReplace();
+  assert.equal(await store.updateCompaction("u1", "s1", "summary", 0, s.instanceId, 0), true);
+  remove();
+  const after = await store.get("u1", "s1");
+  assert.equal(after?.activeRun?.expiresAtMs, now + 120_000);
+  assert.equal(after?.compactionSummary, "summary");
+  assert.equal(after?.metadata?.note, "concurrent");
 });

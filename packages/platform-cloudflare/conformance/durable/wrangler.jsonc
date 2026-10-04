@@ -1,0 +1,13 @@
+{
+  "name": "afe-durable-conformance",
+  "main": "worker.ts",
+  "compatibility_date": "2025-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      { "name": "DURABLE_INSTANCES", "class_name": "DurableInstance" },
+      { "name": "RECORDER", "class_name": "Recorder" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["DurableInstance", "Recorder"] }]
+}

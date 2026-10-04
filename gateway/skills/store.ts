@@ -10,25 +10,26 @@
  *   - Credentials excluded from indexing for security
  */
 
-import type {
-  DatabaseProvider,
-  ContainerHandle,
-  ContainerOptions,
-} from "../database/index.js";
+import { and, eq, isDefined, type Collection, type CollectionSpec, type StorageAdapter } from "@agentforeach/storage";
 import type { UserSkillConfig, SkillAuditEntry } from "./types.js";
+
+/** The user-skills collection; credentials are never indexed. */
+export function userSkillsCollection(containerId = "user-skills"): CollectionSpec {
+  return { name: containerId, partitionKey: "userId", unindexed: ["credentials"] };
+}
 
 // ============================================================================
 // User Skill Store
 // ============================================================================
 
 export class UserSkillStore {
-  private db: DatabaseProvider;
+  private storage: StorageAdapter;
   private containerId: string;
-  private container!: ContainerHandle<UserSkillConfig>;
+  private container!: Collection<UserSkillConfig>;
   private initialized = false;
 
-  constructor(db: DatabaseProvider, containerId = "user-skills") {
-    this.db = db;
+  constructor(storage: StorageAdapter, containerId = "user-skills") {
+    this.storage = storage;
     this.containerId = containerId;
   }
 
@@ -39,24 +40,8 @@ export class UserSkillStore {
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
-    await this.db.initialize();
-
-    const containerDef: ContainerOptions = {
-      id: this.containerId,
-      partitionKey: { paths: ["/userId"] },
-      indexingPolicy: {
-        automatic: true,
-        indexingMode: "consistent",
-        includedPaths: [{ path: "/*" }],
-        excludedPaths: [
-          { path: "/credentials/*" },
-          { path: '/"_etag"/?' },
-        ],
-      },
-    };
-
-    this.container =
-      await this.db.getOrCreateContainer<UserSkillConfig>(containerDef);
+    await this.storage.initialize();
+    this.container = await this.storage.collection<UserSkillConfig>(userSkillsCollection(this.containerId));
     this.initialized = true;
   }
 
@@ -82,11 +67,11 @@ export class UserSkillStore {
   /** Get all skill configs for a user (excludes audit entries). */
   async getAllForUser(userId: string): Promise<UserSkillConfig[]> {
     await this.ensureInitialized();
-    return this.container.queryWithParams(
-      "SELECT * FROM c WHERE c.userId = @userId AND IS_DEFINED(c.enabled) ORDER BY c.skillId",
-      [{ name: "@userId", value: userId }],
-      { partitionKey: userId },
-    );
+    return this.container.find<UserSkillConfig>({
+      partitionKey: userId,
+      where: and(eq("userId", userId), isDefined("enabled")),
+      orderBy: { field: "skillId" },
+    });
   }
 
   /** Create or update a skill config. */
@@ -115,7 +100,7 @@ export class UserSkillStore {
    */
   async logAudit(entry: SkillAuditEntry): Promise<void> {
     await this.ensureInitialized();
-    // Cosmos is schema-less; the container type doesn't restrict actual documents.
+    // Documents are schema-less; the collection type doesn't restrict them.
     await this.container.upsert(entry as unknown as UserSkillConfig);
   }
 

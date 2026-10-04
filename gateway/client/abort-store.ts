@@ -17,11 +17,7 @@
  * stale markers clean themselves up.
  */
 
-import { PartitionKeyKind } from "@azure/cosmos";
-import type {
-  DatabaseProvider,
-  ContainerHandle,
-} from "../database/types.js";
+import type { Collection, CollectionSpec, StorageAdapter } from "@agentforeach/storage";
 
 interface AbortDocument {
   /** Document ID = userId (one pending abort per user at most). */
@@ -30,38 +26,35 @@ interface AbortDocument {
   userId: string;
   /** ISO 8601 timestamp of when the abort was requested. */
   requestedAt: string;
-  /** TTL in seconds — Cosmos auto-deletes stale markers. */
+  /** TTL in seconds: the database deletes stale markers. */
   ttl: number;
-  /** Index signature required by BaseDocument. */
   [key: string]: unknown;
 }
-
-const ABORT_CONTAINER = "abort-requests";
 
 /** Markers are only meaningful for the run they target; expire fast. */
 const MARKER_TTL_SECONDS = 600;
 
+export const ABORT_COLLECTION: CollectionSpec = {
+  name: "abort-requests",
+  partitionKey: "userId",
+  defaultTtl: MARKER_TTL_SECONDS,
+  // Deployed without an indexing policy (the account default).
+  adapterOptions: { cosmosdb: { indexingPolicy: null } },
+};
+
 export class AbortStore {
-  private db: DatabaseProvider;
-  private container!: ContainerHandle<AbortDocument>;
+  private storage: StorageAdapter;
+  private container!: Collection<AbortDocument>;
   private initialized = false;
 
-  constructor(db: DatabaseProvider) {
-    this.db = db;
+  constructor(storage: StorageAdapter) {
+    this.storage = storage;
   }
 
-  /** Ensure the abort-requests container exists. Idempotent. */
+  /** Ensure the abort-requests collection exists. Idempotent. */
   async initialize(): Promise<void> {
     if (this.initialized) return;
-    this.container = await this.db.getOrCreateContainer<AbortDocument>({
-      id: ABORT_CONTAINER,
-      partitionKey: {
-        paths: ["/userId"],
-        kind: PartitionKeyKind.Hash,
-        version: 2,
-      },
-      defaultTtl: MARKER_TTL_SECONDS,
-    });
+    this.container = await this.storage.collection<AbortDocument>(ABORT_COLLECTION);
     this.initialized = true;
   }
 

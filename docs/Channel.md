@@ -30,7 +30,7 @@ The routes are `authLevel: "anonymous"` because providers can't authenticate to 
 
 How step 5 is scheduled depends on the plugin:
 
-- **`ackImmediately` plugins (WhatsApp)** get their `200` straight away, and the turn runs in the **`ChannelInboundTurn`** Durable orchestration (one `ProcessChannelInboundTurn` activity). A slow turn therefore can't trigger a provider redelivery, and an instance recycled mid-turn doesn't lose it; the cost is that a crash after the reply was sent can send it twice. Such plugins must deduplicate inbound message ids durably. If no durable client is available the turn falls back to running detached.
+- **`ackImmediately` plugins (WhatsApp)** get their `200` straight away, and the turn runs as a **`ChannelInboundTurn`** durable job ([Platforms](Platforms.md); on Azure, a `DurableJob` orchestration with one `DurableJobRun` activity). A slow turn therefore can't trigger a provider redelivery, and an instance recycled mid-turn doesn't lose it; the cost is that a crash after the reply was sent can send it twice. Such plugins must deduplicate inbound message ids durably. If the job can't be started (no durable runtime) the turn falls back to running detached.
 - **Other plugins (Telegram)** run the turn inside the webhook request. The handler answers `503` when the failure is temporary (for example, the identity store is unavailable) so the provider redelivers, and `200` otherwise so a turn that already ran isn't retried.
 
 ## Security
@@ -130,7 +130,7 @@ A channel is an object implementing `ChannelPlugin` (`channels/types.ts`):
 | `formatReply(text)`, `parseMode` | | Convert the model's Markdown to the channel's dialect |
 | `verifyChallenge(query)` | | Answer a GET verification handshake |
 | `handleEvent(body)` | | Non-message payloads; fire-and-forget |
-| `ackImmediately` | | Acknowledge first and run the turn in `ChannelInboundTurn` |
+| `ackImmediately` | | Acknowledge first and run the turn as a `ChannelInboundTurn` durable job |
 | `enrichInbound(message)` | | Slow work (media downloads) kept off the acknowledgement path |
 | `hitlWidgets` | | Whether the channel can render app forms; if not, the agent collects input in conversation |
 | `getDeliveryAdapter()` | | Scheduled-job delivery |

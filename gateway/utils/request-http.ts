@@ -1,32 +1,13 @@
-import { type HttpRequest, type HttpResponseInit } from "@azure/functions";
+import { corsHeaders, corsPolicy, type HttpRequestLike, type HttpResult } from "@agentforeach/platform";
 
+/** CORS headers by the gateway's policy (CORS_ALLOWED_ORIGINS; see @agentforeach/platform's cors.ts). */
 export function handleCorsHeaders(
-  request: HttpRequest,
+  request: HttpRequestLike,
 ): Record<string, string> {
-  const origin = request.headers.get("origin");
-  const configured = (process.env.CORS_ALLOWED_ORIGINS ?? "")
-    .split(",")
-    .map((v) => v.trim())
-    .filter(Boolean);
-
-  const allowOrigin = (() => {
-    if (!origin) return "*";
-    if (configured.length === 0) return "*";
-    return configured.includes(origin) ? origin : configured[0];
-  })();
-
-  const headers: Record<string, string> = {
-    "Access-Control-Allow-Origin": allowOrigin,
-    "Access-Control-Allow-Methods": "GET,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, x-user-id",
-  };
-
-  if (allowOrigin !== "*") {
-    headers["Access-Control-Allow-Credentials"] = "true";
-    headers.Vary = "Origin";
-  }
-
-  return headers;
+  return corsHeaders(corsPolicy(process.env.CORS_ALLOWED_ORIGINS), request.headers.get("origin"), {
+    methods: "GET,OPTIONS",
+    headers: "Content-Type, Authorization, x-user-id",
+  });
 }
 
 // ============================================================================
@@ -34,8 +15,8 @@ export function handleCorsHeaders(
 // ============================================================================
 
 export function handleAbuseProtection(
-  request: HttpRequest,
-): HttpResponseInit | null {
+  request: HttpRequestLike,
+): HttpResult | null {
   if (request.method === "OPTIONS") {
     const origin = request.headers.get("WebHook-Request-Origin");
     return {

@@ -69,7 +69,7 @@ We looked for a Google Cloud equivalent of ACA Sandboxes: one isolated sandbox p
 
 ## What we needed
 
-The requirements are the same six as in [Sandbox-Migration.md](Sandbox-Migration.md#what-agentforeach-needs-from-a-sandbox), made concrete by what the ACA Sandboxes backend (`gateway/skills/sandbox/aca-sandboxes-client.ts`) relies on:
+The requirements are the same six as in [Sandbox-Migration.md](Sandbox-Migration.md#what-agentforeach-needs-from-a-sandbox), made concrete by what the ACA Sandboxes backend (`packages/platform-azure/src/sandbox/aca-sandboxes-client.ts`) relies on:
 
 | # | Need | How ACA Sandboxes provides it today |
 |---|---|---|

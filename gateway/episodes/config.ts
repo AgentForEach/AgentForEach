@@ -6,7 +6,7 @@
  *
  * Key design choices:
  *   - Embedding config reused from `llms.embedding` (no duplication)
- *   - Database connection shared via DatabaseProvider (no duplicate config)
+ *   - Storage shared via the StorageAdapter (no duplicate config)
  *   - Config cached after first load (reset for testing)
  */
 

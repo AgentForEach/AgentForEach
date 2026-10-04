@@ -13,12 +13,9 @@
  *
  * ```ts
  * import { SessionStore, loadSessionConfig } from "./sessions/index.js";
- * import { resolveDatabaseProvider, loadDatabaseConfig } from "./database/index.js";
+ * import { getSharedStorage } from "./database/index.js";
  *
- * const db = resolveDatabaseProvider(loadDatabaseConfig());
- * await db.initialize();
- *
- * const sessionStore = new SessionStore(db);
+ * const sessionStore = new SessionStore(getSharedStorage());
  * await sessionStore.initialize();
  *
  * const session = await sessionStore.getOrCreate("user_123");

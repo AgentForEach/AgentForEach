@@ -1,7 +1,8 @@
 /**
- * AgentForEach Skills Layer — SKILL.md Loader
+ * AgentForEach Skills Layer — SKILL.md frontmatter
  *
  * Parses YAML frontmatter from SKILL.md files to extract skill metadata.
+ * The files themselves come from blob storage (skills/blob-store.ts).
  * Uses a simple regex-based parser for flat key-value pairs (no external
  * YAML dependency needed).
  *
@@ -16,9 +17,6 @@
  * ```
  */
 
-import { readFileSync, existsSync } from "node:fs";
-import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { SkillFrontmatter } from "./types.js";
 
 // ============================================================================
@@ -73,41 +71,4 @@ export function parseSkillFrontmatter(content: string): SkillFrontmatter {
   }
 
   return { id, name, description, category };
-}
-
-// ============================================================================
-// File Loader
-// ============================================================================
-
-/**
- * Load a SKILL.md file from a skill directory.
- *
- * Uses the same dual-path resolution pattern as utils/config.ts:
- * checks both the compiled output path and the source tree path.
- *
- * @param skillDirName - Name of the skill directory (e.g., "weather").
- * @returns Raw SKILL.md content.
- * @throws If the file cannot be found.
- */
-export function loadSkillMd(skillDirName: string): string {
-  const loaderDir = dirname(fileURLToPath(import.meta.url));
-
-  // Candidate paths:
-  //   1. <loaderDir>/catalog/<skill>/SKILL.md  (compiled output — when .md copied to dist)
-  //   2. <loaderDir>/../../../skills/catalog/<skill>/SKILL.md  (source tree fallback)
-  //      With rootDir=".." and outDir="dist", compiled loader is at
-  //      dist/gateway/skills/loader.js — 3 levels up reaches the package root.
-  const candidates = [
-    resolve(loaderDir, "catalog", skillDirName, "SKILL.md"),
-    resolve(loaderDir, "../../../skills/catalog", skillDirName, "SKILL.md"),
-  ];
-
-  const found = candidates.find((p) => existsSync(p));
-  if (!found) {
-    throw new Error(
-      `SKILL.md not found for skill "${skillDirName}". Checked: ${candidates.join(", ")}`,
-    );
-  }
-
-  return readFileSync(found, "utf-8");
 }

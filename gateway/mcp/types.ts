@@ -81,6 +81,9 @@ export interface McpServerJsonConfig {
    * as `x-agentforeach-user-id`. The MCP server can read this from the incoming
    * CallToolRequest's `params._meta["x-agentforeach-user-id"]`.
    *
+   * Key any per-user state on that field, never on the MCP transport or
+   * session: on a long-lived host (Azure) one connection serves every user.
+   *
    * Defaults to false.
    */
   forwardAuth?: boolean;

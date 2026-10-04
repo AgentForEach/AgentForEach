@@ -16,13 +16,7 @@
  *   GET  /api/health            — Health check
  */
 
-import {
-  app,
-  type HttpRequest,
-  type HttpResponseInit,
-  type InvocationContext,
-} from "@azure/functions";
-import * as df from "durable-functions";
+import { corsHeaders as sharedCorsHeaders, corsPolicy, type HandlerContext, type HttpRequestLike, type HttpResult, type RouteDef } from "@agentforeach/platform";
 import { getAgentClient } from "../shared.js";
 import { generateClientToken, getDefaultGroups } from "../websocket/index.js";
 import { sendEventToUser, EVENTS } from "../websocket/index.js";
@@ -93,38 +87,19 @@ function stripCosmosInternals<T extends Record<string, unknown>>(doc: T): Partia
 // CORS
 // ============================================================================
 
-function corsHeaders(request: HttpRequest): Record<string, string> {
-  const origin = request.headers.get("origin");
-  const configured = (process.env.CORS_ALLOWED_ORIGINS ?? "")
-    .split(",")
-    .map((v) => v.trim())
-    .filter(Boolean);
-
-  const allowOrigin = (() => {
-    if (!origin) return "*";
-    if (configured.length === 0) return "*";
-    return configured.includes(origin) ? origin : configured[0];
-  })();
-
-  const headers: Record<string, string> = {
-    "Access-Control-Allow-Origin": allowOrigin,
-    "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, x-user-id",
-  };
-
-  if (allowOrigin !== "*") {
-    headers["Access-Control-Allow-Credentials"] = "true";
-    headers.Vary = "Origin";
-  }
-
-  return headers;
+/** CORS headers by the gateway's policy (CORS_ALLOWED_ORIGINS; see @agentforeach/platform's cors.ts). */
+function corsHeaders(request: HttpRequestLike): Record<string, string> {
+  return sharedCorsHeaders(corsPolicy(process.env.CORS_ALLOWED_ORIGINS), request.headers.get("origin"), {
+    methods: "GET,POST,DELETE,OPTIONS",
+    headers: "Content-Type, Authorization, x-user-id",
+  });
 }
 
 // ============================================================================
 // Auth Helper
 // ============================================================================
 
-function unauthorized(request: HttpRequest): HttpResponseInit {
+function unauthorized(request: HttpRequestLike): HttpResult {
   return {
     status: 401,
     headers: { ...corsHeaders(request), "Content-Type": "application/json" },
@@ -137,9 +112,9 @@ function unauthorized(request: HttpRequest): HttpResponseInit {
 // ============================================================================
 
 async function apiChat(
-  request: HttpRequest,
-  context: InvocationContext,
-): Promise<HttpResponseInit> {
+  request: HttpRequestLike,
+  context: HandlerContext,
+): Promise<HttpResult> {
   if (request.method === "OPTIONS")
     return { status: 204, headers: corsHeaders(request) };
 
@@ -331,7 +306,7 @@ async function apiChat(
       turn.sessionId ??= newSessionId;
       turn.rateLimitChecked = true;
       turn.acceptedAtMs = Date.now();
-      const { duplicate } = await startChatTurn(context, instanceId, turn);
+      const { duplicate } = await startChatTurn(instanceId, turn);
       context.log(
         `apiChat accepted user=${redactId(userId)} run=${runId} session=${redactId(turn.sessionId)}` +
           (duplicate ? " (duplicate of a running turn)" : ""),
@@ -402,9 +377,9 @@ async function apiChat(
 // ============================================================================
 
 async function apiChatAbort(
-  request: HttpRequest,
-  context: InvocationContext,
-): Promise<HttpResponseInit> {
+  request: HttpRequestLike,
+  context: HandlerContext,
+): Promise<HttpResult> {
   if (request.method === "OPTIONS") {
     return { status: 204, headers: corsHeaders(request) };
   }
@@ -448,9 +423,9 @@ async function apiChatAbort(
 // ============================================================================
 
 async function apiSessions(
-  request: HttpRequest,
-  context: InvocationContext,
-): Promise<HttpResponseInit> {
+  request: HttpRequestLike,
+  context: HandlerContext,
+): Promise<HttpResult> {
   if (request.method === "OPTIONS")
     return { status: 204, headers: corsHeaders(request) };
 
@@ -486,9 +461,9 @@ async function apiSessions(
 // ============================================================================
 
 async function apiSessionById(
-  request: HttpRequest,
-  context: InvocationContext,
-): Promise<HttpResponseInit> {
+  request: HttpRequestLike,
+  context: HandlerContext,
+): Promise<HttpResult> {
   if (request.method === "OPTIONS")
     return { status: 204, headers: corsHeaders(request) };
 
@@ -559,9 +534,9 @@ async function apiSessionById(
 // ============================================================================
 
 async function apiToken(
-  request: HttpRequest,
-  context: InvocationContext,
-): Promise<HttpResponseInit> {
+  request: HttpRequestLike,
+  context: HandlerContext,
+): Promise<HttpResult> {
   if (request.method === "OPTIONS")
     return { status: 204, headers: corsHeaders(request) };
 
@@ -606,9 +581,9 @@ async function apiToken(
 // ============================================================================
 
 async function apiUsage(
-  request: HttpRequest,
-  context: InvocationContext,
-): Promise<HttpResponseInit> {
+  request: HttpRequestLike,
+  context: HandlerContext,
+): Promise<HttpResult> {
   if (request.method === "OPTIONS")
     return { status: 204, headers: corsHeaders(request) };
 
@@ -642,9 +617,9 @@ async function apiUsage(
 // ============================================================================
 
 async function apiUsageRecords(
-  request: HttpRequest,
-  context: InvocationContext,
-): Promise<HttpResponseInit> {
+  request: HttpRequestLike,
+  context: HandlerContext,
+): Promise<HttpResult> {
   if (request.method === "OPTIONS")
     return { status: 204, headers: corsHeaders(request) };
 
@@ -686,9 +661,9 @@ async function apiUsageRecords(
 // ============================================================================
 
 async function apiHealth(
-  _request: HttpRequest,
-  _context: InvocationContext,
-): Promise<HttpResponseInit> {
+  _request: HttpRequestLike,
+  _context: HandlerContext,
+): Promise<HttpResult> {
   return {
     status: 200,
     headers: { "Content-Type": "application/json" },
@@ -705,9 +680,9 @@ async function apiHealth(
 // ============================================================================
 
 async function apiIdentityPair(
-  request: HttpRequest,
-  context: InvocationContext,
-): Promise<HttpResponseInit> {
+  request: HttpRequestLike,
+  context: HandlerContext,
+): Promise<HttpResult> {
   if (request.method === "OPTIONS")
     return { status: 204, headers: corsHeaders(request) };
 
@@ -764,9 +739,9 @@ async function apiIdentityPair(
 // ============================================================================
 
 async function apiIdentityLinks(
-  request: HttpRequest,
-  context: InvocationContext,
-): Promise<HttpResponseInit> {
+  request: HttpRequestLike,
+  context: HandlerContext,
+): Promise<HttpResult> {
   if (request.method === "OPTIONS")
     return { status: 204, headers: corsHeaders(request) };
 
@@ -836,15 +811,15 @@ async function apiIdentityLinks(
 // ============================================================================
 
 async function apiIdentityBackfillIndex(
-  request: HttpRequest,
-  context: InvocationContext,
-): Promise<HttpResponseInit> {
+  request: HttpRequestLike,
+  context: HandlerContext,
+): Promise<HttpResult> {
   if (request.method === "OPTIONS")
     return { status: 204, headers: corsHeaders(request) };
 
   const auth = await resolveAuthContext(request);
   if (!auth) return unauthorized(request);
-  const json = (status: number, body: unknown): HttpResponseInit => ({
+  const json = (status: number, body: unknown): HttpResult => ({
     status,
     headers: { ...corsHeaders(request), "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -869,9 +844,9 @@ async function apiIdentityBackfillIndex(
 // ============================================================================
 
 async function apiIdentityDeleteLink(
-  request: HttpRequest,
-  context: InvocationContext,
-): Promise<HttpResponseInit> {
+  request: HttpRequestLike,
+  context: HandlerContext,
+): Promise<HttpResult> {
   if (request.method === "OPTIONS")
     return { status: 204, headers: corsHeaders(request) };
 
@@ -940,87 +915,89 @@ async function apiIdentityDeleteLink(
 // Function Registrations
 // ============================================================================
 
-app.http("apiChat", {
+export const routes: RouteDef[] = [];
+
+routes.push({
+  name: "apiChat",
   methods: ["POST", "OPTIONS"],
-  authLevel: "anonymous",
   route: "api/chat",
-  extraInputs: [df.input.durableClient()],
+  durable: true,
   handler: apiChat,
 });
 
-app.http("apiChatAbort", {
+routes.push({
+  name: "apiChatAbort",
   methods: ["POST", "OPTIONS"],
-  authLevel: "anonymous",
   route: "api/chat/abort",
   handler: apiChatAbort,
 });
 
-app.http("apiSessions", {
+routes.push({
+  name: "apiSessions",
   methods: ["GET", "OPTIONS"],
-  authLevel: "anonymous",
   route: "api/sessions",
   handler: apiSessions,
 });
 
-app.http("apiSessionById", {
+routes.push({
+  name: "apiSessionById",
   methods: ["GET", "DELETE", "OPTIONS"],
-  authLevel: "anonymous",
   route: "api/sessions/{id}",
   handler: apiSessionById,
 });
 
-app.http("apiUsage", {
+routes.push({
+  name: "apiUsage",
   methods: ["GET", "OPTIONS"],
-  authLevel: "anonymous",
   route: "api/usage",
   handler: apiUsage,
 });
 
-app.http("apiUsageRecords", {
+routes.push({
+  name: "apiUsageRecords",
   methods: ["GET", "OPTIONS"],
-  authLevel: "anonymous",
   route: "api/usage/records",
   handler: apiUsageRecords,
 });
 
-app.http("apiToken", {
+routes.push({
+  name: "apiToken",
   methods: ["POST", "OPTIONS"],
-  authLevel: "anonymous",
   route: "api/token",
   handler: apiToken,
 });
 
-app.http("apiHealth", {
+routes.push({
+  name: "apiHealth",
   methods: ["GET"],
-  authLevel: "anonymous",
   route: "api/health",
   handler: apiHealth,
 });
 
-app.http("apiIdentityPair", {
+routes.push({
+  name: "apiIdentityPair",
   methods: ["POST", "OPTIONS"],
-  authLevel: "anonymous",
   route: "api/identity/pair",
   handler: apiIdentityPair,
 });
 
-app.http("apiIdentityLinks", {
+routes.push({
+  name: "apiIdentityLinks",
   methods: ["GET", "POST", "OPTIONS"],
-  authLevel: "anonymous",
   route: "api/identity/links",
   handler: apiIdentityLinks,
 });
 
-app.http("apiIdentityBackfillIndex", {
+routes.push({
+  name: "apiIdentityBackfillIndex",
   methods: ["POST", "OPTIONS"],
-  authLevel: "anonymous",
   route: "api/identity/backfill-index",
   handler: apiIdentityBackfillIndex,
 });
 
-app.http("apiIdentityDeleteLink", {
+routes.push({
+  name: "apiIdentityDeleteLink",
   methods: ["DELETE", "OPTIONS"],
-  authLevel: "anonymous",
   route: "api/identity/links/{linkId}",
   handler: apiIdentityDeleteLink,
 });

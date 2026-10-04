@@ -13,11 +13,15 @@ import type { SkillsJsonConfig, SkillsConfig } from "./types.js";
 import type {
   AcaSandboxesConfig,
   AcaSandboxesJsonConfig,
+  ContainersSandboxConfig,
+  ContainersSandboxJsonConfig,
   SandboxConfig,
   SandboxProvider,
 } from "./sandbox/types.js";
 import type { BrowserConfig, BrowserJsonConfig } from "./browser/types.js";
-import { resolveHub, resolveWebPubSubHost } from "../websocket/config.js";
+import { resolveHub } from "../websocket/config.js";
+import { relayEgressEntry, relayHost as resolveRelayHost } from "../websocket/providers/index.js";
+import { canonicalSandboxProvider } from "./sandbox/registry.js";
 
 // ============================================================================
 // Defaults
@@ -135,12 +139,31 @@ function resolveAcaSandboxes(json: AcaSandboxesJsonConfig = {}): AcaSandboxesCon
   };
 }
 
-/** SANDBOX_PROVIDER (from the IaC) wins over agentforeach.json; "aca" is a legacy alias. */
+const CONTAINERS_DEFAULTS = {
+  instance: "standard-2",
+  autoSuspendSec: 300,
+  defaultTimeoutSec: 120,
+  maxTimeoutSec: 200,
+};
+
+function resolveContainers(json: ContainersSandboxJsonConfig = {}): ContainersSandboxConfig {
+  return {
+    instance: json.instance ?? CONTAINERS_DEFAULTS.instance,
+    autoSuspendSec: json.autoSuspendSec ?? CONTAINERS_DEFAULTS.autoSuspendSec,
+    egressAllowHosts: json.egressAllowHosts ?? [],
+    browser: json.browser ?? false,
+    defaultTimeoutSec: json.defaultTimeoutSec ?? CONTAINERS_DEFAULTS.defaultTimeoutSec,
+    maxTimeoutSec: json.maxTimeoutSec ?? CONTAINERS_DEFAULTS.maxTimeoutSec,
+  };
+}
+
+/**
+ * SANDBOX_PROVIDER (from the IaC) wins over agentforeach.json; "aca" is a
+ * legacy alias. Any registered provider is accepted (skills/sandbox/registry.ts);
+ * an unknown name fails when the backend is created.
+ */
 function resolveProvider(configured: string | undefined): SandboxProvider {
-  const raw = process.env.SANDBOX_PROVIDER || configured || SANDBOX_DEFAULTS.provider;
-  if (raw === "aca" || raw === "aca-sessions") return "aca-sessions";
-  if (raw === "aca-sandboxes") return "aca-sandboxes";
-  throw new Error(`Unknown sandbox provider "${raw}" (expected aca-sandboxes or aca-sessions)`);
+  return canonicalSandboxProvider((process.env.SANDBOX_PROVIDER || configured || SANDBOX_DEFAULTS.provider).trim());
 }
 
 const BLOB_STORE_DEFAULTS = {
@@ -177,17 +200,28 @@ export function loadSkillsConfig(): SkillsConfig {
       "";
     const provider = resolveProvider(s.provider);
     const acaSandboxes = provider === "aca-sandboxes" ? resolveAcaSandboxes(s.sandboxes) : undefined;
+    const containers = provider === "cloudflare-containers" ? resolveContainers(s.containers) : undefined;
     const browser = resolveBrowser(s.browser);
-    // A handoff's live view goes out to Web PubSub; let it through a deny-by-default egress policy.
-    const relayHost = browser.enabled && browser.handoff.enabled ? resolveWebPubSubHost() : undefined;
-    if (acaSandboxes && relayHost && !acaSandboxes.egressAllowHosts.includes(relayHost)) {
-      acaSandboxes.egressAllowHosts = [...acaSandboxes.egressAllowHosts, relayHost];
+    // A handoff's live view goes out to the realtime relay; let it through a deny-by-default egress policy.
+    // ACA's egress rules match hosts only, so it gets the relay's host; the
+    // containers backend gets host/path, so a relay on the gateway's own host
+    // doesn't open every gateway route to the sandbox.
+    const handoff = browser.enabled && browser.handoff.enabled;
+    const relayEntries: Array<[{ egressAllowHosts: string[] } | undefined, string | undefined]> = [
+      [acaSandboxes, handoff ? resolveRelayHost() : undefined],
+      [containers, handoff ? relayEgressEntry() : undefined],
+    ];
+    for (const [backend, entry] of relayEntries) {
+      if (backend && entry && !backend.egressAllowHosts.includes(entry)) {
+        backend.egressAllowHosts = [...backend.egressAllowHosts, entry];
+      }
     }
 
     sandbox = {
       enabled: s.enabled ?? false,
       provider,
       sandboxes: acaSandboxes,
+      containers,
       poolManagementEndpoint: poolEndpoint,
       containerType:
         s.aca?.containerType ?? SANDBOX_DEFAULTS.containerType,

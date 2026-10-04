@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # =============================================================================
-# AgentForEach Sandbox — provisioning for an ACA Sandboxes disk image
+# AgentForEach Sandbox — provisioning for the sandbox image, on every cloud
 #
-# Run inside a build sandbox started from the public "ubuntu" image (with
-# egress open) by scripts/build-aca-sandbox-image.mjs, which then commits the
-# sandbox to a private disk image. The Dockerfile in this folder is for the
-# Dynamic Sessions CustomContainer fallback; this script installs the same
-# core tooling without the HTTP exec server, which ACA Sandboxes don't need.
+# One script, two ways to build the same image:
+#   - ACA Sandboxes: scripts/build-aca-sandbox-image.mjs runs it inside a build
+#     sandbox started from the public "ubuntu" image (with egress open), then
+#     commits the sandbox to a private disk image.
+#   - Containers (Dynamic Sessions custom containers, Cloudflare Containers,
+#     Docker): the Dockerfile in this folder runs it on ubuntu:24.04 and adds
+#     the sandbox HTTP server (server.mjs), which ACA Sandboxes don't need.
 #
 # Set SANDBOX_IMAGE_FULL=1 to add Java, PHP, Ruby and Go as in the Dockerfile.
 # Set SANDBOX_IMAGE_BROWSER=1 to add Chromium, Xvfb and the afe-browser driver
@@ -20,10 +22,13 @@ apt-get install -y -qq --no-install-recommends \
   bash curl wget git ca-certificates gnupg \
   gcc g++ make cmake \
   python3 python3-pip python3-venv \
-  nodejs npm \
   jq unzip zip tar gzip bzip2 xz-utils \
   procps lsof net-tools dnsutils \
   > /dev/null
+
+# Node.js 22 (with npm) from NodeSource: the distribution's own is older.
+curl -fsSL https://deb.nodesource.com/setup_22.x | bash - > /dev/null
+apt-get install -y -qq --no-install-recommends nodejs > /dev/null
 
 if [ "${SANDBOX_IMAGE_FULL:-0}" = "1" ]; then
   apt-get install -y -qq --no-install-recommends \

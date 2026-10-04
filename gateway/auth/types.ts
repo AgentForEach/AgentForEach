@@ -8,7 +8,7 @@
  * in priority order via the chain-of-responsibility pattern.
  */
 
-import type { HttpRequest } from "@azure/functions";
+import type { HttpRequestLike } from "@agentforeach/platform";
 
 // ============================================================================
 // Auth Provider Identity
@@ -50,6 +50,11 @@ export type AuthContext = {
   email?: string;
   /** Additional metadata from the provider. */
   metadata?: Record<string, string>;
+  /**
+   * The browser sends this credential by itself (a cookie, or a header a
+   * proxy derives from one), so a cross-site form POST carries it.
+   */
+  cookieBacked?: boolean;
 };
 
 // ============================================================================
@@ -72,7 +77,7 @@ export interface AuthProvider {
    * (the next provider in the chain will be tried).
    */
   resolve(
-    request: HttpRequest,
+    request: HttpRequestLike,
   ): Promise<AuthContext | null> | AuthContext | null;
 }
 
@@ -109,6 +114,13 @@ export type ApiKeyProviderConfig = {
    * Keys can also be stored in env vars (reference via "$ENV_VAR_NAME").
    */
   keys: Record<string, ApiKeyIdentity>;
+  /**
+   * The credential reaches the gateway without the client's code adding it:
+   * a cookie, or a header a proxy in front derives from one (Cloudflare
+   * Access's cf-access-jwt-assertion). A cross-site form carries it too, so
+   * POSTs authenticated this way must be JSON (see isCrossSiteFormPost).
+   */
+  cookieBacked?: boolean;
 };
 
 export type ApiKeyIdentity = {
@@ -157,6 +169,14 @@ export type JwtProviderConfig = {
   emailClaim?: string;
   /** Reject tokens without an `exp` claim. Defaults to true. */
   requireExp?: boolean;
+  /**
+   * The credential reaches the gateway without the client's code adding it:
+   * a cookie, or a header a proxy in front derives from one (Cloudflare
+   * Access's cf-access-jwt-assertion). A cross-site form carries it too, so
+   * POSTs authenticated this way must be JSON (see isCrossSiteFormPost).
+   */
+  /** Default: true when headerName is "cf-access-jwt-assertion". */
+  cookieBacked?: boolean;
 };
 
 /** Trusted reverse proxy — identity is passed via headers from an auth-aware proxy. */

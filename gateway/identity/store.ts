@@ -13,15 +13,11 @@
  * one document per `channel:channelUserId`, so ownership is unique and the
  * per-message lookup is a point read, not a cross-partition query.
  *
- * All identity mappings live exclusively in Cosmos DB (no static config).
+ * All identity mappings live exclusively in storage (no static config).
  */
 
 import { randomInt } from "node:crypto";
-import { PartitionKeyKind } from "@azure/cosmos";
-import type {
-  DatabaseProvider,
-  ContainerHandle,
-} from "../database/index.js";
+import { and, eq, gt, type Collection, type CollectionSpec, type StorageAdapter } from "@agentforeach/storage";
 import type { IdentityLink, PairingCode } from "./types.js";
 import { loadIdentityConfig, type IdentityConfig } from "./config.js";
 
@@ -79,19 +75,42 @@ export class TooManyPairingCodesError extends Error {
 const LEGACY_MISS_TTL_MS = 10 * 60_000;
 const LEGACY_MISS_MAX_ENTRIES = 10_000;
 
+/** Deployed without an indexing policy (the account default). */
+const ACCOUNT_DEFAULT_INDEXING = { cosmosdb: { indexingPolicy: null } };
+
+/** The three identity collections, with the configured ids and pairing TTL. */
+export function identityCollections(config: IdentityConfig): {
+  links: CollectionSpec;
+  index: CollectionSpec;
+  pairing: CollectionSpec;
+} {
+  return {
+    links: { name: config.containerId, partitionKey: "userId" },
+    // Not partitioned by user: userId is indexed, for account erasure.
+    index: { name: config.channelIndexContainerId, partitionKey: "id", indexes: ["userId"], adapterOptions: ACCOUNT_DEFAULT_INDEXING },
+    pairing: {
+      name: config.pairingContainerId,
+      partitionKey: "code",
+      defaultTtl: config.pairingCodeTtlSeconds,
+      indexes: ["userId"],
+      adapterOptions: ACCOUNT_DEFAULT_INDEXING,
+    },
+  };
+}
+
 export class IdentityStore {
-  private db: DatabaseProvider;
-  private linksContainer!: ContainerHandle<IdentityLink>;
-  private indexContainer!: ContainerHandle<ChannelOwner>;
+  private storage: StorageAdapter;
+  private linksContainer!: Collection<IdentityLink>;
+  private indexContainer!: Collection<ChannelOwner>;
   /** Holds pairing codes and per-sender attempt counters. */
-  private pairingContainer!: ContainerHandle<PairingCode | PairingAttempts>;
+  private pairingContainer!: Collection<PairingCode | PairingAttempts>;
   private initialized = false;
   private config: IdentityConfig;
   /** Legacy-lookup misses, so an unlinked sender costs one cross-partition query per window, not per message. */
   private legacyMisses = new Map<string, number>();
 
-  constructor(db: DatabaseProvider, config?: IdentityConfig) {
-    this.db = db;
+  constructor(storage: StorageAdapter, config?: IdentityConfig) {
+    this.storage = storage;
     this.config = config ?? loadIdentityConfig();
   }
 
@@ -102,38 +121,11 @@ export class IdentityStore {
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
+    const specs = identityCollections(this.config);
     const [links, index, pairing] = await Promise.all([
-      this.db.getOrCreateContainer<IdentityLink>({
-        id: this.config.containerId,
-        partitionKey: {
-          paths: ["/userId"],
-          kind: PartitionKeyKind.Hash,
-          version: 2,
-        },
-        indexingPolicy: {
-          automatic: true,
-          indexingMode: "consistent",
-          includedPaths: [{ path: "/*" }],
-          excludedPaths: [{ path: '/"_etag"/?' }],
-        },
-      }),
-      this.db.getOrCreateContainer<ChannelOwner>({
-        id: this.config.channelIndexContainerId,
-        partitionKey: {
-          paths: ["/id"],
-          kind: PartitionKeyKind.Hash,
-          version: 2,
-        },
-      }),
-      this.db.getOrCreateContainer<PairingCode | PairingAttempts>({
-        id: this.config.pairingContainerId,
-        partitionKey: {
-          paths: ["/code"],
-          kind: PartitionKeyKind.Hash,
-          version: 2,
-        },
-        defaultTtl: this.config.pairingCodeTtlSeconds,
-      }),
+      this.storage.collection<IdentityLink>(specs.links),
+      this.storage.collection<ChannelOwner>(specs.index),
+      this.storage.collection<PairingCode | PairingAttempts>(specs.pairing),
     ]);
 
     this.linksContainer = links;
@@ -206,10 +198,8 @@ export class IdentityStore {
     const missedAt = this.legacyMisses.get(docId);
     if (missedAt !== undefined && Date.now() - missedAt < LEGACY_MISS_TTL_MS) return null;
 
-    const legacy = await this.linksContainer.queryWithParams<IdentityLink>(
-      "SELECT * FROM c WHERE c.id = @id",
-      [{ name: "@id", value: docId }],
-    );
+    // Cross-partition: the owner is what we're looking for.
+    const legacy = await this.linksContainer.find<IdentityLink>({ where: eq("id", docId) });
     if (legacy.length === 0) {
       if (this.legacyMisses.size >= LEGACY_MISS_MAX_ENTRIES) this.legacyMisses.clear();
       this.legacyMisses.set(docId, Date.now());
@@ -238,9 +228,7 @@ export class IdentityStore {
    */
   async backfillChannelIndex(): Promise<{ indexed: number; alreadyIndexed: number; conflicts: number }> {
     this.ensureInitialized();
-    const links = await this.linksContainer.queryWithParams<IdentityLink>(
-      "SELECT c.id, c.userId FROM c",
-    );
+    const links = await this.linksContainer.find<Pick<IdentityLink, "id" | "userId">>({ select: ["id", "userId"] });
     const owners = new Map<string, Set<string>>();
     for (const l of links) {
       if (!l.id || !l.userId) continue;
@@ -280,11 +268,7 @@ export class IdentityStore {
    */
   async getLinksForUser(userId: string): Promise<IdentityLink[]> {
     this.ensureInitialized();
-    const links = await this.linksContainer.queryWithParams<IdentityLink>(
-      "SELECT * FROM c WHERE c.userId = @userId",
-      [{ name: "@userId", value: userId }],
-      { partitionKey: userId },
-    );
+    const links = await this.linksContainer.find<IdentityLink>({ partitionKey: userId, where: eq("userId", userId) });
     const owned = await Promise.all(
       links.map(async (l) => {
         const owner = await this.indexContainer.read(l.id, l.id);
@@ -331,13 +315,9 @@ export class IdentityStore {
     this.ensureInitialized();
     const now = new Date();
     // ISO-8601 strings compare correctly as text.
-    const active = await this.pairingContainer.queryWithParams<PairingCode>(
-      "SELECT * FROM c WHERE c.userId = @userId AND c.expiresAt > @now",
-      [
-        { name: "@userId", value: userId },
-        { name: "@now", value: now.toISOString() },
-      ],
-    );
+    const active = await this.pairingContainer.find<PairingCode>({
+      where: and(eq("userId", userId), gt("expiresAt", now.toISOString())),
+    });
     if (active.length >= this.config.maxActivePairingCodes) {
       throw new TooManyPairingCodesError(
         `At most ${this.config.maxActivePairingCodes} active pairing codes per user`,

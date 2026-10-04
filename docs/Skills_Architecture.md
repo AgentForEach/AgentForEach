@@ -105,4 +105,4 @@ Credential values are excluded from the `user-skills` indexing policy. `http_fet
 ## Related
 
 - MCP servers (`mcp` in `agentforeach.json`, `gateway/mcp/`) are a separate source of tools and don't use this mechanism.
-- `skills/exec/` (a local `execFile` runner with a binary allowlist) is not wired into the runner; code runs only in sandboxes.
+- Code runs only in sandboxes; there is no local command runner.

@@ -10,12 +10,7 @@
  *
  */
 
-import {
-  app,
-  type HttpRequest,
-  type HttpResponseInit,
-  type InvocationContext,
-} from "@azure/functions";
+import type { HandlerContext, HttpRequestLike, HttpResult, RouteDef } from "@agentforeach/platform";
 
 import { handleCorsHeaders, handleAbuseProtection } from "../utils/index.js";
 
@@ -34,9 +29,9 @@ import { redactId } from "../utils/redact.js";
  * Returns a 200 with the userId to confirm the connection.
  */
 async function wsConnect(
-  request: HttpRequest,
-  context: InvocationContext,
-): Promise<HttpResponseInit> {
+  request: HttpRequestLike,
+  context: HandlerContext,
+): Promise<HttpResult> {
   const abuse = handleAbuseProtection(request);
   if (abuse) return abuse;
   const upstream = verifyUpstreamSecret(request);
@@ -86,9 +81,9 @@ async function wsConnect(
  * GET /negotiate
  */
 async function negotiate(
-  request: HttpRequest,
-  context: InvocationContext,
-): Promise<HttpResponseInit> {
+  request: HttpRequestLike,
+  context: HandlerContext,
+): Promise<HttpResult> {
   if (request.method === "OPTIONS") {
     return { status: 204, headers: handleCorsHeaders(request) };
   }
@@ -145,16 +140,18 @@ async function negotiate(
 // Function Registrations
 // ============================================================================
 
-app.http("negotiate", {
+export const routes: RouteDef[] = [];
+
+routes.push({
+  name: "negotiate",
   methods: ["GET", "OPTIONS"],
-  authLevel: "anonymous",
   route: "negotiate",
   handler: negotiate,
 });
 
-app.http("wsConnect", {
+routes.push({
+  name: "wsConnect",
   methods: ["GET", "OPTIONS", "POST"],
-  authLevel: "anonymous",
   route: "ws/connect",
   handler: wsConnect,
 });
@@ -165,11 +162,11 @@ app.http("wsConnect", {
  * we haven't explicitly registered. Without this, abuse protection
  * fails with 404 and all connections are rejected.
  */
-app.http("wsCatchAll", {
+routes.push({
+  name: "wsCatchAll",
   methods: ["OPTIONS"],
-  authLevel: "anonymous",
   route: "ws/{*catchAllEvent}",
-  handler: async (request: HttpRequest): Promise<HttpResponseInit> => {
+  handler: async (request: HttpRequestLike): Promise<HttpResult> => {
     const origin = request.headers.get("WebHook-Request-Origin");
     return {
       status: 200,

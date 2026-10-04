@@ -1,405 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import type {
-  BaseDocument,
-  ContainerHandle,
-  ContainerOptions,
-  DatabaseProvider,
-  PatchOperation,
-  QueryOptions,
-  QueryParameter,
-} from "../database/index.js";
+import { InMemoryStorage, type StorageAdapter } from "@agentforeach/storage";
 import { MessageStore } from "./messages-store.js";
 import { resetSessionConfigCache } from "./config.js";
 import type { MessageDocument } from "./types.js";
-
-// ============================================================================
-// In-Memory Database Mock
-// ============================================================================
-
-/**
- * In-memory container that is partition-key aware and supports the subset
- * of Cosmos SQL used by MessageStore:
- *
- *   - Equality:           c.sessionId = @sid
- *   - Literal equality:   c.role = 'user', c.role = 'assistant'
- *   - Parameter equality:  c.idempotencyKey = @key
- *   - Range:              c.seq >= @from, c.seq < @to, c.seq > @seq, c.seq < @before
- *   - ORDER BY:           c.seq DESC/ASC
- *   - TOP @limit
- *   - Projection:         SELECT c.id FROM c ...
- */
-class InMemoryContainer<T extends BaseDocument> implements ContainerHandle<T> {
-  private docs = new Map<string, T>();
-  private etags = new Map<string, string>();
-  private partitionKeyPath: string;
-
-  constructor(partitionKeyPath = "/userId") {
-    // Strip leading slash: "/sessionId" -> "sessionId"
-    this.partitionKeyPath = partitionKeyPath.replace(/^\//, "");
-  }
-
-  // --------------------------------------------------------------------------
-  // CRUD
-  // --------------------------------------------------------------------------
-
-  async create(document: T): Promise<T> {
-    if (this.docs.has(document.id)) {
-      const err: Record<string, unknown> = new Error(
-        "Conflict",
-      ) as unknown as Record<string, unknown>;
-      err.code = 409;
-      throw err;
-    }
-    const etag = `etag-${Date.now()}-${Math.random()}`;
-    this.docs.set(document.id, structuredClone(document));
-    this.etags.set(document.id, etag);
-    return structuredClone(document);
-  }
-
-  async upsert(document: T): Promise<T> {
-    const etag = `etag-${Date.now()}-${Math.random()}`;
-    this.docs.set(document.id, structuredClone(document));
-    this.etags.set(document.id, etag);
-    return structuredClone(document);
-  }
-
-  async read(id: string, partitionKey: string): Promise<T | null> {
-    const doc = this.docs.get(id);
-    if (!doc) return null;
-    if (
-      (doc as Record<string, unknown>)[this.partitionKeyPath] !== partitionKey
-    )
-      return null;
-    return structuredClone(doc);
-  }
-
-  async replace(id: string, partitionKey: string, document: T): Promise<T> {
-    const existing = await this.read(id, partitionKey);
-    if (!existing) throw new Error("not found");
-    const etag = `etag-${Date.now()}-${Math.random()}`;
-    this.docs.set(id, structuredClone(document));
-    this.etags.set(id, etag);
-    return structuredClone(document);
-  }
-
-  async patch(
-    id: string,
-    partitionKey: string,
-    operations: PatchOperation[],
-  ): Promise<T> {
-    const existing = await this.read(id, partitionKey);
-    if (!existing) throw new Error("not found");
-    const target = existing as unknown as Record<string, unknown>;
-
-    for (const op of operations) {
-      const path = op.path.replace(/^\//, "").split("/");
-      if (path.length === 0) continue;
-      if (op.op === "set") {
-        const key = path[path.length - 1];
-        let ptr = target;
-        for (let i = 0; i < path.length - 1; i += 1) {
-          if (!ptr[path[i]] || typeof ptr[path[i]] !== "object") {
-            ptr[path[i]] = {};
-          }
-          ptr = ptr[path[i]] as Record<string, unknown>;
-        }
-        ptr[key] = op.value;
-      }
-    }
-
-    this.docs.set(id, structuredClone(existing));
-    return structuredClone(existing);
-  }
-
-  async delete(id: string, partitionKey: string): Promise<boolean> {
-    const existing = await this.read(id, partitionKey);
-    if (!existing) return false;
-    this.docs.delete(id);
-    this.etags.delete(id);
-    return true;
-  }
-
-  // --------------------------------------------------------------------------
-  // Query
-  // --------------------------------------------------------------------------
-
-  async query<R = T>(
-    _querySpec: unknown,
-    options: QueryOptions = {},
-  ): Promise<R[]> {
-    const partitionKey = options.partitionKey;
-    const out: unknown[] = [];
-    for (const doc of this.docs.values()) {
-      if (
-        partitionKey !== undefined &&
-        (doc as Record<string, unknown>)[this.partitionKeyPath] !== partitionKey
-      ) {
-        continue;
-      }
-      out.push(structuredClone(doc));
-    }
-    return out as R[];
-  }
-
-  /**
-   * Mini SQL evaluator that handles the query patterns used by MessageStore.
-   */
-  async queryWithParams<R = T>(
-    sql: string,
-    parameters: QueryParameter[] = [],
-    options: QueryOptions = {},
-  ): Promise<R[]> {
-    const paramMap = new Map<string, unknown>();
-    for (const p of parameters) {
-      paramMap.set(p.name, p.value);
-    }
-
-    // Collect all docs, optionally filtered by partition key option
-    let candidates: T[] = [];
-    for (const doc of this.docs.values()) {
-      if (
-        options.partitionKey !== undefined &&
-        (doc as Record<string, unknown>)[this.partitionKeyPath] !==
-          options.partitionKey
-      ) {
-        continue;
-      }
-      candidates.push(structuredClone(doc));
-    }
-
-    // Apply WHERE conditions
-    candidates = candidates.filter((doc) => {
-      const obj = doc as Record<string, unknown>;
-      return this.evaluateWhere(sql, obj, paramMap);
-    });
-
-    // Apply ORDER BY
-    const orderMatch = sql.match(/ORDER\s+BY\s+c\.(\w+)\s+(ASC|DESC)/i);
-    if (orderMatch) {
-      const field = orderMatch[1];
-      const dir = orderMatch[2].toUpperCase();
-      candidates.sort((a, b) => {
-        const aVal = (a as Record<string, unknown>)[field];
-        const bVal = (b as Record<string, unknown>)[field];
-        if (typeof aVal === "number" && typeof bVal === "number") {
-          return dir === "ASC" ? aVal - bVal : bVal - aVal;
-        }
-        const aStr = String(aVal ?? "");
-        const bStr = String(bVal ?? "");
-        return dir === "ASC"
-          ? aStr.localeCompare(bStr)
-          : bStr.localeCompare(aStr);
-      });
-    }
-
-    // Apply TOP (from SQL or maxResults option)
-    let limit: number | undefined;
-    const topMatch = sql.match(/TOP\s+(@\w+|\d+)/i);
-    if (topMatch) {
-      const topVal = topMatch[1];
-      limit = topVal.startsWith("@")
-        ? (paramMap.get(topVal) as number)
-        : parseInt(topVal, 10);
-    }
-    if (options.maxResults !== undefined) {
-      limit =
-        limit !== undefined
-          ? Math.min(limit, options.maxResults)
-          : options.maxResults;
-    }
-    if (limit !== undefined) {
-      candidates = candidates.slice(0, limit);
-    }
-
-    // Apply projection (column selection like SELECT c.id FROM ...)
-    if (this.hasProjection(sql)) {
-      return candidates.map((doc) =>
-        this.applyProjection(sql, doc as Record<string, unknown>),
-      ) as unknown as R[];
-    }
-
-    return candidates as unknown as R[];
-  }
-
-  async count(
-    whereClause?: string,
-    parameters?: QueryParameter[],
-    options?: QueryOptions,
-  ): Promise<number> {
-    if (!whereClause) return this.docs.size;
-    // Build a fake SQL so we can reuse evaluateWhere
-    const sql = `SELECT COUNT(1) FROM c WHERE ${whereClause}`;
-    const results = await this.queryWithParams(sql, parameters, options);
-    return results.length;
-  }
-
-  getRawContainer(): unknown {
-    return {};
-  }
-
-  // --------------------------------------------------------------------------
-  // SQL Helpers
-  // --------------------------------------------------------------------------
-
-  /**
-   * Evaluate WHERE clause conditions against a document.
-   * Handles:
-   *   c.field = @param         (parameter equality)
-   *   c.field = 'literal'      (literal equality)
-   *   c.field >= @param        (gte)
-   *   c.field < @param         (lt)
-   *   c.field > @param         (gt)
-   *   Multiple conditions joined by AND
-   */
-  private evaluateWhere(
-    sql: string,
-    obj: Record<string, unknown>,
-    params: Map<string, unknown>,
-  ): boolean {
-    const whereMatch = sql.match(/WHERE\s+(.+?)(?:\s+ORDER\s+BY|\s*$)/i);
-    if (!whereMatch) return true;
-
-    const whereClause = whereMatch[1];
-    // Split on AND (word boundary to avoid matching field names)
-    const conditions = whereClause.split(/\s+AND\s+/i);
-
-    for (const cond of conditions) {
-      const trimmed = cond.trim();
-
-      // c.field >= @param
-      const gteMatch = trimmed.match(/c\.(\w+)\s*>=\s*(@\w+)/);
-      if (gteMatch) {
-        const val = obj[gteMatch[1]];
-        const paramVal = params.get(gteMatch[2]);
-        if (typeof val === "number" && typeof paramVal === "number") {
-          if (val < paramVal) return false;
-        }
-        continue;
-      }
-
-      // c.field > @param
-      const gtMatch = trimmed.match(/c\.(\w+)\s*>\s*(@\w+)/);
-      if (gtMatch) {
-        const val = obj[gtMatch[1]];
-        const paramVal = params.get(gtMatch[2]);
-        if (typeof val === "number" && typeof paramVal === "number") {
-          if (val <= paramVal) return false;
-        }
-        continue;
-      }
-
-      // c.field < @param
-      const ltMatch = trimmed.match(/c\.(\w+)\s*<\s*(@\w+)/);
-      if (ltMatch) {
-        const val = obj[ltMatch[1]];
-        const paramVal = params.get(ltMatch[2]);
-        if (typeof val === "number" && typeof paramVal === "number") {
-          if (val >= paramVal) return false;
-        }
-        continue;
-      }
-
-      // c.field = 'literal'
-      const literalMatch = trimmed.match(/c\.(\w+)\s*=\s*'([^']*)'/);
-      if (literalMatch) {
-        if (obj[literalMatch[1]] !== literalMatch[2]) return false;
-        continue;
-      }
-
-      // c.field = @param
-      const eqMatch = trimmed.match(/c\.(\w+)\s*=\s*(@\w+)/);
-      if (eqMatch) {
-        const val = obj[eqMatch[1]];
-        const paramVal = params.get(eqMatch[2]);
-        if (val !== paramVal) return false;
-        continue;
-      }
-    }
-
-    return true;
-  }
-
-  /**
-   * Check if the SELECT clause is a projection (not SELECT * or SELECT TOP ... *).
-   */
-  private hasProjection(sql: string): boolean {
-    const selectMatch = sql.match(
-      /SELECT\s+(TOP\s+(?:@\w+|\d+)\s+)?(.+?)\s+FROM/i,
-    );
-    if (!selectMatch) return false;
-    const columns = selectMatch[2].trim();
-    return columns !== "*" && !columns.startsWith("COUNT");
-  }
-
-  /**
-   * Apply column projection including aliased columns like
-   * "c.messageSeq AS messageCount".
-   */
-  private applyProjection(
-    sql: string,
-    obj: Record<string, unknown>,
-  ): Record<string, unknown> {
-    const selectMatch = sql.match(
-      /SELECT\s+(TOP\s+(?:@\w+|\d+)\s+)?(.+?)\s+FROM/i,
-    );
-    if (!selectMatch) return obj;
-
-    const columnsPart = selectMatch[2].trim();
-    const columns = columnsPart.split(",").map((c) => c.trim());
-
-    const result: Record<string, unknown> = {};
-    for (const col of columns) {
-      // c.field AS alias
-      const aliasMatch = col.match(/c\.(\w+)\s+AS\s+(\w+)/i);
-      if (aliasMatch) {
-        result[aliasMatch[2]] = obj[aliasMatch[1]];
-        continue;
-      }
-      // c.field
-      const fieldMatch = col.match(/c\.(\w+)/);
-      if (fieldMatch) {
-        result[fieldMatch[1]] = obj[fieldMatch[1]];
-      }
-    }
-    return result;
-  }
-}
-
-// ============================================================================
-// In-Memory Database Provider
-// ============================================================================
-
-class InMemoryDatabaseProvider implements DatabaseProvider {
-  readonly name = "memory";
-  private containers = new Map<string, InMemoryContainer<BaseDocument>>();
-
-  async initialize(): Promise<void> {
-    return;
-  }
-
-  async getOrCreateContainer<T extends BaseDocument = BaseDocument>(
-    options: ContainerOptions,
-  ): Promise<ContainerHandle<T>> {
-    const id = options.id;
-    if (!id) throw new Error("container id required");
-
-    const existing = this.containers.get(id);
-    if (existing) return existing as unknown as ContainerHandle<T>;
-
-    // Determine partition key path from options
-    const pkPath = options.partitionKey?.paths?.[0] ?? "/id";
-
-    const container = new InMemoryContainer<BaseDocument>(pkPath);
-    this.containers.set(id, container);
-    return container as unknown as ContainerHandle<T>;
-  }
-
-  getDatabaseId(): string {
-    return "memory";
-  }
-}
 
 // ============================================================================
 // Helpers
@@ -447,7 +52,7 @@ interface SessionConfig {
 
 async function setup(overrides?: Partial<SessionConfig>): Promise<MessageStore> {
   resetSessionConfigCache();
-  const db = new InMemoryDatabaseProvider();
+  const db = new InMemoryStorage();
   const config: SessionConfig = {
     containerId: "sessions",
     messagesContainerId: "session-messages",
@@ -776,4 +381,44 @@ test("messages are isolated between sessions", async () => {
   const count2 = await store.count("sess-2");
   assert.equal(count1, 2);
   assert.equal(count2, 3);
+});
+
+// ============================================================================
+// Tests -- guards
+// ============================================================================
+
+test("append refuses a message outside the given partition", async () => {
+  const store = await setup();
+  await assert.rejects(store.append("pkA", [makeMsg("pkB", 0, "user", "x")]), /every message must be in the given partition/);
+});
+
+test("a messages container partitioned on the wrong key fails startup with the upgrade advice", async () => {
+  resetSessionConfigCache();
+  const wrongKey: StorageAdapter = {
+    name: "stub",
+    capabilities: { vectorSearch: false, hybridSearch: false },
+    async initialize() {},
+    async collection(spec) {
+      // What the Cosmos adapter reports for an old "session-messages" container.
+      throw new Error(`cosmosdb: container "${spec.name}" is partitioned on /sessionId, expected /pk`);
+    },
+  };
+  const store = new MessageStore(wrongKey, {
+    containerId: "sessions",
+    messagesContainerId: "session-messages",
+    ttlSeconds: 86400,
+    messageTtlSeconds: 604800,
+    maxHistoryMessages: 100,
+    defaultAgentId: "default",
+    compactionThreshold: 60,
+    compactionRetainCount: 20,
+    compactionTemperature: 0.3,
+    compactionMaxOutputTokens: 4000,
+    maxPreviewLength: 120,
+  });
+  await assert.rejects(store.initialize(), (err: Error) => {
+    assert.match(err.message, /Messages container "session-messages" is partitioned on \/sessionId, expected \/pk\./);
+    assert.match(err.message, /session-messages-v2/);
+    return true;
+  });
 });

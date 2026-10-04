@@ -3,8 +3,8 @@
     "provider": "cosmosdb",
     "endpoint": "$COSMOS_ENDPOINT",
     "key": "$COSMOS_KEY",
-    "databaseId": "$COSMOS_DATABASE"
-
+    "databaseId": "$COSMOS_DATABASE",
+    "connectionString": "$DATABASE_URL"
   },
 
   "auth": {
@@ -135,7 +135,7 @@
 
   "memory": {
     "enabled": true,
-    "provider": "cosmosdb",
+    "provider": "storage",
     "containerId": "memories",
     "autoCapture": true,
     "autoRecall": true,
@@ -255,9 +255,7 @@
       "healthCheckSchedule": "0 */5 * * * *",
       "jobsChangedEvent": "jobsChanged",
       "runningClaimStaleMs": 600000,
-      "claimConcurrency": 16,
-      "legacySweepIntervalMs": 60000,
-      "legacySweepMaxJobs": 200
+      "claimConcurrency": 16
     },
     "heartbeat": {
       "intervalMs": 60000,

@@ -69,6 +69,11 @@ export type {
 export {
   registerWebSocketProvider,
   getActiveProvider,
+  getRealtimeRelay,
+  realtimeCapabilities,
+  realtimeUpstreamWebhooks,
+  relayHost,
+  relayEgressEntry,
   hasWebSocketProvider,
   listWebSocketProviders,
   clearWebSocketProviderCache,
@@ -89,7 +94,7 @@ export {
 
 // — Client Token Generation —
 export type { TokenOptions } from "./auth.js";
-export { generateClientToken, generateGroupToken, getDefaultGroups } from "./auth.js";
+export { generateClientToken, getDefaultGroups } from "./auth.js";
 
 // — Push Delivery Adapter (self-registers on import) —
 export { pushAdapter } from "./push-adapter.js";

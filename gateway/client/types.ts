@@ -15,6 +15,7 @@
  *     → persist session (session store)
  */
 
+import type { StorageAdapter } from "@agentforeach/storage";
 import type { ProviderId, Provider, UsageStats } from "../llms/index.js";
 import type {
   PromptMode,
@@ -56,6 +57,12 @@ export interface AgentClientConfig {
     key?: string;
     databaseId?: string;
   };
+
+  /**
+   * The storage adapter every store uses (tests, embedders). Default: the
+   * process-wide adapter from the "database" config section.
+   */
+  storage?: StorageAdapter;
 
   /**
    * LLM provider config.
@@ -140,6 +147,12 @@ export interface AgentClientConfig {
 export interface SendRequest {
   /** Stable internal run id, allocated before credit reservation. */
   runId?: string;
+  /**
+   * The host execution running this turn (a durable instance and attempt).
+   * It prefixes the session lease, so a later run of the same instance can
+   * find and release a lease this one left behind (sessions/interrupted.ts).
+   */
+  executionId?: string;
   /** User sending the message. */
   userId: string;
 
@@ -262,11 +275,12 @@ export interface SendRequest {
   onCronMutation?: () => Promise<void>;
 
   /**
-   * @internal Azure Function invocation context, threaded from the WS handler.
-   * Used by the HITL gate to obtain a Durable Functions client.
-   * Not serialised — stripped by `serializeSendRequest()`.
+   * @internal The turn may pause for a HITL form: a gated tool call saves
+   * the run and starts a durable wait instead of being denied. Set only by
+   * `executeChatTurn` (web and app chat turns); channel, cron and resumed
+   * turns have no form UI or nobody to answer. Not serialised.
    */
-  _invocationContext?: import("@azure/functions").InvocationContext;
+  canSuspendForInput?: boolean;
 }
 
 /**
@@ -513,6 +527,12 @@ export interface AgentClient {
     agentId?: string,
     opts?: { limit?: number },
   ): Promise<SessionSummary[]>;
+
+  /**
+   * The channel and chat of the user's most recent session that has both
+   * (for cron "last channel" delivery).
+   */
+  findLastChannel(userId: string): Promise<{ channelName: string; chatId: string } | undefined>;
 
   /**
    * Get full session history.

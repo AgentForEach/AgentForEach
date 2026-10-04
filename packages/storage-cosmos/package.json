@@ -1,0 +1,41 @@
+{
+  "name": "@agentforeach/storage-cosmos",
+  "version": "0.1.0",
+  "description": "Azure Cosmos DB (NoSQL API) adapter for the AgentForEach storage SDK.",
+  "type": "module",
+  "private": true,
+  "license": "Apache-2.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./adapter": {
+      "types": "./dist/adapter.d.ts",
+      "default": "./dist/adapter.js"
+    },
+    "./definition": {
+      "types": "./dist/definition.d.ts",
+      "default": "./dist/definition.js"
+    }
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.test.*",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @agentforeach/storage && tsc",
+    "test": "npm run build && node --test dist/*.test.js"
+  },
+  "dependencies": {
+    "@agentforeach/storage": "0.1.0",
+    "@azure/core-auth": "^1.11.0",
+    "@azure/cosmos": "^4.10.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.4"
+  }
+}

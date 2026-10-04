@@ -5,7 +5,7 @@
  * in a completely new Azure Function invocation after the user
  * responds to an input request.
  *
- * Uses the same DatabaseProvider abstraction as other AgentForEach stores.
+ * Uses the shared storage adapter, like the other AgentForEach stores.
  * Container: "hitl-requests" partitioned by /userId.
  *
  * Lifecycle:
@@ -16,23 +16,18 @@
  *   5. Activity resumes runner → `updateStatus("responded")` or "cancelled"
  *   6. Cleanup: TTL (24h) on completed/timed_out documents
  *
- * @see ../cron/store.ts — reference Cosmos DB store pattern
+ * @see ../cron/store.ts — reference store pattern
  */
 
-import { PartitionKeyKind, type Container } from "@azure/cosmos";
-import { isNotFoundError, isPreconditionFailedError } from "../database/errors.js";
-import type {
-  DatabaseProvider,
-  ContainerHandle,
-} from "../database/types.js";
+import { and, eq, mutate, type Collection, type CollectionSpec, type StorageAdapter } from "@agentforeach/storage";
 import type { HitlRunState } from "./types.js";
 
 // ============================================================================
-// Cosmos DB Document Shape
+// Document Shape
 // ============================================================================
 
 interface HitlDocument {
-  /** Cosmos DB document ID = requestId. */
+  /** Document ID = requestId. */
   id: string;
   /** Partition key = userId. */
   userId: string;
@@ -42,14 +37,10 @@ interface HitlDocument {
   createdAt: string;
   /** ISO 8601 timestamp of last update. */
   updatedAt: string;
-  /** TTL in seconds — Cosmos auto-deletes after this. */
+  /** TTL in seconds: the database deletes the document after this. */
   ttl: number;
-  /** Index signature required by BaseDocument. */
   [key: string]: unknown;
 }
-
-/** Container name. */
-const HITL_CONTAINER = "hitl-requests";
 
 /**
  * Minimum TTL for pending requests. A request waits for the user for its own
@@ -62,17 +53,23 @@ const PENDING_GRACE_SECONDS = 600;
 /** TTL for resolved requests: 24 hours — kept for debugging / audit. */
 const RESOLVED_TTL_SECONDS = 86400;
 
+export const HITL_COLLECTION: CollectionSpec = {
+  name: "hitl-requests",
+  partitionKey: "userId",
+  defaultTtl: PENDING_TTL_SECONDS,
+};
+
 // ============================================================================
 // HITL Store
 // ============================================================================
 
 export class HitlStore {
-  private db: DatabaseProvider;
-  private container!: ContainerHandle<HitlDocument>;
+  private storage: StorageAdapter;
+  private container!: Collection<HitlDocument>;
   private initialized = false;
 
-  constructor(db: DatabaseProvider) {
-    this.db = db;
+  constructor(storage: StorageAdapter) {
+    this.storage = storage;
   }
 
   /**
@@ -82,21 +79,7 @@ export class HitlStore {
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
-    this.container = await this.db.getOrCreateContainer<HitlDocument>({
-      id: HITL_CONTAINER,
-      partitionKey: {
-        paths: ["/userId"],
-        kind: PartitionKeyKind.Hash,
-        version: 2,
-      },
-      defaultTtl: PENDING_TTL_SECONDS,
-      indexingPolicy: {
-        automatic: true,
-        indexingMode: "consistent",
-        includedPaths: [{ path: "/*" }],
-        excludedPaths: [{ path: '/"_etag"/?' }],
-      },
-    });
+    this.container = await this.storage.collection<HitlDocument>(HITL_COLLECTION);
 
     this.initialized = true;
   }
@@ -112,7 +95,9 @@ export class HitlStore {
       state,
       createdAt: now,
       updatedAt: now,
-      ttl: Math.max(PENDING_TTL_SECONDS, (state.timeoutSeconds ?? 0) + PENDING_GRACE_SECONDS),
+      // Whole seconds: TTLs are integers (a fractional handoff timeout would
+      // otherwise be refused).
+      ttl: Math.max(PENDING_TTL_SECONDS, Math.ceil((state.timeoutSeconds ?? 0) + PENDING_GRACE_SECONDS)),
     };
 
     await this.container.create(doc);
@@ -160,39 +145,29 @@ export class HitlStore {
     // The form is already out, so the user may answer while this runs: only
     // a still-pending request is updated, and an etag keeps this write from
     // undoing theirs (which would reopen an answered request).
-    const raw = this.container.getRawContainer() as Container;
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      const { resource: doc } = await raw.item(requestId, userId).read<HitlDocument>();
-      if (!doc || doc.state.status !== "pending") return;
-      const etag = (doc as unknown as { _etag?: string })._etag;
-      const updated: HitlDocument = {
-        ...doc,
-        state: { ...doc.state, completedToolResults: results },
-        updatedAt: new Date().toISOString(),
-      };
-      try {
-        await raw
-          .item(requestId, userId)
-          .replace<HitlDocument>(updated, etag ? { accessCondition: { type: "IfMatch", condition: etag } } : undefined);
-        return;
-      } catch (err) {
-        if (isPreconditionFailedError(err)) continue;
-        if (isNotFoundError(err)) return;
-        throw err;
-      }
-    }
+    // Gone, answered, or still contended after 4 attempts: nothing to do.
+    await mutate(
+      this.container,
+      requestId,
+      userId,
+      (doc) =>
+        doc.state.status !== "pending"
+          ? undefined
+          : { ...doc, state: { ...doc.state, completedToolResults: results }, updatedAt: new Date().toISOString() },
+      { maxAttempts: 4 },
+    );
   }
 
   /**
    * List pending HITL requests for a user (for resumability after reconnect).
    */
   async listPending(userId: string): Promise<HitlRunState[]> {
-    const docs = await this.container.queryWithParams<HitlDocument>(
-      "SELECT * FROM c WHERE c.userId = @userId AND c.state.status = 'pending' ORDER BY c.createdAt DESC",
-      [{ name: "@userId", value: userId }],
+    const docs = await this.container.find<HitlDocument>({
       // Single partition: no cross-partition query plan on this hot path.
-      { partitionKey: userId },
-    );
+      partitionKey: userId,
+      where: and(eq("userId", userId), eq("state.status", "pending")),
+      orderBy: { field: "createdAt", direction: "desc" },
+    });
 
     return docs.map((doc) => doc.state);
   }

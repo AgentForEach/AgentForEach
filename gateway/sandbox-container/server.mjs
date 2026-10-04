@@ -11,16 +11,31 @@
  *   POST /files/read   — Read a file from /mnt/data/
  *   GET  /files        — List files in /mnt/data/
  *   GET  /health       — Health check + runtime info
+ *   POST /env          — Replace the env vars every later /exec gets
+ *   GET  /archive      — /mnt/data as a gzipped tar (with a token only)
+ *   POST /archive      — Unpack a gzipped tar into /mnt/data (with a token only)
  *
  * ACA routing: The session pool management endpoint forwards requests to this
  * server. The path after the pool endpoint maps directly to the routes above.
  *
  * Security: Commands do NOT run with sudo. No interactive TTY.
+ *
+ * Callers: a browser page inside the sandbox can reach 127.0.0.1:8080 too, so
+ *   - with SANDBOX_SERVER_TOKEN set (the Cloudflare backend sets a new one on
+ *     every start), every route needs it in the x-sandbox-token header; the
+ *     server drops it from its own environment, so commands don't inherit it;
+ *   - every POST must be application/json, which a page's no-cors request
+ *     can't send, so even without a token a page can't make the server act;
+ *   - an image with the browser needs the token, as a page that rebinds its
+ *     own hostname to 127.0.0.1 can send JSON: without one the server
+ *     refuses to start.
  */
 
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
-import { readFile, writeFile, readdir, stat, mkdir } from "node:fs/promises";
+import { readFile, writeFile, readdir, stat, mkdir, rename } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
+import { timingSafeEqual } from "node:crypto";
 import { join, dirname } from "node:path";
 import { execSync } from "node:child_process";
 
@@ -29,7 +44,42 @@ import { execSync } from "node:child_process";
 // =============================================================================
 
 const PORT = parseInt(process.env.SANDBOX_PORT ?? "8080", 10);
-const DATA_DIR = "/mnt/data";
+// Overridable so the server can run outside a container (tests, local development).
+const DATA_DIR = process.env.SANDBOX_DATA_DIR ?? "/mnt/data";
+// The vars set with POST /env, kept on disk so they survive a restart or a
+// snapshot restore, as ACA Sandboxes keep theirs (~/.agentforeach/env).
+// SANDBOX_ENV_FILE=memory keeps them in memory only: the Cloudflare backend
+// sets that and applies them again after each start, so no snapshot holds them.
+const ENV_IN_MEMORY = process.env.SANDBOX_ENV_FILE === "memory";
+const ENV_FILE =
+  process.env.SANDBOX_ENV_FILE ?? join(process.env.HOME || "/root", ".agentforeach", "env.json");
+const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
+// Read once, then dropped from the environment so no command inherits it.
+const SERVER_TOKEN = process.env.SANDBOX_SERVER_TOKEN || undefined;
+delete process.env.SANDBOX_SERVER_TOKEN;
+// Where provision-aca.sh installs the browser driver (SANDBOX_IMAGE_BROWSER=1).
+const BROWSER_DIR = process.env.SANDBOX_BROWSER_DIR ?? "/opt/agentforeach/browser";
+if (!SERVER_TOKEN && existsSync(BROWSER_DIR)) {
+  console.error(
+    `AgentForEach sandbox server: this image has the browser (${BROWSER_DIR}), so SANDBOX_SERVER_TOKEN must be set: ` +
+      "a page in the browser could otherwise reach this server through DNS rebinding. " +
+      "Set it to a random secret and send it in the x-sandbox-token header.",
+  );
+  process.exit(1);
+}
+
+/** The managed env vars: loaded at start, replaced by POST /env. */
+let managedEnv = loadManagedEnv();
+
+function loadManagedEnv() {
+  if (ENV_IN_MEMORY) return {};
+  try {
+    const vars = JSON.parse(readFileSync(ENV_FILE, "utf-8"));
+    return vars && typeof vars === "object" ? vars : {};
+  } catch {
+    return {};
+  }
+}
 const MAX_OUTPUT_BYTES = 50_000;
 const DEFAULT_TIMEOUT_SEC = 60;
 const MAX_TIMEOUT_SEC = 220;
@@ -62,6 +112,7 @@ async function handleExec(body) {
 
     const proc = spawn("bash", ["-c", command], {
       cwd: DATA_DIR,
+      env: { ...process.env, ...managedEnv },
       stdio: ["ignore", "pipe", "pipe"],
       timeout: effectiveTimeout * 1000,
     });
@@ -282,29 +333,34 @@ function handleHealth() {
 }
 
 /**
- * POST /env — Set environment variables in the server process.
+ * POST /env — Replace the env vars every later /exec gets.
  *
- * These persist across all subsequent /exec calls (inherited by child processes).
- * Used for credential injection (API keys, tokens, etc.).
+ * The whole set is replaced, so a var left out (a revoked credential) is
+ * gone. Kept in ENV_FILE (mode 600), so it survives a restart.
  */
-function handleEnv(body) {
+async function handleEnv(body) {
   const { vars } = body;
 
   if (!vars || typeof vars !== "object") {
     return { status: 400, body: { error: "Missing required field: vars (object)" } };
   }
 
-  let count = 0;
+  const next = {};
   for (const [key, value] of Object.entries(vars)) {
-    if (typeof key === "string" && typeof value === "string") {
-      process.env[key] = value;
-      count++;
-    }
+    if (ENV_KEY.test(key) && typeof value === "string") next[key] = value;
   }
+
+  if (!ENV_IN_MEMORY) {
+    await mkdir(dirname(ENV_FILE), { recursive: true, mode: 0o700 });
+    const tmp = `${ENV_FILE}.tmp`;
+    await writeFile(tmp, JSON.stringify(next), { mode: 0o600 });
+    await rename(tmp, ENV_FILE);
+  }
+  managedEnv = next;
 
   return {
     status: 200,
-    body: { success: true, count },
+    body: { success: true, count: Object.keys(next).length },
   };
 }
 
@@ -325,6 +381,69 @@ function sanitizePath(filename) {
   safe = safe.replace(/^\/+/, "");
   // Must have something left
   return safe || null;
+}
+
+// =============================================================================
+// Callers
+// =============================================================================
+
+/** A refusal for a caller that isn't the gateway, or null to serve it. */
+function refuseCaller(req, method) {
+  if (SERVER_TOKEN) {
+    const given = Buffer.from(String(req.headers["x-sandbox-token"] ?? ""));
+    const expected = Buffer.from(SERVER_TOKEN);
+    if (given.length !== expected.length || !timingSafeEqual(given, expected)) {
+      return { status: 401, body: { error: "Missing or wrong x-sandbox-token" } };
+    }
+  }
+  if (method === "POST") {
+    const type = String(req.headers["content-type"] ?? "").toLowerCase();
+    // The one non-JSON body: an archive, from a caller that sent the token.
+    if (SERVER_TOKEN && type === "application/gzip" && new URL(req.url, "http://localhost").pathname === "/archive") return null;
+    if (!type.startsWith("application/json")) {
+      return { status: 415, body: { error: "Content-Type must be application/json" } };
+    }
+  }
+  return null;
+}
+
+// =============================================================================
+// Archive (moving /mnt/data to a sandbox on a new image)
+// =============================================================================
+
+/**
+ * GET /archive streams DATA_DIR as a gzipped tar; POST /archive unpacks one
+ * into it. Only with a token: the backend that set it is the only caller,
+ * and moves a sandbox's files when its image changes (env vars are in memory
+ * and credentials outside the sandbox, so neither travels).
+ */
+function sendArchive(res) {
+  const tar = spawn("tar", ["-czf", "-", "-C", DATA_DIR, "."], { stdio: ["ignore", "pipe", "pipe"] });
+  let stderr = "";
+  tar.stderr.on("data", (d) => (stderr += d).length > 4000 && (stderr = stderr.slice(-4000)));
+  res.writeHead(200, { "Content-Type": "application/gzip" });
+  tar.stdout.pipe(res);
+  tar.on("close", (code) => {
+    // A failed tar cuts the stream short, which the caller sees as a broken archive.
+    if (code !== 0) {
+      console.error(`[archive] tar exited ${code}: ${stderr.trim()}`);
+      res.destroy(new Error(`tar exited ${code}`));
+    }
+  });
+}
+
+function receiveArchive(req) {
+  return new Promise((resolve) => {
+    const tar = spawn("tar", ["-xzf", "-", "-C", DATA_DIR], { stdio: ["pipe", "ignore", "pipe"] });
+    let stderr = "";
+    let bytes = 0;
+    tar.stderr.on("data", (d) => (stderr += d).length > 4000 && (stderr = stderr.slice(-4000)));
+    req.on("data", (chunk) => (bytes += chunk.length));
+    req.pipe(tar.stdin);
+    tar.on("close", (code) =>
+      resolve(code === 0 ? { status: 200, body: { ok: true, bytes } } : { status: 500, body: { error: `tar exited ${code}: ${stderr.trim()}` } }),
+    );
+  });
 }
 
 // =============================================================================
@@ -356,6 +475,12 @@ const server = createServer(async (req, res) => {
   let result;
 
   try {
+    const refused = refuseCaller(req, method);
+    if (refused) {
+      res.writeHead(refused.status, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(refused.body));
+      return;
+    }
     if (method === "POST" && path === "/exec") {
       const body = await parseBody(req);
       result = await handleExec(body);
@@ -371,7 +496,12 @@ const server = createServer(async (req, res) => {
       result = handleHealth();
     } else if (method === "POST" && path === "/env") {
       const body = await parseBody(req);
-      result = handleEnv(body);
+      result = await handleEnv(body);
+    } else if (SERVER_TOKEN && method === "GET" && path === "/archive") {
+      sendArchive(res);
+      return;
+    } else if (SERVER_TOKEN && method === "POST" && path === "/archive") {
+      result = await receiveArchive(req);
     } else {
       result = { status: 404, body: { error: `Not found: ${method} ${path}` } };
     }

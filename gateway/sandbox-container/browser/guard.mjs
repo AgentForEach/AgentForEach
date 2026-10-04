@@ -75,8 +75,70 @@ export function checkUrl(raw) {
   return { ok: true, url, host };
 }
 
-/** checkUrl plus a DNS lookup, so a public name that points at a private address is refused too. */
-export async function checkUrlResolved(raw, resolve = (h) => lookup(h, { all: true })) {
+/**
+ * Why the browser must not send a page's own request to `raw` (a fetch, an
+ * image, a frame...), or null when it may: a local or private host, such as
+ * the sandbox's own servers on 127.0.0.1. Only http(s) and ws(s) requests
+ * reach the network; other schemes are left to the browser.
+ */
+export function pageRequestBlocked(raw) {
+  let url;
+  try {
+    url = new URL(String(raw));
+  } catch {
+    return null;
+  }
+  if (!["http:", "https:", "ws:", "wss:"].includes(url.protocol)) return null;
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  if (BLOCKED_HOSTNAMES.has(host) || BLOCKED_SUFFIXES.some((s) => host.endsWith(s))) return `${host} is a local host`;
+  return blockedAddress(host);
+}
+
+/** A name that never resolves (RFC 6761): only a network that answers every lookup itself answers it. */
+export const PLACEHOLDER_PROBE_HOST = "egress-placeholder-probe.invalid";
+
+/**
+ * The addresses that are the sandbox's egress interceptor rather than a
+ * destination. Some backends (Cloudflare Containers) answer every DNS lookup
+ * in the sandbox with a placeholder address that routes the request to their
+ * egress handler, which decides where it may go. There a name's resolved
+ * address says nothing about its destination, and refusing a private
+ * placeholder would refuse every page.
+ *
+ * SANDBOX_EGRESS_PLACEHOLDERS, set by such a backend: a comma-separated list
+ * of addresses, or "probe" to learn them by resolving PLACEHOLDER_PROBE_HOST.
+ * Unset: none. Loopback is never a placeholder.
+ */
+export async function egressPlaceholders(setting = process.env.SANDBOX_EGRESS_PLACEHOLDERS, resolve = (h) => lookup(h, { all: true })) {
+  const value = String(setting ?? "").trim();
+  if (!value) return new Set();
+  let addresses;
+  if (value === "probe") {
+    try {
+      addresses = (await resolve(PLACEHOLDER_PROBE_HOST)).map((a) => a.address);
+    } catch {
+      addresses = []; // not intercepted (or DNS not up yet): no placeholders, so nothing extra is allowed
+    }
+  } else {
+    addresses = value.split(",");
+  }
+  const loopback = (a) => /^127\./.test(a) || a === "::1" || /^::ffff:127\./i.test(a);
+  return new Set(addresses.map((a) => a.trim().toLowerCase()).filter((a) => isIP(a) && !loopback(a)));
+}
+
+let placeholders; // learned once; an empty probe result is tried again next time
+async function defaultPlaceholders() {
+  if (placeholders?.size) return placeholders;
+  placeholders = await egressPlaceholders();
+  return placeholders;
+}
+
+/**
+ * checkUrl plus a DNS lookup, so a public name that points at a private
+ * address is refused too, unless the address is the backend's egress
+ * placeholder (see egressPlaceholders), where the egress handler decides.
+ */
+export async function checkUrlResolved(raw, resolve = (h) => lookup(h, { all: true }), knownPlaceholders) {
   const checked = checkUrl(raw);
   if (!checked.ok || isIP(checked.host)) return checked;
   let addresses;
@@ -86,7 +148,9 @@ export async function checkUrlResolved(raw, resolve = (h) => lookup(h, { all: tr
     // Let the browser report the DNS failure the way a person would see it.
     return checked;
   }
+  const egress = knownPlaceholders ?? (await defaultPlaceholders());
   for (const { address } of addresses) {
+    if (egress.has(String(address).toLowerCase())) continue;
     if (blockedAddress(address)) {
       return { ok: false, reason: `${checked.host} resolves to ${address}, a local or private address` };
     }
@@ -198,6 +262,43 @@ export function hostMatches(host, pattern) {
   const p = String(pattern).toLowerCase().replace(/\.$/, "");
   if (p.startsWith("*.")) return h.endsWith(p.slice(1)) && h.length > p.length - 1;
   return h === p;
+}
+
+/**
+ * Why a page's WebSocket to `raw` must be closed, or null when it may open:
+ * a local or private host (as pageRequestBlocked), or a host the user's
+ * credentials are bound to. Unlike a page load, a WebSocket is never the
+ * agent's own navigation, so a credential host is always refused.
+ */
+export function pageSocketBlocked(raw, protectedHosts) {
+  const local = pageRequestBlocked(raw);
+  if (local) return local;
+  let host;
+  try {
+    host = new URL(String(raw)).hostname;
+  } catch {
+    return null;
+  }
+  return protectedHosts.some((pattern) => hostMatches(host, pattern))
+    ? `${host} has the user's credentials attached`
+    : null;
+}
+
+/**
+ * Close the WebSockets pages open to local or credential hosts. Playwright's
+ * context.route doesn't see WebSockets, so they need their own route; one
+ * that matches nothing is left alone. `protectedHosts` is read on every
+ * connection, so the list can change.
+ */
+export async function guardPageSockets(context, { protectedHosts, onBlocked = () => {} }) {
+  await context.routeWebSocket(
+    (url) => pageSocketBlocked(url.href, protectedHosts()) !== null,
+    (ws) => {
+      const reason = pageSocketBlocked(ws.url(), protectedHosts()) ?? "blocked";
+      onBlocked(ws.url(), reason);
+      return ws.close({ code: 1008, reason: "blocked by the AgentForEach browser" });
+    },
+  );
 }
 
 /**

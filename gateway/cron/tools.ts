@@ -1425,7 +1425,7 @@ export class CronToolHandler {
 
     const limitRaw = this.toFiniteNumber(args.limit);
     const limit = Math.min(Math.max(1, limitRaw ?? DEFAULT_QUERY_LIMIT), MAX_QUERY_LIMIT);
-    const runs = await this.store.getRuns(jobId, limit);
+    const runs = await this.store.getRuns(jobId, userId, limit);
 
     if (runs.length === 0) {
       return JSON.stringify({

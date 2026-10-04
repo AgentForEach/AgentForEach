@@ -23,7 +23,7 @@ import { viewerBaseUrl, viewerHeaders, viewerHtml, viewerLink } from "./viewer.j
 import { createHash } from "node:crypto";
 import type { BrowserConfig } from "./types.js";
 import { SandboxToolHandler } from "../sandbox/handler.js";
-import { AcaSandboxesClient } from "../sandbox/aca-sandboxes-client.js";
+import { AcaSandboxesClient } from "@agentforeach/platform-azure/sandbox";
 import type { ExportBlobStore } from "../sandbox/export-store.js";
 import type { EgressCredential, SandboxBackend, SandboxConfig, SandboxExecResult } from "../sandbox/types.js";
 import type { CredentialBinding } from "../types.js";
@@ -47,6 +47,7 @@ const CONFIG: BrowserConfig = {
 
 /** A sandbox that records what it was asked to run and answers with canned driver output. */
 class FakeSandbox implements SandboxBackend {
+  capabilities = { browser: true, egressCredentials: true, persistence: "disk" as const };
   commands: Array<{ command: string; timeout?: number }> = [];
   egressCalls = 0;
   reply: Partial<SandboxExecResult> = { stdout: '{"ok":true,"handled":true,"action":"snapshot"}' };
@@ -67,6 +68,7 @@ class FakeSandbox implements SandboxBackend {
   }
   async setEnv() {}
   async setEgressCredentials(_c: EgressCredential[]) { this.egressCalls++; }
+  async deleteUserSandboxes() { return 0; }
   resolveIdentifier(userId: string) { return userId; }
   isReady() { return true; }
 }
@@ -408,14 +410,18 @@ function sandboxConfig(browserEnabled: boolean): SandboxConfig {
   };
 }
 
-test("isBrowserEnabled needs the setting and a real ACA Sandboxes backend", () => {
+test("isBrowserEnabled needs the setting and a backend that can run the browser", () => {
   const tokenProvider = { getToken: async () => "t" };
   const on = sandboxConfig(true);
   const aca = new AcaSandboxesClient(on, { tokenProvider });
   assert.equal(isBrowserEnabled(on, aca, "u1"), true);
   assert.equal(isBrowserEnabled(sandboxConfig(false), aca, "u1"), false);
   assert.equal(isBrowserEnabled({ ...on, enabled: false }, aca, "u1"), false);
-  assert.equal(isBrowserEnabled(on, new FakeSandbox(), "u1"), false, "a Dynamic Sessions fallback has no browser");
+  const noBrowser = Object.assign(new FakeSandbox(), {
+    capabilities: { browser: false, egressCredentials: false, persistence: "none" as const },
+  });
+  assert.equal(isBrowserEnabled(on, noBrowser, "u1"), false, "a Dynamic Sessions fallback has no browser");
+  assert.equal(isBrowserEnabled(on, new FakeSandbox(), "u1"), true, "any backend with the capability, not only ACA");
   assert.equal(isBrowserEnabled(on, undefined, "u1"), false);
 });
 

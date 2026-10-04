@@ -479,12 +479,6 @@ export const IMMEDIATE_DELAY_FLOOR_MS = cfg().execution.immediateDelayFloorMs;
 /** Max parallel job claims per scheduler tick. */
 export const CLAIM_CONCURRENCY = cfg().scheduler.claimConcurrency;
 
-/** Min interval between legacy due-job sweeps (ms). */
-export const LEGACY_SWEEP_INTERVAL_MS = cfg().scheduler.legacySweepIntervalMs;
-
-/** Max jobs returned per legacy sweep query. */
-export const LEGACY_SWEEP_MAX_JOBS = cfg().scheduler.legacySweepMaxJobs;
-
 // ============================================================================
 // Heartbeat — Additional
 // ============================================================================

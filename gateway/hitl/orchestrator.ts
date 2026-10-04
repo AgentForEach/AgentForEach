@@ -1,40 +1,32 @@
 /**
- * AgentForEach HITL Module — Durable Functions Orchestrator & Activities
+ * AgentForEach HITL Module — the durable wait for a user's answer
  *
- * Implements the "fire and leave, resume on response" pattern using
- * Azure Durable Functions' waitForExternalEvent().
+ * Implements the "fire and leave, resume on response" pattern with a
+ * durable wait (see `@agentforeach/platform`'s Durable port).
  *
  * Flow:
  *   1. Runner hits a HITL-gated tool call
- *   2. Runner saves state → starts HitlAwaitInput orchestration → returns
- *      (Azure Function invocation exits, resources freed)
- *   3. Orchestration calls HitlPushInputRequest activity → pushes form to client
- *   4. Orchestration calls waitForExternalEvent("hitl_input_response")
- *      → HIBERNATES (zero compute cost, state in Azure Storage)
- *   5. User fills form → ws-message handler calls raiseEvent()
- *   6. Orchestration WAKES → calls HitlResumeRun activity
- *   7. Activity loads saved state, merges user input, executes the tool,
- *      feeds result back to the LLM, and finishes the remaining run
+ *   2. Runner saves state → starts the HitlAwaitInput wait → returns
+ *      (the invocation exits, resources freed)
+ *   3. The wait's start pushes the form to the client
+ *   4. The wait sleeps until the "hitl_input_response" event or the
+ *      timeout, at no compute cost
+ *   5. User fills form → the client-event handler signals the wait
+ *   6. The wait wakes → resumes the run: loads the saved state, merges the
+ *      user's input, executes the tool, feeds the result back to the LLM
+ *      and finishes the remaining run
  *
- * This mirrors the CronScheduler pattern but is a ONE-SHOT orchestration
- * (no continueAsNew) — it completes after the user responds.
- *
- * @see ../cron/orchestrator.ts — reference Durable Functions pattern
+ * One-shot: the wait completes after the answer or the timeout.
  */
 
-import * as df from "durable-functions";
+import type { WaitDefinition } from "@agentforeach/platform";
 import type {
   InputRequest,
   InputResponse,
   HitlRunState,
+  HitlWaitInput,
 } from "./types.js";
-import {
-  HITL_INPUT_EVENT,
-  HITL_ORCHESTRATION_NAME,
-  HITL_RESUME_ACTIVITY,
-  HITL_PUSH_REQUEST_ACTIVITY,
-  HITL_TIMEOUT_ACTIVITY,
-} from "./types.js";
+import { HITL_INPUT_EVENT, HITL_ORCHESTRATION_NAME } from "./types.js";
 import { sendEventToUser, EVENTS } from "../websocket/index.js";
 import { getAgentClient } from "../shared.js";
 import { handleMcpToolCall } from "../mcp/index.js";
@@ -42,62 +34,41 @@ import { REQUEST_USER_INPUT_TOOL_NAME } from "./tool.js";
 import type { SessionStore, SessionMessage } from "../sessions/index.js";
 import { getHitlStore } from "./authorize.js";
 import { redactId } from "../utils/redact.js";
+import { noteInterruptedTurn, turnExecutionId } from "../sessions/interrupted.js";
 
 
 /** Waits between resume attempts while the session is busy (~2.5 min total). */
 const RESUME_BUSY_BACKOFF_MS = [2_000, 5_000, 10_000, 20_000, 40_000, 60_000];
 // ============================================================================
-// Orchestrator Input
+// Start: Push Input Request to Client
 // ============================================================================
 
-interface HitlOrchestrationInput {
-  /** The input request to push to the client. */
+/** Pushes the input_request event to the user's connected clients. */
+export async function pushInputRequest(input: {
   inputRequest: InputRequest;
-
-  /** The saved run state (requestId used to load from store on resume). */
-  requestId: string;
   userId: string;
-
-  /** Timeout in seconds — auto-cancel if no response. */
-  timeoutSeconds: number;
+}): Promise<{ pushed: boolean }> {
+  try {
+    await sendEventToUser(input.userId, EVENTS.CHAT, {
+      state: "input_request",
+      ...input.inputRequest,
+    });
+    return { pushed: true };
+  } catch (err) {
+    console.error(
+      `[hitl] Failed to push input_request to user=${redactId(input.userId)}:`,
+      err instanceof Error ? err.message : err,
+    );
+    return { pushed: false };
+  }
 }
 
 // ============================================================================
-// Activity: Push Input Request to Client
+// Event: Resume the Agent Run After User Input
 // ============================================================================
 
 /**
- * Activity that pushes the input_request event to the user's connected
- * clients via Web PubSub. Separated into an activity because orchestrator
- * functions must be deterministic (no I/O).
- */
-df.app.activity(HITL_PUSH_REQUEST_ACTIVITY, {
-  handler: async (input: {
-    inputRequest: InputRequest;
-    userId: string;
-  }): Promise<{ pushed: boolean }> => {
-    try {
-      await sendEventToUser(input.userId, EVENTS.CHAT, {
-        state: "input_request",
-        ...input.inputRequest,
-      });
-      return { pushed: true };
-    } catch (err) {
-      console.error(
-        `[hitl] Failed to push input_request to user=${redactId(input.userId)}:`,
-        err instanceof Error ? err.message : err,
-      );
-      return { pushed: false };
-    }
-  },
-});
-
-// ============================================================================
-// Activity: Resume the Agent Run After User Input
-// ============================================================================
-
-/**
- * Activity that resumes the agent runner after the user provides input.
+ * Resumes the agent runner after the user provides input.
  *
  * Loads the saved HitlRunState from the HITL store, merges the user's
  * data into the pending tool call args, executes the MCP tool, then
@@ -106,111 +77,112 @@ df.app.activity(HITL_PUSH_REQUEST_ACTIVITY, {
  * This effectively picks up execution from the exact point where the
  * runner paused — mid-tool-loop.
  */
-df.app.activity(HITL_RESUME_ACTIVITY, {
-  handler: async (input: {
-    requestId: string;
-    userId: string;
-    response: InputResponse;
-  }): Promise<{ success: boolean; error?: string }> => {
-    console.log(
-      `[hitl] HitlResumeRun STARTED — request=${input.requestId} user=${redactId(input.userId)} ` +
-        `cancelled=${input.response.cancelled} dataKeys=${Object.keys(input.response.data ?? {}).join(",")}`,
-    );
-    try {
-      const client = await getAgentClient();
-      console.log(`[hitl] HitlResumeRun — client obtained`);
+export async function resumeAfterInput(input: {
+  requestId: string;
+  userId: string;
+  response: InputResponse;
+  /** The durable execution resuming (see `SendRequest.executionId`). */
+  executionId?: string;
+}): Promise<{ success: boolean; error?: string }> {
+  console.log(
+    `[hitl] Resume STARTED — request=${input.requestId} user=${redactId(input.userId)} ` +
+      `cancelled=${input.response.cancelled} dataKeys=${Object.keys(input.response.data ?? {}).join(",")}`,
+  );
+  try {
+    const client = await getAgentClient();
+    console.log(`[hitl] Resume — client obtained`);
 
-      // Load the saved run state from the HITL store
-      const hitlStore = getHitlStore(client);
-      if (!hitlStore) {
-        console.error(`[hitl] HitlResumeRun — HITL store not available`);
-        return { success: false, error: "HITL store not available" };
-      }
-
-      const runState: HitlRunState | null = await hitlStore.get(
-        input.requestId,
-        input.userId,
-      );
-
-      if (!runState) {
-        console.error(`[hitl] HitlResumeRun — no pending HITL request: ${input.requestId}`);
-        return {
-          success: false,
-          error: `No pending HITL request: ${input.requestId}`,
-        };
-      }
-
-      console.log(
-        `[hitl] HitlResumeRun — loaded runState: status=${runState.status} ` +
-          `tool=${runState.pendingToolCall.name} session=${redactId(runState.sessionId)}`,
-      );
-
-      if (runState.status !== "pending") {
-        console.error(`[hitl] HitlResumeRun — wrong status: ${runState.status}`);
-        return {
-          success: false,
-          error: `HITL request is ${runState.status}, not pending`,
-        };
-      }
-
-      // Mark as responded
-      await hitlStore.updateStatus(input.requestId, input.userId, "responded");
-      console.log(`[hitl] HitlResumeRun — marked as responded`);
-
-      if (input.response.cancelled) {
-        // User cancelled — tell the LLM the tool call was cancelled
-        console.log(`[hitl] HitlResumeRun — user cancelled, resuming with cancel message`);
-        await resumeRunWithResult(
-          client,
-          runState,
-          "User cancelled this action.",
-        );
-      } else if (runState.pendingToolCall.name === REQUEST_USER_INPUT_TOOL_NAME) {
-        // request_user_input: the user's response IS the tool result.
-        // No MCP tool to execute — return the user's data directly to the LLM.
-        const toolResult = JSON.stringify({
-          ok: true,
-          userInput: input.response.data,
-        });
-        console.log(`[hitl] HitlResumeRun — request_user_input, toolResult=${toolResult}`);
-        await resumeRunWithResult(client, runState, toolResult);
-      } else {
-        // Regular HITL-gated MCP tool: merge user data with LLM args, then execute
-        const mergedArgs = {
-          ...runState.pendingToolCall.arguments,
-          ...input.response.data,
-        };
-
-        // Execute the actual MCP tool with the merged args
-        const mcpManager = (client as any)._mcpManager;
-        let toolResult: string;
-
-        try {
-          toolResult = await handleMcpToolCall(
-            runState.pendingToolCall.name,
-            mergedArgs,
-            mcpManager,
-            input.userId,
-          );
-        } catch (err) {
-          toolResult = `Tool execution failed: ${err instanceof Error ? err.message : String(err)}`;
-        }
-
-        // Resume the run with the tool result
-        await resumeRunWithResult(client, runState, toolResult);
-      }
-
-      console.log(`[hitl] HitlResumeRun COMPLETED — request=${input.requestId}`);
-      return { success: true };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      const stack = err instanceof Error ? err.stack : undefined;
-      console.error(`[hitl] Resume FAILED: ${msg}`);
-      if (stack) console.error(`[hitl] Resume stack:`, stack);
-      return { success: false, error: msg };
+    // Load the saved run state from the HITL store
+    const hitlStore = getHitlStore(client);
+    if (!hitlStore) {
+      console.error(`[hitl] Resume — HITL store not available`);
+      return { success: false, error: "HITL store not available" };
     }
-  },
-});
+
+    const runState: HitlRunState | null = await hitlStore.get(
+      input.requestId,
+      input.userId,
+    );
+
+    if (!runState) {
+      console.error(`[hitl] Resume — no pending HITL request: ${input.requestId}`);
+      return {
+        success: false,
+        error: `No pending HITL request: ${input.requestId}`,
+      };
+    }
+
+    console.log(
+      `[hitl] Resume — loaded runState: status=${runState.status} ` +
+        `tool=${runState.pendingToolCall.name} session=${redactId(runState.sessionId)}`,
+    );
+
+    if (runState.status !== "pending") {
+      console.error(`[hitl] Resume — wrong status: ${runState.status}`);
+      return {
+        success: false,
+        error: `HITL request is ${runState.status}, not pending`,
+      };
+    }
+
+    // Mark as responded
+    await hitlStore.updateStatus(input.requestId, input.userId, "responded");
+    console.log(`[hitl] Resume — marked as responded`);
+
+    if (input.response.cancelled) {
+      // User cancelled — tell the LLM the tool call was cancelled
+      console.log(`[hitl] Resume — user cancelled, resuming with cancel message`);
+      await resumeRunWithResult(
+        client,
+        runState,
+        "User cancelled this action.",
+        input.executionId,
+      );
+    } else if (runState.pendingToolCall.name === REQUEST_USER_INPUT_TOOL_NAME) {
+      // request_user_input: the user's response IS the tool result.
+      // No MCP tool to execute — return the user's data directly to the LLM.
+      const toolResult = JSON.stringify({
+        ok: true,
+        userInput: input.response.data,
+      });
+      console.log(`[hitl] Resume — request_user_input, toolResult=${toolResult}`);
+      await resumeRunWithResult(client, runState, toolResult, input.executionId);
+    } else {
+      // Regular HITL-gated MCP tool: merge user data with LLM args, then execute
+      const mergedArgs = {
+        ...runState.pendingToolCall.arguments,
+        ...input.response.data,
+      };
+
+      // Execute the actual MCP tool with the merged args
+      const mcpManager = (client as any)._mcpManager;
+      let toolResult: string;
+
+      try {
+        toolResult = await handleMcpToolCall(
+          runState.pendingToolCall.name,
+          mergedArgs,
+          mcpManager,
+          input.userId,
+        );
+      } catch (err) {
+        toolResult = `Tool execution failed: ${err instanceof Error ? err.message : String(err)}`;
+      }
+
+      // Resume the run with the tool result
+      await resumeRunWithResult(client, runState, toolResult, input.executionId);
+    }
+
+    console.log(`[hitl] Resume COMPLETED — request=${input.requestId}`);
+    return { success: true };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error ? err.stack : undefined;
+    console.error(`[hitl] Resume FAILED: ${msg}`);
+    if (stack) console.error(`[hitl] Resume stack:`, stack);
+    return { success: false, error: msg };
+  }
+}
 
 /**
  * Resume the LLM conversation with the tool result from the HITL interaction.
@@ -248,6 +220,7 @@ async function resumeRunWithResult(
   client: any,
   runState: HitlRunState,
   toolResult: string,
+  executionId?: string,
 ): Promise<void> {
   const { originalRequest, pendingToolCall } = runState;
   const sessionId = originalRequest.sessionId ?? runState.sessionId;
@@ -324,6 +297,7 @@ async function resumeRunWithResult(
         channelName: originalRequest.channelName,
         userTimezone: originalRequest.userTimezone,
         idempotencyKey: `hitl-resume-${runState.requestId}`,
+        executionId,
         metadata: {
           ...originalRequest.metadata,
           _hitlContinuation: "true",
@@ -366,13 +340,13 @@ async function resumeRunWithResult(
 }
 
 // ============================================================================
-// Activity: Handle Timeout (no LLM call)
+// Timeout: Expire the Request (no LLM call)
 // ============================================================================
 
 /**
- * Activity that handles a timed-out HITL request WITHOUT calling the LLM.
+ * Handles a timed-out HITL request WITHOUT calling the LLM.
  *
- * When the timer wins the race against waitForExternalEvent, this activity:
+ * When the timeout passes before the answer arrives, this:
  *   1. Marks the request as "timed_out" in the HITL store
  *   2. Persists the user's original message + a brief assistant note
  *      to the session so the conversation has context when the user returns
@@ -383,163 +357,128 @@ async function resumeRunWithResult(
  * When the user sends their next message in the same chat, the session
  * history has full context and the LLM can re-trigger HITL if needed.
  */
-df.app.activity(HITL_TIMEOUT_ACTIVITY, {
-  handler: async (input: {
-    requestId: string;
-    userId: string;
-  }): Promise<{ success: boolean; error?: string }> => {
-    try {
-      const client = await getAgentClient();
-      const hitlStore = getHitlStore(client);
-      const sessionStore = (client as any)._sessionStore as SessionStore | undefined;
+export async function expireInputRequest(input: {
+  requestId: string;
+  userId: string;
+}): Promise<{ success: boolean; error?: string }> {
+  try {
+    const client = await getAgentClient();
+    const hitlStore = getHitlStore(client);
+    const sessionStore = (client as any)._sessionStore as SessionStore | undefined;
 
-      if (!hitlStore) {
-        return { success: false, error: "HITL store not available" };
-      }
+    if (!hitlStore) {
+      return { success: false, error: "HITL store not available" };
+    }
 
-      // Load the run state to get session context
-      const runState: HitlRunState | null = await hitlStore.get(
-        input.requestId,
-        input.userId,
-      );
+    // Load the run state to get session context
+    const runState: HitlRunState | null = await hitlStore.get(
+      input.requestId,
+      input.userId,
+    );
 
-      if (!runState) {
-        return { success: false, error: `No HITL request: ${input.requestId}` };
-      }
+    if (!runState) {
+      return { success: false, error: `No HITL request: ${input.requestId}` };
+    }
 
-      // 1. Mark as timed_out in store
-      await hitlStore.updateStatus(input.requestId, input.userId, "timed_out");
+    // 1. Mark as timed_out in store
+    await hitlStore.updateStatus(input.requestId, input.userId, "timed_out");
 
-      // 2. Persist a brief timeout note to the session so the user
-      //    has context when they return. The original user message was
-      //    already persisted when the runner suspended.
-      if (sessionStore) {
-        try {
-          const toolName = runState.pendingToolCall.name;
-          const now = new Date().toISOString();
-          const timeoutMessage: SessionMessage = {
-            role: "assistant",
-            content:
-              `I was preparing to use "${toolName}" and sent you an input form, ` +
-              `but it timed out before you responded. No worries — just let me know ` +
-              `when you'd like to continue and I'll pick up where we left off.`,
-            timestamp: now,
-            runId: runState.runId,
-          };
-          await sessionStore.appendMessages(
-            input.userId,
-            runState.sessionId,
-            [...siblingResultMessages(runState, now), timeoutMessage],
-          );
-        } catch (err) {
-          // Non-fatal — session persistence failure shouldn't block cleanup
-          console.warn(
-            `[hitl] Failed to persist timeout note to session=${redactId(runState.sessionId)}:`,
-            err instanceof Error ? err.message : err,
-          );
-        }
-      }
-
-      // 3. Notify the client so it can dismiss the input form
+    // 2. Persist a brief timeout note to the session so the user
+    //    has context when they return. The original user message was
+    //    already persisted when the runner suspended.
+    if (sessionStore) {
       try {
-        await sendEventToUser(input.userId, EVENTS.CHAT, {
-          state: "input_expired",
-          requestId: input.requestId,
+        const toolName = runState.pendingToolCall.name;
+        const now = new Date().toISOString();
+        const timeoutMessage: SessionMessage = {
+          role: "assistant",
+          content:
+            `I was preparing to use "${toolName}" and sent you an input form, ` +
+            `but it timed out before you responded. No worries — just let me know ` +
+            `when you'd like to continue and I'll pick up where we left off.`,
+          timestamp: now,
           runId: runState.runId,
-          sessionId: runState.sessionId,
-          reason: "The input form timed out. You can continue the conversation whenever you're ready.",
-        });
+        };
+        await sessionStore.appendMessages(
+          input.userId,
+          runState.sessionId,
+          [...siblingResultMessages(runState, now), timeoutMessage],
+        );
       } catch (err) {
-        // Non-fatal
+        // Non-fatal — session persistence failure shouldn't block cleanup
         console.warn(
-          `[hitl] Failed to push input_expired to user=${redactId(input.userId)}:`,
+          `[hitl] Failed to persist timeout note to session=${redactId(runState.sessionId)}:`,
           err instanceof Error ? err.message : err,
         );
       }
-
-      console.log(
-        `[hitl] Timeout: request=${input.requestId} session=${redactId(runState.sessionId)} — ` +
-          `no LLM call, session preserved for next user message`,
-      );
-
-      return { success: true };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[hitl] Timeout activity failed: ${msg}`);
-      return { success: false, error: msg };
     }
-  },
-});
+
+    // 3. Notify the client so it can dismiss the input form
+    try {
+      await sendEventToUser(input.userId, EVENTS.CHAT, {
+        state: "input_expired",
+        requestId: input.requestId,
+        runId: runState.runId,
+        sessionId: runState.sessionId,
+        reason: "The input form timed out. You can continue the conversation whenever you're ready.",
+      });
+    } catch (err) {
+      // Non-fatal
+      console.warn(
+        `[hitl] Failed to push input_expired to user=${redactId(input.userId)}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+
+    console.log(
+      `[hitl] Timeout: request=${input.requestId} session=${redactId(runState.sessionId)} — ` +
+        `no LLM call, session preserved for next user message`,
+    );
+
+    return { success: true };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[hitl] Timeout activity failed: ${msg}`);
+    return { success: false, error: msg };
+  }
+}
 
 // ============================================================================
-// Orchestration: Await Human Input
+// The wait
 // ============================================================================
 
 /**
- * One-shot orchestration that waits for human input.
- *
- * Unlike CronScheduler (eternal), this orchestration:
- *   1. Pushes input_request to the client (activity)
- *   2. Waits for the user's response OR timeout (whichever first)
- *   3. Resumes the runner with user input (activity)
- *   4. Completes (no continueAsNew)
- *
- * While waiting, the orchestration is HIBERNATED:
- *   - Azure Function is NOT held open
- *   - Zero compute cost
- *   - State is durable in Azure Storage
- *   - Can survive function app restarts
+ * Waits for the user's answer to a HITL form, or the timeout. Each handler
+ * logs and absorbs its own failures, so a failed resume doesn't fail the
+ * wait (the user is told, and can ask again).
  */
-df.app.orchestration(
-  HITL_ORCHESTRATION_NAME,
-  function* (ctx: df.OrchestrationContext) {
-    const oc = ctx.df;
-    const input = oc.getInput() as HitlOrchestrationInput;
-
-    // Step 1: Push the input request to the user's client(s)
-    yield oc.callActivity(HITL_PUSH_REQUEST_ACTIVITY, {
-      inputRequest: input.inputRequest,
-      userId: input.userId,
-    });
-
-    // Step 2: Wait for user input OR timeout
-    const timeoutMs = (input.timeoutSeconds ?? 300) * 1000;
-    const timeoutTime = new Date(
-      oc.currentUtcDateTime.getTime() + timeoutMs,
-    );
-
-    const timerTask = oc.createTimer(timeoutTime);
-    const eventTask = oc.waitForExternalEvent(HITL_INPUT_EVENT);
-
-    yield oc.Task.any([timerTask, eventTask]);
-
-    // Cancel the timer if the event won the race
-    if (!timerTask.isCompleted) {
-      timerTask.cancel();
-    }
-
-    // Step 3: Determine outcome and resume
-    if (eventTask.isCompleted) {
-      // User responded — resume the runner with their input
-      const response = eventTask.result as InputResponse;
-
-      yield oc.callActivity(HITL_RESUME_ACTIVITY, {
-        requestId: input.requestId,
-        userId: input.userId,
-        response,
-      });
-    } else {
-      // Timeout — quietly expire. No LLM call, no loop.
-      // The timeout activity marks the request as timed_out, persists a
-      // brief note to the session, and sends input_expired to the client.
-      // When the user sends their next message, the session has context
-      // and the LLM can re-trigger HITL if it still needs input.
-      yield oc.callActivity(HITL_TIMEOUT_ACTIVITY, {
-        requestId: input.requestId,
-        userId: input.userId,
-      });
-    }
-
-    // Orchestration completes — no continueAsNew needed
+export const hitlWait: WaitDefinition<HitlWaitInput, InputResponse> = {
+  kind: HITL_ORCHESTRATION_NAME,
+  event: HITL_INPUT_EVENT,
+  async start(input) {
+    if (input.inputRequest) await pushInputRequest({ inputRequest: input.inputRequest, userId: input.userId });
   },
-);
+  async onEvent(input, response, context) {
+    // The resumed turn was cut off and is being run again: the answer was
+    // already marked responded and the tool may have run, so don't resume
+    // a second time; tell the user instead (sessions/interrupted.ts).
+    if ((context.attempt ?? 1) > 1) {
+      const runState = await getHitlStore(await getAgentClient())?.get(input.requestId, input.userId);
+      context.warn(`[hitl] resume of request=${input.requestId} was interrupted; asking the user to resend`);
+      await noteInterruptedTurn(
+        {
+          userId: input.userId,
+          // The session the resume ran in (resumeRunWithResult).
+          sessionId: runState?.originalRequest.sessionId ?? runState?.sessionId,
+          runId: runState?.runId ?? input.requestId,
+        },
+        context,
+      );
+      return;
+    }
+    await resumeAfterInput({ requestId: input.requestId, userId: input.userId, response, executionId: turnExecutionId(context) });
+  },
+  async onTimeout(input) {
+    await expireInputRequest({ requestId: input.requestId, userId: input.userId });
+  },
+};

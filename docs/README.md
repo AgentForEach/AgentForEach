@@ -5,6 +5,7 @@
 | Doc | What it covers |
 |---|---|
 | [Getting started](getting-started.md) | Deploy to Azure, sign users in, run locally |
+| [Cloudflare](Cloudflare.md) | Deploy on Cloudflare Workers: Hyperdrive to your Postgres, R2, Durable Objects, limits, running locally |
 | [What it costs](costs.md) | Monthly cost at 10,000 to 1,000,000 users, the assumptions, and a script to run your own |
 | [Benchmarks](Benchmarks.md) | Load-test method, results and how to measure your own stack |
 | [Upgrading](UPGRADING.md) | Behaviour changes an operator needs to know about, newest first |
@@ -15,7 +16,10 @@
 | Doc | What it covers |
 |---|---|
 | [Architecture](Architecture.md) | The stateless Function App, how a turn flows, the real-time protocol, how far it scales |
+| [Platforms](Platforms.md) | The six cloud-neutral ports, the Azure and Cloudflare packs, and how to add a cloud |
+| [Realtime protocol](Realtime-Protocol.md) | The WebSocket protocol every realtime provider speaks: frames, acks, groups, relay |
 | [Comparisons](Comparisons.md) | A machine per user, agent frameworks, Cloudflare Agents and Letta |
+| [Database](Database.md) | Cosmos DB or PostgreSQL behind the storage SDK: settings, migrations, what differs |
 | [Sessions and messages](Session-management.md) | How conversations are stored, kept private per user and compacted |
 | [Identity](Identity.md) | Mapping channel senders to users, account linking and pairing |
 | [Easy Auth](EasyAuth.md) | Signing users in with App Service authentication |

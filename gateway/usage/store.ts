@@ -1,7 +1,7 @@
 /**
  * AgentForEach Usage Module — Usage Store
  *
- * Cosmos DB-backed per-run usage tracking and cost analytics.
+ * Per-run usage tracking and cost analytics.
  *
  * Container: "usage-records" (configurable via agentforeach.json)
  *   - Partition key: /userId
@@ -16,12 +16,17 @@
  *   - Per-user aggregated summary (with date filtering)
  */
 
-import { PartitionKeyKind } from "@azure/cosmos";
-import type {
-  DatabaseProvider,
-  ContainerHandle,
-  QueryParameter,
-} from "../database/index.js";
+import {
+  and,
+  eq,
+  gte,
+  lte,
+  type Collection,
+  type CollectionSpec,
+  type Filter,
+  type PatchOperation,
+  type StorageAdapter,
+} from "@agentforeach/storage";
 import type { ProviderId, UsageStats } from "../llms/index.js";
 import type {
   UsageRecord,
@@ -36,14 +41,24 @@ import { getModelPricing, estimateCost } from "./pricing.js";
 // Usage Store
 // ============================================================================
 
+/** A user's records, optionally bounded by ISO timestamps. */
+function recordsInRange(userId: string, opts?: { from?: string; to?: string }): Filter {
+  return and(eq("userId", userId), opts?.from && gte("timestamp", opts.from), opts?.to && lte("timestamp", opts.to));
+}
+
+/** The usage-records collection, with the configured id and retention. */
+export function usageCollection(config: UsageConfig): CollectionSpec {
+  return { name: config.containerId, partitionKey: "userId", defaultTtl: config.ttlSeconds };
+}
+
 export class UsageStore {
-  private db: DatabaseProvider;
-  private container!: ContainerHandle<UsageRecord>;
+  private storage: StorageAdapter;
+  private container!: Collection<UsageRecord>;
   private initialized = false;
   private config: UsageConfig;
 
-  constructor(db: DatabaseProvider, config?: UsageConfig) {
-    this.db = db;
+  constructor(storage: StorageAdapter, config?: UsageConfig) {
+    this.storage = storage;
     this.config = config ?? loadUsageConfig();
   }
 
@@ -54,21 +69,7 @@ export class UsageStore {
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
-    this.container = await this.db.getOrCreateContainer<UsageRecord>({
-      id: this.config.containerId,
-      partitionKey: {
-        paths: ["/userId"],
-        kind: PartitionKeyKind.Hash,
-        version: 2,
-      },
-      defaultTtl: this.config.ttlSeconds,
-      indexingPolicy: {
-        automatic: true,
-        indexingMode: "consistent",
-        includedPaths: [{ path: "/*" }],
-        excludedPaths: [{ path: '/"_etag"/?' }],
-      },
-    });
+    this.container = await this.storage.collection<UsageRecord>(usageCollection(this.config));
 
     this.initialized = true;
   }
@@ -142,7 +143,7 @@ export class UsageStore {
     if (!this.config.enabled) return null;
     this.ensureInitialized();
 
-    const operations = [
+    const operations: PatchOperation[] = [
       { op: "set" as const, path: "/coinsCharged", value: params.coinsCharged },
       { op: "set" as const, path: "/coinCurrencyCode", value: params.currencyCode },
       { op: "set" as const, path: "/coinChargeStatus", value: params.status },
@@ -195,24 +196,11 @@ export class UsageStore {
     this.ensureInitialized();
 
     const limit = Math.min(Math.max(opts?.limit ?? 50, 1), 200);
-    const conditions = ["c.userId = @userId"];
-    const params: QueryParameter[] = [{ name: "@userId", value: userId }];
-
-    if (opts?.from) {
-      conditions.push("c.timestamp >= @from");
-      params.push({ name: "@from", value: opts.from });
-    }
-    if (opts?.to) {
-      conditions.push("c.timestamp <= @to");
-      params.push({ name: "@to", value: opts.to });
-    }
-
-    params.push({ name: "@limit", value: limit });
-
-    const sql = `SELECT TOP @limit * FROM c WHERE ${conditions.join(" AND ")} ORDER BY c.timestamp DESC`;
-
-    return this.container.queryWithParams<UsageRecord>(sql, params, {
+    return this.container.find<UsageRecord>({
       partitionKey: userId,
+      where: recordsInRange(userId, opts),
+      orderBy: { field: "timestamp", direction: "desc" },
+      limit,
     });
   }
 
@@ -233,25 +221,11 @@ export class UsageStore {
   ): Promise<UsageSummary> {
     this.ensureInitialized();
 
-    const conditions = ["c.userId = @userId"];
-    const params: QueryParameter[] = [{ name: "@userId", value: userId }];
-
-    if (opts?.from) {
-      conditions.push("c.timestamp >= @from");
-      params.push({ name: "@from", value: opts.from });
-    }
-    if (opts?.to) {
-      conditions.push("c.timestamp <= @to");
-      params.push({ name: "@to", value: opts.to });
-    }
-
-    const sql = `SELECT * FROM c WHERE ${conditions.join(" AND ")} ORDER BY c.timestamp DESC`;
-
-    const records = await this.container.queryWithParams<UsageRecord>(
-      sql,
-      params,
-      { partitionKey: userId },
-    );
+    const records = await this.container.find<UsageRecord>({
+      partitionKey: userId,
+      where: recordsInRange(userId, opts),
+      orderBy: { field: "timestamp", direction: "desc" },
+    });
 
     const now = new Date().toISOString();
     return aggregateRecords(records, {

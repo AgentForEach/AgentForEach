@@ -7,7 +7,7 @@
  *   - buildRecencySection (prompt section)
  *   - Tool definitions and guards
  *
- * Uses in-memory database mock — no external APIs required.
+ * Uses the storage SDK's in-memory adapter — no external APIs required.
  */
 
 import test from "node:test";
@@ -19,214 +19,13 @@ import { DigestToolHandler, getDigestToolDefinitions, isDigestTool, SESSION_SEAR
 import type { DigestDocument } from "./types.js";
 import type { DigestConfig } from "./config.js";
 import { buildRecencySection } from "../prompt/sections/recency.js";
-import type {
-  BaseDocument,
-  ContainerHandle,
-  ContainerOptions,
-  DatabaseProvider,
-  PatchOperation,
-  QueryOptions,
-  QueryParameter,
-} from "../database/index.js";
+import { InMemoryStorage } from "@agentforeach/storage";
 import type {
   MemoryLayer,
   MemoryEntry,
   MemorySearchResult,
   ToolDefinition,
 } from "../memory/types.js";
-
-// ============================================================================
-// In-Memory Database Mock (copied from sessions/store.test.ts pattern)
-// ============================================================================
-
-class InMemoryContainer<T extends BaseDocument> implements ContainerHandle<T> {
-  private docs = new Map<string, T>();
-  private partitionKeyPath: string;
-
-  constructor(partitionKeyPath = "/userId") {
-    this.partitionKeyPath = partitionKeyPath.replace(/^\//, "");
-  }
-
-  async create(document: T): Promise<T> {
-    if (this.docs.has(document.id)) {
-      const err: Record<string, unknown> = new Error("Conflict") as unknown as Record<string, unknown>;
-      err.code = 409;
-      throw err;
-    }
-    this.docs.set(document.id, structuredClone(document));
-    return structuredClone(document);
-  }
-
-  async upsert(document: T): Promise<T> {
-    this.docs.set(document.id, structuredClone(document));
-    return structuredClone(document);
-  }
-
-  async read(id: string, partitionKey: string): Promise<T | null> {
-    const doc = this.docs.get(id);
-    if (!doc) return null;
-    if ((doc as Record<string, unknown>)[this.partitionKeyPath] !== partitionKey) return null;
-    return structuredClone(doc);
-  }
-
-  async replace(id: string, partitionKey: string, document: T): Promise<T> {
-    const existing = await this.read(id, partitionKey);
-    if (!existing) throw new Error("not found");
-    this.docs.set(id, structuredClone(document));
-    return structuredClone(document);
-  }
-
-  async patch(id: string, partitionKey: string, operations: PatchOperation[]): Promise<T> {
-    const existing = await this.read(id, partitionKey);
-    if (!existing) throw new Error("not found");
-    const target = existing as unknown as Record<string, unknown>;
-    for (const op of operations) {
-      const path = op.path.replace(/^\//, "").split("/");
-      if (path.length === 0) continue;
-      if (op.op === "set") {
-        const key = path[path.length - 1];
-        let ptr = target;
-        for (let i = 0; i < path.length - 1; i++) {
-          if (!ptr[path[i]] || typeof ptr[path[i]] !== "object") ptr[path[i]] = {};
-          ptr = ptr[path[i]] as Record<string, unknown>;
-        }
-        ptr[key] = op.value;
-      }
-    }
-    this.docs.set(id, structuredClone(existing));
-    return structuredClone(existing);
-  }
-
-  async delete(id: string, partitionKey: string): Promise<boolean> {
-    const existing = await this.read(id, partitionKey);
-    if (!existing) return false;
-    this.docs.delete(id);
-    return true;
-  }
-
-  async query<R = T>(querySpec: unknown, options: QueryOptions = {}): Promise<R[]> {
-    const partitionKey = options.partitionKey;
-    const spec = querySpec as { query: string; parameters?: { name: string; value: unknown }[] };
-    const sql = spec.query;
-    const parameters = spec.parameters ?? [];
-
-    const paramMap = new Map<string, unknown>();
-    for (const p of parameters) paramMap.set(p.name, p.value);
-
-    let candidates: T[] = [];
-    for (const doc of this.docs.values()) {
-      if (partitionKey !== undefined && (doc as Record<string, unknown>)[this.partitionKeyPath] !== partitionKey) continue;
-      candidates.push(structuredClone(doc));
-    }
-
-    // Apply WHERE conditions
-    candidates = candidates.filter((doc) => this.evaluateWhere(sql, doc as Record<string, unknown>, paramMap));
-
-    // Apply ORDER BY
-    const orderMatch = sql.match(/ORDER\s+BY\s+c\.(\w+)\s+(ASC|DESC)/i);
-    if (orderMatch) {
-      const field = orderMatch[1];
-      const dir = orderMatch[2].toUpperCase();
-      candidates.sort((a, b) => {
-        const aStr = String((a as Record<string, unknown>)[field] ?? "");
-        const bStr = String((b as Record<string, unknown>)[field] ?? "");
-        return dir === "ASC" ? aStr.localeCompare(bStr) : bStr.localeCompare(aStr);
-      });
-    }
-
-    // Apply TOP
-    const topMatch = sql.match(/TOP\s+(@\w+|\d+)/i);
-    if (topMatch) {
-      const topVal = topMatch[1];
-      const limit = topVal.startsWith("@") ? (paramMap.get(topVal) as number) : parseInt(topVal, 10);
-      if (limit !== undefined) candidates = candidates.slice(0, limit);
-    }
-
-    return candidates as unknown as R[];
-  }
-
-  async queryWithParams<R = T>(
-    sql: string,
-    parameters: QueryParameter[] = [],
-    options: QueryOptions = {},
-  ): Promise<R[]> {
-    return this.query<R>({ query: sql, parameters }, options);
-  }
-
-  async count(whereClause?: string, parameters?: QueryParameter[], options?: QueryOptions): Promise<number> {
-    if (!whereClause) return this.docs.size;
-    const sql = `SELECT COUNT(1) FROM c WHERE ${whereClause}`;
-    const results = await this.queryWithParams(sql, parameters, options);
-    return results.length;
-  }
-
-  getRawContainer(): unknown {
-    return {};
-  }
-
-  private evaluateWhere(sql: string, obj: Record<string, unknown>, params: Map<string, unknown>): boolean {
-    // Use [\s\S] instead of . to match across newlines in multiline SQL
-    const whereMatch = sql.match(/WHERE\s+([\s\S]+?)(?:\s+ORDER\s+BY|\s*$)/i);
-    if (!whereMatch) return true;
-
-    const whereClause = whereMatch[1];
-    const conditions = whereClause.split(/\s+AND\s+/i);
-
-    for (const cond of conditions) {
-      const trimmed = cond.trim();
-
-      // CONTAINS(LOWER(c.field), @param)
-      const containsMatch = trimmed.match(/CONTAINS\(LOWER\(c\.(\w+)\),\s*(@\w+)\)/i);
-      if (containsMatch) {
-        const val = String(obj[containsMatch[1]] ?? "").toLowerCase();
-        const paramVal = String(params.get(containsMatch[2]) ?? "").toLowerCase();
-        if (!val.includes(paramVal)) return false;
-        continue;
-      }
-
-      // c.field >= @param (string comparison for dates)
-      const gteMatch = trimmed.match(/c\.(\w+)\s*>=\s*(@\w+)/);
-      if (gteMatch) {
-        const val = String(obj[gteMatch[1]] ?? "");
-        const paramVal = String(params.get(gteMatch[2]) ?? "");
-        if (val < paramVal) return false;
-        continue;
-      }
-
-      // c.field = @param
-      const eqMatch = trimmed.match(/c\.(\w+)\s*=\s*(@\w+)/);
-      if (eqMatch) {
-        if (obj[eqMatch[1]] !== params.get(eqMatch[2])) return false;
-        continue;
-      }
-    }
-    return true;
-  }
-}
-
-class InMemoryDatabaseProvider implements DatabaseProvider {
-  readonly name = "memory";
-  private containers = new Map<string, InMemoryContainer<BaseDocument>>();
-
-  async initialize(): Promise<void> {}
-
-  async getOrCreateContainer<T extends BaseDocument = BaseDocument>(
-    options: ContainerOptions,
-  ): Promise<ContainerHandle<T>> {
-    const id = options.id;
-    if (!id) throw new Error("container id required");
-    const existing = this.containers.get(id);
-    if (existing) return existing as unknown as ContainerHandle<T>;
-    const pkPath = options.partitionKey?.paths?.[0] ?? "/id";
-    const container = new InMemoryContainer<BaseDocument>(pkPath);
-    this.containers.set(id, container);
-    return container as unknown as ContainerHandle<T>;
-  }
-
-  getDatabaseId(): string {
-    return "memory";
-  }
-}
 
 // ============================================================================
 // Mock Memory Layer (for DigestToolHandler tests)
@@ -327,7 +126,7 @@ function makeDigestConfig(overrides?: Partial<DigestConfig>): DigestConfig {
 
 test("DigestStore", async (t) => {
   await t.test("save — upserts a digest document", async () => {
-    const db = new InMemoryDatabaseProvider();
+    const db = new InMemoryStorage();
     const store = new DigestStore(db, "test-digests");
     await store.initialize();
 
@@ -340,7 +139,7 @@ test("DigestStore", async (t) => {
   });
 
   await t.test("save — updates existing digest on re-save", async () => {
-    const db = new InMemoryDatabaseProvider();
+    const db = new InMemoryStorage();
     const store = new DigestStore(db, "test-digests");
     await store.initialize();
 
@@ -359,7 +158,7 @@ test("DigestStore", async (t) => {
   });
 
   await t.test("getRecent — returns digests ordered by createdAt DESC", async () => {
-    const db = new InMemoryDatabaseProvider();
+    const db = new InMemoryStorage();
     const store = new DigestStore(db, "test-digests");
     await store.initialize();
 
@@ -382,7 +181,7 @@ test("DigestStore", async (t) => {
   });
 
   await t.test("getRecent — respects limit", async () => {
-    const db = new InMemoryDatabaseProvider();
+    const db = new InMemoryStorage();
     const store = new DigestStore(db, "test-digests");
     await store.initialize();
 
@@ -400,7 +199,7 @@ test("DigestStore", async (t) => {
   });
 
   await t.test("getRecent — isolates by userId", async () => {
-    const db = new InMemoryDatabaseProvider();
+    const db = new InMemoryStorage();
     const store = new DigestStore(db, "test-digests");
     await store.initialize();
 
@@ -417,7 +216,7 @@ test("DigestStore", async (t) => {
   });
 
   await t.test("searchByKeyword — finds matching digests", async () => {
-    const db = new InMemoryDatabaseProvider();
+    const db = new InMemoryStorage();
     const store = new DigestStore(db, "test-digests");
     await store.initialize();
 
@@ -449,7 +248,7 @@ test("DigestStore", async (t) => {
   });
 
   await t.test("searchByKeyword — case-insensitive", async () => {
-    const db = new InMemoryDatabaseProvider();
+    const db = new InMemoryStorage();
     const store = new DigestStore(db, "test-digests");
     await store.initialize();
 
@@ -462,7 +261,7 @@ test("DigestStore", async (t) => {
   });
 
   await t.test("searchByKeyword — returns empty for no matches", async () => {
-    const db = new InMemoryDatabaseProvider();
+    const db = new InMemoryStorage();
     const store = new DigestStore(db, "test-digests");
     await store.initialize();
 
@@ -475,7 +274,7 @@ test("DigestStore", async (t) => {
   });
 
   await t.test("searchByKeyword — respects maxAgeDays filter", async () => {
-    const db = new InMemoryDatabaseProvider();
+    const db = new InMemoryStorage();
     const store = new DigestStore(db, "test-digests");
     await store.initialize();
 
@@ -506,7 +305,7 @@ test("DigestStore", async (t) => {
   });
 
   await t.test("initialize is idempotent", async () => {
-    const db = new InMemoryDatabaseProvider();
+    const db = new InMemoryStorage();
     const store = new DigestStore(db, "test-digests");
 
     await store.initialize();
@@ -538,7 +337,7 @@ test("DigestToolHandler — session_search", async (t) => {
   });
 
   await t.test("searches digests by keyword", async () => {
-    const db = new InMemoryDatabaseProvider();
+    const db = new InMemoryStorage();
     const digestStore = new DigestStore(db, "test-digests");
     await digestStore.initialize();
     const memoryLayer = new MockMemoryLayer();
@@ -576,7 +375,7 @@ test("DigestToolHandler — session_search", async (t) => {
   });
 
   await t.test("searches compaction memories", async () => {
-    const db = new InMemoryDatabaseProvider();
+    const db = new InMemoryStorage();
     const digestStore = new DigestStore(db, "test-digests");
     await digestStore.initialize();
     const memoryLayer = new MockMemoryLayer();
@@ -597,7 +396,7 @@ test("DigestToolHandler — session_search", async (t) => {
   });
 
   await t.test("merges and deduplicates digest + memory results", async () => {
-    const db = new InMemoryDatabaseProvider();
+    const db = new InMemoryStorage();
     const digestStore = new DigestStore(db, "test-digests");
     await digestStore.initialize();
     const memoryLayer = new MockMemoryLayer();
@@ -626,7 +425,7 @@ test("DigestToolHandler — session_search", async (t) => {
   });
 
   await t.test("returns no results message for no matches", async () => {
-    const db = new InMemoryDatabaseProvider();
+    const db = new InMemoryStorage();
     const digestStore = new DigestStore(db, "test-digests");
     await digestStore.initialize();
     const memoryLayer = new MockMemoryLayer();
@@ -639,7 +438,7 @@ test("DigestToolHandler — session_search", async (t) => {
   });
 
   await t.test("validates query is required", async () => {
-    const db = new InMemoryDatabaseProvider();
+    const db = new InMemoryStorage();
     const digestStore = new DigestStore(db, "test-digests");
     await digestStore.initialize();
     const memoryLayer = new MockMemoryLayer();
@@ -653,7 +452,7 @@ test("DigestToolHandler — session_search", async (t) => {
   });
 
   await t.test("rejects unknown tool name", async () => {
-    const db = new InMemoryDatabaseProvider();
+    const db = new InMemoryStorage();
     const digestStore = new DigestStore(db, "test-digests");
     await digestStore.initialize();
     const memoryLayer = new MockMemoryLayer();
@@ -666,7 +465,7 @@ test("DigestToolHandler — session_search", async (t) => {
   });
 
   await t.test("respects limit parameter", async () => {
-    const db = new InMemoryDatabaseProvider();
+    const db = new InMemoryStorage();
     const digestStore = new DigestStore(db, "test-digests");
     await digestStore.initialize();
     const memoryLayer = new MockMemoryLayer();
@@ -690,7 +489,7 @@ test("DigestToolHandler — session_search", async (t) => {
   });
 
   await t.test("user isolation — user2 cannot see user1 digests", async () => {
-    const db = new InMemoryDatabaseProvider();
+    const db = new InMemoryStorage();
     const digestStore = new DigestStore(db, "test-digests");
     await digestStore.initialize();
     const memoryLayer = new MockMemoryLayer();
@@ -780,7 +579,7 @@ test("buildRecencySection", async (t) => {
 
 test("Digest lifecycle — end-to-end flow", async (t) => {
   await t.test("compaction creates digest → recency section renders → search finds it", async () => {
-    const db = new InMemoryDatabaseProvider();
+    const db = new InMemoryStorage();
     const digestStore = new DigestStore(db, "test-digests");
     await digestStore.initialize();
     const memoryLayer = new MockMemoryLayer();
@@ -840,7 +639,7 @@ test("Digest lifecycle — end-to-end flow", async (t) => {
   });
 
   await t.test("multiple sessions create a complete recency recap", async () => {
-    const db = new InMemoryDatabaseProvider();
+    const db = new InMemoryStorage();
     const digestStore = new DigestStore(db, "test-digests");
     await digestStore.initialize();
     const digestConfig = makeDigestConfig({ recallLimit: 3 });

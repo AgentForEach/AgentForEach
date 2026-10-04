@@ -13,7 +13,7 @@ What a deployment of this repo does under load, measured on a fresh stack with `
 
 Each simulated user has its own identity (an HS256 JWT), its own Web PubSub socket (negotiated like the app does) and its own chat session. A user sends a turn, waits for the reply, thinks for a few seconds, and sends the next. Users start evenly over the ramp period.
 
-A turn goes through the production path: `POST /api/chat` returns `202`, the turn runs in a `ChatTurn` orchestration, and the reply streams back over Web PubSub. Per turn the script records:
+A turn goes through the production path: `POST /api/chat` returns `202`, the turn runs as a `ChatTurn` durable job (a Durable Functions orchestration on Azure), and the reply streams back over Web PubSub. Per turn the script records:
 
 | Metric | Meaning |
 |---|---|

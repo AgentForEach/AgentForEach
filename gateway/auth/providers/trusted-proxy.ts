@@ -11,7 +11,7 @@
  */
 
 import { timingSafeEqual } from "node:crypto";
-import type { HttpRequest } from "@azure/functions";
+import type { HttpRequestLike } from "@agentforeach/platform";
 import { resolveEnvValue } from "../../utils/index.js";
 import type {
   AuthProvider,
@@ -43,7 +43,7 @@ export function createTrustedProxyProvider(
     id: "trusted-proxy",
     label: "Trusted Proxy",
 
-    resolve(request: HttpRequest): AuthContext | null {
+    resolve(request: HttpRequestLike): AuthContext | null {
       if (!secret || !secretMatches(request.headers.get(secretHeader), secret)) return null;
 
       // Check all required headers are present

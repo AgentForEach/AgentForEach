@@ -1,17 +1,31 @@
 /**
- * AgentForEach Cron System — Cosmos DB Store
+ * AgentForEach Cron System — Store
  *
- * CRUD operations for cron jobs and run history in Cosmos DB, using the
- * shared database layer.
+ * CRUD operations for cron jobs, run history, the due index and heartbeat
+ * events, on the shared storage SDK. Every claim, lease and fence is a
+ * single-document compare-and-set on the document's `_etag`.
  */
 
 import { randomUUID } from "node:crypto";
-import { PartitionKeyKind, type Container } from "@azure/cosmos";
 import {
-  getSharedDatabase,
-  type DatabaseProvider,
-  type ContainerHandle,
-} from "../database/index.js";
+  and,
+  eq,
+  isConflict,
+  isDefined,
+  isNotFound,
+  isPreconditionFailed,
+  lte,
+  gt,
+  missing,
+  mutate,
+  or,
+  present,
+  type Collection,
+  type CollectionSpec,
+  type Filter,
+  type StorageAdapter,
+} from "@agentforeach/storage";
+import { getSharedStorage } from "../database/index.js";
 import type {
   CronDelivery,
   CronDeliveryMode,
@@ -57,8 +71,6 @@ import {
   DELIVERY_LEAD_TIME_MS,
   MAX_ONE_SHOT_DELIVERY_RETRIES,
   CLAIM_CONCURRENCY,
-  LEGACY_SWEEP_INTERVAL_MS,
-  LEGACY_SWEEP_MAX_JOBS,
   MAX_PENDING_HEARTBEAT_EVENTS_PER_USER,
   MAX_PAYLOAD_TEXT_LENGTH,
   MAX_PAYLOAD_MESSAGE_LENGTH,
@@ -540,13 +552,6 @@ type DueIndexCandidate = {
   userId: string;
 };
 
-type NextWakeCandidate = {
-  id: string;
-  jobId: string;
-  userId: string;
-  nextRunAtMs: number;
-};
-
 type HeartbeatEventCandidate = {
   id: string;
   jobId: string;
@@ -569,19 +574,6 @@ function toDueIndexShardId(shardId: number): string {
 }
 
 
-/**
- * The legacy sweep (a cross-partition query over cron-jobs every minute,
- * 200-500 RU a time) finds jobs created before the due index existed. Off
- * by default: deployments with such jobs run
- * POST /cron/admin/backfill-due-index once instead. CRON_LEGACY_SWEEP=true
- * (or the old CRON_DUE_INDEX_MIGRATED=false) turns it back on.
- */
-function isLegacySweepDisabled(): boolean {
-  const on = process.env.CRON_LEGACY_SWEEP;
-  const migrated = process.env.CRON_DUE_INDEX_MIGRATED;
-  return !(on === "true" || on === "1" || migrated === "false" || migrated === "0");
-}
-
 export function hasActiveRunningClaim(
   job: Pick<CronJob, "state">,
   nowMs = Date.now(),
@@ -594,120 +586,70 @@ export function hasActiveRunningClaim(
   return runningAtMs > nowMs - RUNNING_CLAIM_STALE_MS;
 }
 
-function isPreconditionFailedError(err: unknown): boolean {
-  if (typeof err !== "object" || err === null) return false;
-  const e = err as Record<string, unknown>;
-  return (
-    e.code === 412 || e.code === "PreconditionFailed" || e.statusCode === 412
+/** A claim nobody holds: no running token, or one older than `staleBeforeMs`. */
+function claimable(staleBeforeMs: number): Filter {
+  return or(missing("runningToken"), and(isDefined("runningAtMs"), lte("runningAtMs", staleBeforeMs)));
+}
+
+/** Heartbeat events for one target: a user, and an agent and session or none. */
+function heartbeatTarget(target: { userId: string; agentId?: string; sessionId?: string }): Filter {
+  const agentId = typeof target.agentId === "string" && target.agentId.trim().length > 0 ? target.agentId.trim() : undefined;
+  const sessionId =
+    typeof target.sessionId === "string" && target.sessionId.trim().length > 0 ? target.sessionId.trim() : undefined;
+  return and(
+    eq("userId", target.userId),
+    agentId ? eq("agentId", agentId) : missing("agentId"),
+    sessionId ? eq("sessionId", sessionId) : missing("sessionId"),
   );
 }
 
-function isNotFoundError(err: unknown): boolean {
-  if (typeof err !== "object" || err === null) return false;
-  const e = err as Record<string, unknown>;
-  return e.code === 404 || e.code === "NotFound" || e.statusCode === 404;
-}
-
-function isConflictError(err: unknown): boolean {
-  if (typeof err !== "object" || err === null) return false;
-  const e = err as Record<string, unknown>;
-  return e.code === 409 || e.code === "Conflict" || e.statusCode === 409;
-}
+/**
+ * The four cron collections, exactly as deployed. Those not partitioned by
+ * user index userId, which account erasure finds the user's documents by.
+ */
+export const CRON_COLLECTIONS = {
+  jobs: { name: CRON_JOBS_CONTAINER, partitionKey: "userId" },
+  runs: { name: CRON_RUNS_CONTAINER, partitionKey: "jobId", defaultTtl: DEFAULT_RUN_TTL_SECONDS, indexes: ["userId"] },
+  // TTL: orphaned due-index rows (from deleted jobs) clean themselves up;
+  // active rows are refreshed on every sync. A safety net for missed deletes.
+  dueIndex: { name: CRON_DUE_INDEX_CONTAINER, partitionKey: "shardId", defaultTtl: DUE_INDEX_TTL_SECONDS, indexes: ["userId"] },
+  // TTL: dead-lettered and orphaned events clean themselves up; successful
+  // events are deleted immediately.
+  heartbeatEvents: {
+    name: CRON_HEARTBEAT_EVENTS_CONTAINER,
+    partitionKey: "shardId",
+    defaultTtl: HEARTBEAT_EVENT_TTL_SECONDS,
+    indexes: ["userId"],
+  },
+} satisfies Record<string, CollectionSpec>;
 
 // ============================================================================
 // CronStore
 // ============================================================================
 
 export class CronStore {
-  private db: DatabaseProvider;
-  private jobs!: ContainerHandle<CronJob>;
-  private dueIndex!: ContainerHandle<CronDueIndexDocument>;
-  private heartbeatEvents!: ContainerHandle<CronHeartbeatEventDocument>;
-  private runs!: ContainerHandle<CronRunDocument>;
+  private storage: StorageAdapter;
+  private jobs!: Collection<CronJob>;
+  private dueIndex!: Collection<CronDueIndexDocument>;
+  private heartbeatEvents!: Collection<CronHeartbeatEventDocument>;
+  private runs!: Collection<CronRunDocument>;
   private initialized = false;
-  private lastLegacyDueSweepAtMs = 0;
 
-  constructor(db: DatabaseProvider) {
-    this.db = db;
+  constructor(storage: StorageAdapter) {
+    this.storage = storage;
   }
 
   /**
-   * Ensure the cron containers exist.
+   * Ensure the cron collections exist.
    * Safe to call multiple times — idempotent.
    */
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
-    this.jobs = await this.db.getOrCreateContainer<CronJob>({
-      id: CRON_JOBS_CONTAINER,
-      partitionKey: {
-        paths: ["/userId"],
-        kind: PartitionKeyKind.Hash,
-        version: 2,
-      },
-      indexingPolicy: {
-        automatic: true,
-        indexingMode: "consistent",
-        includedPaths: [{ path: "/*" }],
-        excludedPaths: [{ path: '/"_etag"/?' }],
-      },
-    });
-
-    this.runs = await this.db.getOrCreateContainer<CronRunDocument>({
-      id: CRON_RUNS_CONTAINER,
-      partitionKey: {
-        paths: ["/jobId"],
-        kind: PartitionKeyKind.Hash,
-        version: 2,
-      },
-      defaultTtl: DEFAULT_RUN_TTL_SECONDS,
-      indexingPolicy: {
-        automatic: true,
-        indexingMode: "consistent",
-        includedPaths: [{ path: "/*" }],
-        excludedPaths: [{ path: '/"_etag"/?' }],
-      },
-    });
-
-    this.dueIndex = await this.db.getOrCreateContainer<CronDueIndexDocument>({
-      id: CRON_DUE_INDEX_CONTAINER,
-      partitionKey: {
-        paths: ["/shardId"],
-        kind: PartitionKeyKind.Hash,
-        version: 2,
-      },
-      // TTL enabled: orphaned due-index rows (from deleted jobs) are cleaned up
-      // automatically. Active rows are refreshed on every sync so their TTL
-      // resets. Rows for deleted jobs are removed immediately; this TTL is a
-      // safety net for missed cleanups.
-      defaultTtl: DUE_INDEX_TTL_SECONDS,
-      indexingPolicy: {
-        automatic: true,
-        indexingMode: "consistent",
-        includedPaths: [{ path: "/*" }],
-        excludedPaths: [{ path: '/"_etag"/?' }],
-      },
-    });
-
-    this.heartbeatEvents =
-      await this.db.getOrCreateContainer<CronHeartbeatEventDocument>({
-        id: CRON_HEARTBEAT_EVENTS_CONTAINER,
-        partitionKey: {
-          paths: ["/shardId"],
-          kind: PartitionKeyKind.Hash,
-          version: 2,
-        },
-        // TTL ensures dead-lettered events are cleaned up automatically.
-        // Successful events are deleted immediately; only dead-lettered or
-        // orphaned events rely on TTL for cleanup.
-        defaultTtl: HEARTBEAT_EVENT_TTL_SECONDS,
-        indexingPolicy: {
-          automatic: true,
-          indexingMode: "consistent",
-          includedPaths: [{ path: "/*" }],
-          excludedPaths: [{ path: '/"_etag"/?' }],
-        },
-      });
+    this.jobs = await this.storage.collection<CronJob>(CRON_COLLECTIONS.jobs);
+    this.runs = await this.storage.collection<CronRunDocument>(CRON_COLLECTIONS.runs);
+    this.dueIndex = await this.storage.collection<CronDueIndexDocument>(CRON_COLLECTIONS.dueIndex);
+    this.heartbeatEvents = await this.storage.collection<CronHeartbeatEventDocument>(CRON_COLLECTIONS.heartbeatEvents);
 
     this.initialized = true;
   }
@@ -826,13 +768,10 @@ export class CronStore {
   async listJobs(userId: string, includeDisabled = false): Promise<CronJob[]> {
     await this.ensureInitialized();
 
-    const sql = includeDisabled
-      ? "SELECT * FROM c WHERE c.userId = @userId ORDER BY c.state.nextRunAtMs ASC"
-      : "SELECT * FROM c WHERE c.userId = @userId AND c.enabled = true ORDER BY c.state.nextRunAtMs ASC";
-
-    return this.jobs.queryWithParams<CronJob>(sql, [
-      { name: "@userId", value: userId },
-    ]);
+    return this.jobs.find<CronJob>({
+      where: and(eq("userId", userId), !includeDisabled && eq("enabled", true)),
+      orderBy: { field: "state.nextRunAtMs", direction: "asc" },
+    });
   }
 
   /**
@@ -844,13 +783,10 @@ export class CronStore {
     patch: CronJobPatch,
   ): Promise<CronJob | null> {
     await this.ensureInitialized();
-    const raw = this.jobs.getRawContainer() as Container;
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      const { resource } = await raw.item(jobId, userId).read<CronJob>();
-      if (!resource) return null;
-      const etag = (resource as unknown as { _etag?: string })._etag;
-      if (!etag) return null;
-
+    // The version read by the winning attempt (its shard may change).
+    let previous: CronJob | undefined;
+    const result = await mutate(this.jobs, jobId, userId, (resource) => {
+      previous = resource;
       const nowMs = Date.now();
       const mergedPayload = mergePayloadPatch(resource.payload, patch.payload);
       const mergedDelivery = mergeDeliveryPatch(
@@ -940,30 +876,19 @@ export class CronStore {
           updated.state.nextRunAtMs = undefined;
         }
       }
+      return updated;
+    }, { maxAttempts: 5 });
 
-      try {
-        const { resource: replaced } = await raw
-          .item(jobId, userId)
-          .replace<CronJob>(updated, {
-            accessCondition: { type: "IfMatch", condition: etag },
-          });
-        const final = replaced ?? updated;
-        await this.syncDueIndexFromJobBestEffort(final, {
-          previousShardId:
-            typeof resource.shardId === "number"
-              ? normalizeSchedulerShardId(resource.shardId)
-              : undefined,
-        });
-        return final;
-      } catch (err) {
-        if (isPreconditionFailedError(err)) {
-          continue;
-        }
-        throw err;
-      }
-    }
-
-    throw new Error("concurrent cron update contention; retry");
+    if (result.status === "notFound") return null;
+    if (result.status !== "updated") throw new Error("concurrent cron update contention; retry");
+    const final = result.document;
+    await this.syncDueIndexFromJobBestEffort(final, {
+      previousShardId:
+        typeof previous?.shardId === "number"
+          ? normalizeSchedulerShardId(previous.shardId)
+          : undefined,
+    });
+    return final;
   }
 
   /**
@@ -992,55 +917,22 @@ export class CronStore {
   /**
    * Find and atomically claim all due jobs.
    *
-   * Primary path uses a shard-partitioned due-index container.
-   * Legacy fallback reads cron-jobs directly so pre-index jobs still run.
+   * Candidates come from the shard-partitioned due index; each is then
+   * validated and claimed against its job document.
    */
-  async getDueJobs(nowMs: number, shardId: number): Promise<CronJob[]> {
+  async getDueJobs(nowMs: number, shardId: number, limit?: number): Promise<CronJob[]> {
     await this.ensureInitialized();
     const staleBeforeMs = nowMs - RUNNING_CLAIM_STALE_MS;
     const normalizedShardId = normalizeSchedulerShardId(shardId);
-    const maxDueJobs = getMaxDueJobsPerTick();
+    const maxDueJobs = Math.min(getMaxDueJobsPerTick(), limit ?? Infinity);
+    if (maxDueJobs <= 0) return [];
 
-    let candidates = await this.queryDueIndexCandidates(
+    const candidates = await this.queryDueIndexCandidates(
       nowMs,
       normalizedShardId,
       staleBeforeMs,
       maxDueJobs,
     );
-    const shouldSweepLegacy =
-      !isLegacySweepDisabled() &&
-      (candidates.length === 0 ||
-        nowMs - this.lastLegacyDueSweepAtMs >= LEGACY_SWEEP_INTERVAL_MS);
-    if (shouldSweepLegacy) {
-      this.lastLegacyDueSweepAtMs = nowMs;
-      const remainingSlots = Math.max(0, maxDueJobs - candidates.length);
-      const legacyDueJobs =
-        remainingSlots > 0
-          ? await this.queryLegacyDueJobs(
-              nowMs,
-              normalizedShardId,
-              staleBeforeMs,
-              remainingSlots,
-            )
-          : [];
-      const seen = new Set(candidates.map((c) => `${c.jobId}:${c.userId}`));
-      for (const legacyJob of legacyDueJobs) {
-        await this.syncDueIndexFromJobBestEffort(legacyJob);
-        const key = `${legacyJob.id}:${legacyJob.userId}`;
-        if (seen.has(key)) {
-          continue;
-        }
-        seen.add(key);
-        candidates.push({
-          id: legacyJob.id,
-          jobId: legacyJob.id,
-          userId: legacyJob.userId,
-        });
-        if (candidates.length >= maxDueJobs) {
-          break;
-        }
-      }
-    }
 
     // Claim candidates in parallel with bounded concurrency.
     // Each claim is an independent optimistic-concurrency operation against
@@ -1089,18 +981,9 @@ export class CronStore {
     // Per-user heartbeat event cap: prevent queue flooding.
     // Count pending (non-dead-lettered) events for this user across all shards.
     const maxPendingEvents = MAX_PENDING_HEARTBEAT_EVENTS_PER_USER;
-    const raw = this.heartbeatEvents.getRawContainer() as Container;
-    const countQuery =
-      "SELECT VALUE COUNT(1) FROM c " +
-      "WHERE c.userId = @userId " +
-      "AND (NOT IS_DEFINED(c.deadLetteredAtMs) OR c.deadLetteredAtMs = null)";
-    const { resources: countResults } = await raw.items
-      .query<number>({
-        query: countQuery,
-        parameters: [{ name: "@userId", value: job.userId }],
-      })
-      .fetchAll();
-    const pendingCount = countResults[0] ?? 0;
+    const pendingCount = await this.heartbeatEvents.count({
+      where: and(eq("userId", job.userId), missing("deadLetteredAtMs")),
+    });
     if (pendingCount >= maxPendingEvents) {
       throw new Error(
         `Heartbeat event limit exceeded for user (${maxPendingEvents} pending events)`,
@@ -1139,13 +1022,7 @@ export class CronStore {
   ): Promise<CronHeartbeatEventDocument | null> {
     await this.ensureInitialized();
     const partitionKey = toDueIndexShardId(normalizeSchedulerShardId(shardId));
-    try {
-      const event = await this.heartbeatEvents.read(eventId, partitionKey);
-      return event ?? null;
-    } catch (err) {
-      if (isNotFoundError(err)) return null;
-      throw err;
-    }
+    return this.heartbeatEvents.read(eventId, partitionKey);
   }
 
   /**
@@ -1212,55 +1089,17 @@ export class CronStore {
     await this.ensureInitialized();
     const staleBeforeMs = nowMs - RUNNING_CLAIM_STALE_MS;
     const normalizedShardId = normalizeSchedulerShardId(shardId);
-    const raw = this.heartbeatEvents.getRawContainer() as Container;
 
-    const targetAgentId =
-      typeof target.agentId === "string" && target.agentId.trim().length > 0
-        ? target.agentId.trim()
-        : undefined;
-    const targetSessionId =
-      typeof target.sessionId === "string" &&
-      target.sessionId.trim().length > 0
-        ? target.sessionId.trim()
-        : undefined;
-
-    const query =
-      "SELECT VALUE COUNT(1) FROM c " +
-      "WHERE IS_DEFINED(c.dueAtMs) AND c.dueAtMs <= @nowMs " +
-      "AND (NOT IS_DEFINED(c.deadLetteredAtMs) OR c.deadLetteredAtMs = null) " +
-      "AND (NOT IS_DEFINED(c.runningToken) OR c.runningToken = null " +
-      "OR (IS_DEFINED(c.runningAtMs) AND c.runningAtMs <= @staleBeforeMs)) " +
-      "AND c.userId = @userId " +
-      (targetAgentId
-        ? "AND c.agentId = @agentId "
-        : "AND (NOT IS_DEFINED(c.agentId) OR c.agentId = null) ") +
-      (targetSessionId
-        ? "AND c.sessionId = @sessionId "
-        : "AND (NOT IS_DEFINED(c.sessionId) OR c.sessionId = null) ");
-
-    const parameters: Array<{
-      name: string;
-      value: string | number | boolean | null;
-    }> = [
-      { name: "@nowMs", value: nowMs },
-      { name: "@staleBeforeMs", value: staleBeforeMs },
-      { name: "@userId", value: target.userId },
-    ];
-    if (targetAgentId) {
-      parameters.push({ name: "@agentId", value: targetAgentId });
-    }
-    if (targetSessionId) {
-      parameters.push({ name: "@sessionId", value: targetSessionId });
-    }
-
-    const { resources } = await raw.items
-      .query<number>(
-        { query, parameters },
-        { partitionKey: toDueIndexShardId(normalizedShardId) },
-      )
-      .fetchAll();
-
-    return resources.length > 0 ? resources[0] : 0;
+    return this.heartbeatEvents.count({
+      partitionKey: toDueIndexShardId(normalizedShardId),
+      where: and(
+        isDefined("dueAtMs"),
+        lte("dueAtMs", nowMs),
+        missing("deadLetteredAtMs"),
+        claimable(staleBeforeMs),
+        heartbeatTarget(target),
+      ),
+    });
   }
 
   /**
@@ -1273,19 +1112,11 @@ export class CronStore {
   ): Promise<void> {
     await this.ensureInitialized();
     const partitionKey = toDueIndexShardId(normalizeSchedulerShardId(shardId));
-    const raw = this.heartbeatEvents.getRawContainer() as Container;
 
-    try {
-      const { resource } = await raw
-        .item(eventId, partitionKey)
-        .read<CronHeartbeatEventDocument>();
-      if (!resource) return;
-      if (resource.runningToken !== runningToken) return;
-      await raw.item(eventId, partitionKey).delete();
-    } catch (err) {
-      if (isNotFoundError(err)) return;
-      throw err;
-    }
+    const resource = await this.heartbeatEvents.read(eventId, partitionKey);
+    if (!resource) return;
+    if (resource.runningToken !== runningToken) return;
+    await this.heartbeatEvents.delete(eventId, partitionKey); // false if already gone
   }
 
   /**
@@ -1301,17 +1132,13 @@ export class CronStore {
   ): Promise<void> {
     await this.ensureInitialized();
     const partitionKey = toDueIndexShardId(normalizeSchedulerShardId(shardId));
-    const raw = this.heartbeatEvents.getRawContainer() as Container;
     const nowMs = Date.now();
     const retryAtMs = nowMs + Math.max(1_000, Math.floor(retryDelayMs));
 
     try {
-      const { resource } = await raw
-        .item(eventId, partitionKey)
-        .read<CronHeartbeatEventDocument>();
+      const resource = await this.heartbeatEvents.read(eventId, partitionKey);
       if (!resource) return;
-      const etag = (resource as unknown as { _etag?: string })._etag;
-      if (!etag) return;
+      const etag = resource._etag;
       if (resource.runningToken !== runningToken) return;
       const maxAttempts = getHeartbeatMaxAttempts();
       const attempts = resource.attempts ?? 0;
@@ -1334,11 +1161,7 @@ export class CronStore {
           deadLetterReason: `max-attempt-cutoff:${maxAttempts}`,
         };
 
-        await raw
-          .item(eventId, partitionKey)
-          .replace<CronHeartbeatEventDocument>(updatedDeadLetter, {
-            accessCondition: { type: "IfMatch", condition: etag },
-          });
+        await this.heartbeatEvents.replace(eventId, partitionKey, updatedDeadLetter, { ifMatch: etag });
         return;
       }
 
@@ -1351,13 +1174,9 @@ export class CronStore {
         lastError: normalizedError,
       };
 
-      await raw
-        .item(eventId, partitionKey)
-        .replace<CronHeartbeatEventDocument>(updated, {
-          accessCondition: { type: "IfMatch", condition: etag },
-        });
+      await this.heartbeatEvents.replace(eventId, partitionKey, updated, { ifMatch: etag });
     } catch (err) {
-      if (isNotFoundError(err) || isPreconditionFailedError(err)) return;
+      if (isNotFound(err) || isPreconditionFailed(err)) return;
       throw err;
     }
   }
@@ -1373,12 +1192,10 @@ export class CronStore {
   ): Promise<CronJob | null> {
     await this.ensureInitialized();
 
-    const raw = this.jobs.getRawContainer() as Container;
     try {
-      const { resource } = await raw.item(jobId, userId).read<CronJob>();
+      const resource = await this.jobs.read(jobId, userId);
       if (!resource) return null;
-      const etag = (resource as unknown as { _etag?: string })._etag;
-      if (!etag) return null;
+      const etag = resource._etag;
 
       if (resource.state.runningToken !== runningToken) return null;
       if (typeof resource.state.runningStartedAtMs === "number") return null;
@@ -1392,15 +1209,10 @@ export class CronStore {
         },
       };
 
-      const { resource: replaced } = await raw
-        .item(jobId, userId)
-        .replace<CronJob>(updated, {
-          accessCondition: { type: "IfMatch", condition: etag },
-        });
-      return replaced ?? null;
+      return await this.jobs.replace(jobId, userId, updated, { ifMatch: etag });
     } catch (err) {
-      if (isNotFoundError(err)) return null;
-      if (isPreconditionFailedError(err)) return null;
+      if (isNotFound(err)) return null;
+      if (isPreconditionFailed(err)) return null;
       throw err;
     }
   }
@@ -1415,15 +1227,13 @@ export class CronStore {
   ): Promise<CronJob | null> {
     await this.ensureInitialized();
 
-    const raw = this.jobs.getRawContainer() as Container;
     const nowMs = Date.now();
     const staleBeforeMs = nowMs - RUNNING_CLAIM_STALE_MS;
 
     try {
-      const { resource } = await raw.item(jobId, userId).read<CronJob>();
+      const resource = await this.jobs.read(jobId, userId);
       if (!resource) return null;
-      const etag = (resource as unknown as { _etag?: string })._etag;
-      if (!etag) return null;
+      const etag = resource._etag;
 
       if (
         resource.state.runningToken &&
@@ -1446,23 +1256,62 @@ export class CronStore {
         },
       };
 
-      const { resource: replaced } = await raw
-        .item(jobId, userId)
-        .replace<CronJob>(updated, {
-          accessCondition: { type: "IfMatch", condition: etag },
-        });
-
-      if (replaced) {
-        await this.syncDueIndexFromJobBestEffort(replaced, {
-          previousShardId: resourceShardId,
-        });
-      }
-      return replaced ?? null;
+      const replaced = await this.jobs.replace(jobId, userId, updated, { ifMatch: etag });
+      await this.syncDueIndexFromJobBestEffort(replaced, {
+        previousShardId: resourceShardId,
+      });
+      return replaced;
     } catch (err) {
-      if (isNotFoundError(err)) return null;
-      if (isPreconditionFailedError(err)) return null;
+      if (isNotFound(err)) return null;
+      if (isPreconditionFailed(err)) return null;
       throw err;
     }
+  }
+
+  /**
+   * How many of a shard's jobs are claimed by a run that is still going (a
+   * claim that hasn't gone stale). The scheduler claims no more than
+   * `maxDueJobsPerTick` minus this, so a shard never has more runs going at
+   * once than one tick's worth.
+   */
+  async countInFlightRuns(nowMs: number, shardId: number): Promise<number> {
+    await this.ensureInitialized();
+    // A claim that isn't `claimable`: a token with a fresh `runningAtMs`.
+    // Claims always set both fields, so the one case this leaves out (a token
+    // without a time) doesn't happen; the simpler filter can use an index.
+    return this.dueIndex.count({
+      partitionKey: toDueIndexShardId(normalizeSchedulerShardId(shardId)),
+      where: and(isDefined("runningToken"), gt("runningAtMs", nowMs - RUNNING_CLAIM_STALE_MS)),
+    });
+  }
+
+  /**
+   * Keep a running claim fresh while its run is still going, so it doesn't
+   * look stale (RUNNING_CLAIM_STALE_MS) and get claimed for a second run.
+   * Returns false when the claim is no longer this run's.
+   */
+  async renewRunningClaim(jobId: string, userId: string, runningToken: string): Promise<boolean> {
+    await this.ensureInitialized();
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const resource = await this.jobs.read(jobId, userId);
+        if (!resource || resource.state.runningToken !== runningToken) return false;
+        const updated: CronJob = {
+          ...resource,
+          version: nextJobVersion(resource),
+          state: { ...resource.state, runningAtMs: Date.now() },
+        };
+        const replaced = await this.jobs.replace(jobId, userId, updated, { ifMatch: resource._etag });
+        await this.syncDueIndexFromJobBestEffort(replaced);
+        return true;
+      } catch (err) {
+        if (isNotFound(err)) return false;
+        if (isPreconditionFailed(err)) continue;
+        throw err;
+      }
+    }
+    return false;
   }
 
   /**
@@ -1476,12 +1325,10 @@ export class CronStore {
   ): Promise<void> {
     await this.ensureInitialized();
 
-    const raw = this.jobs.getRawContainer() as Container;
     try {
-      const { resource } = await raw.item(jobId, userId).read<CronJob>();
+      const resource = await this.jobs.read(jobId, userId);
       if (!resource) return;
-      const etag = (resource as unknown as { _etag?: string })._etag;
-      if (!etag) return;
+      const etag = resource._etag;
       if (resource.state.runningToken !== runningToken) return;
 
       const updated: CronJob = {
@@ -1494,16 +1341,10 @@ export class CronStore {
           runningStartedAtMs: undefined,
         },
       };
-      const { resource: replaced } = await raw
-        .item(jobId, userId)
-        .replace<CronJob>(updated, {
-          accessCondition: { type: "IfMatch", condition: etag },
-        });
-      if (replaced) {
-        await this.syncDueIndexFromJobBestEffort(replaced);
-      }
+      const replaced = await this.jobs.replace(jobId, userId, updated, { ifMatch: etag });
+      await this.syncDueIndexFromJobBestEffort(replaced);
     } catch (err) {
-      if (isNotFoundError(err) || isPreconditionFailedError(err)) return;
+      if (isNotFound(err) || isPreconditionFailed(err)) return;
       throw err;
     }
   }
@@ -1526,28 +1367,9 @@ export class CronStore {
       staleBeforeMs,
     );
 
-    let legacyNextWake: number | undefined;
-    if (!isLegacySweepDisabled()) {
-      const legacyCandidate = await this.queryLegacyNextWake(
-        normalizedShardId,
-        staleBeforeMs,
-      );
-      if (legacyCandidate) {
-        const legacyJob = await this.jobs.read(
-          legacyCandidate.jobId,
-          legacyCandidate.userId,
-        );
-        if (legacyJob) {
-          await this.syncDueIndexFromJobBestEffort(legacyJob);
-        }
-        legacyNextWake = legacyCandidate.nextRunAtMs;
-      }
-    }
-
     const wakeCandidates = [
       dueIndexNextWake,
       heartbeatNextWake,
-      legacyNextWake,
     ].filter(
       (value): value is number =>
         typeof value === "number" && Number.isFinite(value),
@@ -1774,20 +1596,23 @@ export class CronStore {
   }
 
   /**
-   * Get run history for a job.
+   * Get run history for one of a user's jobs. Runs are filtered by owner as
+   * well as job, so a job id alone never reveals another user's runs.
    */
   async getRuns(
     jobId: string,
+    userId: string,
     limit = MAX_RUNS_PER_QUERY,
   ): Promise<CronRunDocument[]> {
     await this.ensureInitialized();
 
     const effectiveLimit = Math.min(Math.max(1, limit), MAX_RUNS_PER_QUERY);
 
-    return this.runs.queryWithParams<CronRunDocument>(
-      `SELECT TOP ${effectiveLimit} * FROM c WHERE c.jobId = @jobId ORDER BY c.ts DESC`,
-      [{ name: "@jobId", value: jobId }],
-    );
+    return this.runs.find<CronRunDocument>({
+      where: and(eq("jobId", jobId), eq("userId", userId)),
+      orderBy: { field: "ts", direction: "desc" },
+      limit: effectiveLimit,
+    });
   }
 
   /**
@@ -1799,20 +1624,16 @@ export class CronStore {
    * changed since it was read (re-enabled, say) is left alone.
    */
   private async pruneFinishedJobs(userId: string, count: number, nowMs: number): Promise<number> {
-    const jobs = await this.jobs.queryWithParams<CronJob>(
-      "SELECT * FROM c WHERE c.userId = @userId",
-      [{ name: "@userId", value: userId }],
-    );
+    const jobs = await this.jobs.find({ where: eq("userId", userId) });
     const finished = jobs.filter((job) => isFinishedJob(job, nowMs));
     finished.sort((a, b) => (a.updatedAtMs ?? 0) - (b.updatedAtMs ?? 0));
-    const raw = this.jobs.getRawContainer() as Container;
     let freed = 0;
     for (const job of finished.slice(0, count)) {
-      const etag = (job as unknown as { _etag?: string })._etag;
       try {
-        await raw.item(job.id, userId).delete(etag ? { accessCondition: { type: "IfMatch", condition: etag } } : undefined);
+        // Gone already (false): not freed by this call.
+        if (!(await this.jobs.delete(job.id, userId, { ifMatch: job._etag }))) continue;
       } catch (err) {
-        if (isPreconditionFailedError(err) || isNotFoundError(err)) continue;
+        if (isPreconditionFailed(err)) continue;
         throw err;
       }
       await this.deleteDueIndexRowsForJobBestEffort(job.id, resolveJobShardId(job));
@@ -1823,9 +1644,7 @@ export class CronStore {
 
   async countJobs(userId: string): Promise<number> {
     await this.ensureInitialized();
-    return this.jobs.count("c.userId = @userId", [
-      { name: "@userId", value: userId },
-    ]);
+    return this.jobs.count({ where: eq("userId", userId) });
   }
 
   private async queryDueIndexCandidates(
@@ -1834,27 +1653,14 @@ export class CronStore {
     staleBeforeMs: number,
     limit: number,
   ): Promise<DueIndexCandidate[]> {
-    const raw = this.dueIndex.getRawContainer() as Container;
     const safeLimit = Math.min(Math.max(1, Math.floor(limit)), 1_000);
-    const { resources } = await raw.items
-      .query<DueIndexCandidate>(
-        {
-          query:
-            `SELECT TOP ${safeLimit} c.id, c.id AS jobId, c.userId FROM c ` +
-            "WHERE c.enabled = true " +
-            "AND IS_DEFINED(c.nextRunAtMs) AND c.nextRunAtMs != null AND c.nextRunAtMs <= @nowMs " +
-            "AND (NOT IS_DEFINED(c.runningToken) OR c.runningToken = null " +
-            "OR (IS_DEFINED(c.runningAtMs) AND c.runningAtMs <= @staleBeforeMs)) " +
-            "ORDER BY c.nextRunAtMs ASC",
-          parameters: [
-            { name: "@nowMs", value: nowMs },
-            { name: "@staleBeforeMs", value: staleBeforeMs },
-          ],
-        },
-        { partitionKey: toDueIndexShardId(shardId) },
-      )
-      .fetchAll();
-    return resources;
+    return this.dueIndex.find<DueIndexCandidate>({
+      partitionKey: toDueIndexShardId(shardId),
+      where: and(eq("enabled", true), present("nextRunAtMs"), lte("nextRunAtMs", nowMs), claimable(staleBeforeMs)),
+      orderBy: { field: "nextRunAtMs", direction: "asc" },
+      limit: safeLimit,
+      select: ["id", { field: "id", as: "jobId" }, "userId"],
+    });
   }
 
   private async queryDueHeartbeatEventCandidates(
@@ -1868,157 +1674,46 @@ export class CronStore {
       sessionId?: string;
     },
   ): Promise<HeartbeatEventCandidate[]> {
-    const raw = this.heartbeatEvents.getRawContainer() as Container;
-    const hasTarget = !!target;
-    const targetAgentId =
-      typeof target?.agentId === "string" && target.agentId.trim().length > 0
-        ? target.agentId.trim()
-        : undefined;
-    const targetSessionId =
-      typeof target?.sessionId === "string" &&
-      target.sessionId.trim().length > 0
-        ? target.sessionId.trim()
-        : undefined;
-    const query =
-      `SELECT TOP ${limit} * FROM c ` +
-      "WHERE IS_DEFINED(c.dueAtMs) AND c.dueAtMs <= @nowMs " +
-      "AND (NOT IS_DEFINED(c.deadLetteredAtMs) OR c.deadLetteredAtMs = null) " +
-      "AND (NOT IS_DEFINED(c.runningToken) OR c.runningToken = null " +
-      "OR (IS_DEFINED(c.runningAtMs) AND c.runningAtMs <= @staleBeforeMs)) " +
-      (hasTarget
-        ? "AND c.userId = @userId " +
-          (targetAgentId
-            ? "AND c.agentId = @agentId "
-            : "AND (NOT IS_DEFINED(c.agentId) OR c.agentId = null) ") +
-          (targetSessionId
-            ? "AND c.sessionId = @sessionId "
-            : "AND (NOT IS_DEFINED(c.sessionId) OR c.sessionId = null) ")
-        : "") +
-      "ORDER BY c.dueAtMs ASC";
-    const parameters: Array<{
-      name: string;
-      value: string | number | boolean | null;
-    }> = [
-      { name: "@nowMs", value: nowMs },
-      { name: "@staleBeforeMs", value: staleBeforeMs },
-    ];
-    if (hasTarget) {
-      parameters.push({ name: "@userId", value: target!.userId });
-      if (targetAgentId) {
-        parameters.push({ name: "@agentId", value: targetAgentId });
-      }
-      if (targetSessionId) {
-        parameters.push({ name: "@sessionId", value: targetSessionId });
-      }
-    }
-    const { resources } = await raw.items
-      .query<HeartbeatEventCandidate>(
-        {
-          query,
-          parameters,
-        },
-        { partitionKey: toDueIndexShardId(shardId) },
-      )
-      .fetchAll();
-    return resources;
-  }
-
-  private async queryLegacyDueJobs(
-    nowMs: number,
-    shardId: number,
-    staleBeforeMs: number,
-    limit: number,
-  ): Promise<CronJob[]> {
-    const shardCount = getSchedulerShardCount();
-    const safeLimit = Math.min(
-      Math.max(1, Math.floor(limit)),
-      LEGACY_SWEEP_MAX_JOBS,
-    );
-    return this.jobs.queryWithParams<CronJob>(
-      `SELECT TOP ${safeLimit} * FROM c WHERE c.enabled = true AND c.state.nextRunAtMs <= @nowMs ` +
-        "AND ((IS_DEFINED(c.shardId) AND " +
-        "(c.shardId = @shardId OR (IS_NUMBER(c.shardId) AND (c.shardId % @shardCount) = @shardId))) " +
-        "OR NOT IS_DEFINED(c.shardId)) " +
-        "AND (NOT IS_DEFINED(c.state.runningToken) OR c.state.runningToken = null " +
-        "OR (IS_DEFINED(c.state.runningAtMs) AND c.state.runningAtMs <= @staleBeforeMs)) " +
-        "ORDER BY c.state.nextRunAtMs ASC",
-      [
-        { name: "@nowMs", value: nowMs },
-        { name: "@shardId", value: shardId },
-        { name: "@shardCount", value: shardCount },
-        { name: "@staleBeforeMs", value: staleBeforeMs },
-      ],
-    );
+    return this.heartbeatEvents.find<HeartbeatEventCandidate>({
+      partitionKey: toDueIndexShardId(shardId),
+      where: and(
+        isDefined("dueAtMs"),
+        lte("dueAtMs", nowMs),
+        missing("deadLetteredAtMs"),
+        claimable(staleBeforeMs),
+        target && heartbeatTarget(target),
+      ),
+      orderBy: { field: "dueAtMs", direction: "asc" },
+      limit,
+    });
   }
 
   private async queryDueIndexNextWakeMs(
     shardId: number,
     staleBeforeMs: number,
   ): Promise<number | undefined> {
-    const raw = this.dueIndex.getRawContainer() as Container;
-    const { resources } = await raw.items
-      .query<{ nextRunAtMs: number }>(
-        {
-          query:
-            "SELECT TOP 1 c.nextRunAtMs AS nextRunAtMs FROM c " +
-            "WHERE c.enabled = true " +
-            "AND IS_DEFINED(c.nextRunAtMs) AND c.nextRunAtMs != null " +
-            "AND (NOT IS_DEFINED(c.runningToken) OR c.runningToken = null " +
-            "OR (IS_DEFINED(c.runningAtMs) AND c.runningAtMs <= @staleBeforeMs)) " +
-            "ORDER BY c.nextRunAtMs ASC",
-          parameters: [{ name: "@staleBeforeMs", value: staleBeforeMs }],
-        },
-        { partitionKey: toDueIndexShardId(shardId) },
-      )
-      .fetchAll();
-    return resources.length > 0 ? resources[0].nextRunAtMs : undefined;
+    const [first] = await this.dueIndex.find<{ nextRunAtMs: number }>({
+      partitionKey: toDueIndexShardId(shardId),
+      where: and(eq("enabled", true), present("nextRunAtMs"), claimable(staleBeforeMs)),
+      orderBy: { field: "nextRunAtMs", direction: "asc" },
+      limit: 1,
+      select: ["nextRunAtMs"],
+    });
+    return first?.nextRunAtMs;
   }
 
   private async queryHeartbeatNextWakeMs(
     shardId: number,
     staleBeforeMs: number,
   ): Promise<number | undefined> {
-    const raw = this.heartbeatEvents.getRawContainer() as Container;
-    const { resources } = await raw.items
-      .query<{ dueAtMs: number }>(
-        {
-          query:
-            "SELECT TOP 1 c.dueAtMs AS dueAtMs FROM c " +
-            "WHERE IS_DEFINED(c.dueAtMs) " +
-            "AND (NOT IS_DEFINED(c.deadLetteredAtMs) OR c.deadLetteredAtMs = null) " +
-            "AND (NOT IS_DEFINED(c.runningToken) OR c.runningToken = null " +
-            "OR (IS_DEFINED(c.runningAtMs) AND c.runningAtMs <= @staleBeforeMs)) " +
-            "ORDER BY c.dueAtMs ASC",
-          parameters: [{ name: "@staleBeforeMs", value: staleBeforeMs }],
-        },
-        { partitionKey: toDueIndexShardId(shardId) },
-      )
-      .fetchAll();
-    return resources.length > 0 ? resources[0].dueAtMs : undefined;
-  }
-
-  private async queryLegacyNextWake(
-    shardId: number,
-    staleBeforeMs: number,
-  ): Promise<NextWakeCandidate | undefined> {
-    const shardCount = getSchedulerShardCount();
-    const results = await this.jobs.queryWithParams<NextWakeCandidate>(
-      "SELECT TOP 1 c.id, c.id AS jobId, c.userId, c.state.nextRunAtMs AS nextRunAtMs FROM c " +
-        "WHERE c.enabled = true AND IS_DEFINED(c.state.nextRunAtMs) " +
-        "AND c.state.nextRunAtMs != null " +
-        "AND ((IS_DEFINED(c.shardId) AND " +
-        "(c.shardId = @shardId OR (IS_NUMBER(c.shardId) AND (c.shardId % @shardCount) = @shardId))) " +
-        "OR NOT IS_DEFINED(c.shardId)) " +
-        "AND (NOT IS_DEFINED(c.state.runningToken) OR c.state.runningToken = null " +
-        "OR (IS_DEFINED(c.state.runningAtMs) AND c.state.runningAtMs <= @staleBeforeMs)) " +
-        "ORDER BY c.state.nextRunAtMs ASC",
-      [
-        { name: "@shardId", value: shardId },
-        { name: "@shardCount", value: shardCount },
-        { name: "@staleBeforeMs", value: staleBeforeMs },
-      ],
-    );
-    return results.length > 0 ? results[0] : undefined;
+    const [first] = await this.heartbeatEvents.find<{ dueAtMs: number }>({
+      partitionKey: toDueIndexShardId(shardId),
+      where: and(isDefined("dueAtMs"), missing("deadLetteredAtMs"), claimable(staleBeforeMs)),
+      orderBy: { field: "dueAtMs", direction: "asc" },
+      limit: 1,
+      select: ["dueAtMs"],
+    });
+    return first?.dueAtMs;
   }
 
   private toDueIndexDocument(job: CronJob): CronDueIndexDocument | null {
@@ -2061,9 +1756,8 @@ export class CronStore {
    */
   async backfillDueIndex(): Promise<{ indexed: number; failed: number }> {
     await this.ensureInitialized();
-    const jobs = await this.jobs.queryWithParams<CronJob>(
-      "SELECT * FROM c WHERE c.enabled = true",
-    );
+    // Cross-partition scan of every enabled job.
+    const jobs = await this.jobs.find({ where: eq("enabled", true) });
     let indexed = 0;
     let failed = 0;
     for (const job of jobs) {
@@ -2088,7 +1782,7 @@ export class CronStore {
       await this.syncDueIndexFromJob(job, opts);
     } catch {
       // Best-effort dual-write: source-of-truth remains cron-jobs.
-      // Legacy sweeps and later mutations reconcile due-index rows.
+      // Later mutations and claims reconcile due-index rows.
     }
   }
 
@@ -2136,7 +1830,7 @@ export class CronStore {
       await this.dueIndex
         .delete(jobId, toDueIndexShardId(normalized))
         .catch((err: unknown) => {
-          if (!isNotFoundError(err)) throw err;
+          if (!isNotFound(err)) throw err;
         });
       return;
     }
@@ -2148,7 +1842,7 @@ export class CronStore {
       await this.dueIndex
         .delete(jobId, toDueIndexShardId(shardId))
         .catch((err: unknown) => {
-          if (!isNotFoundError(err)) throw err;
+          if (!isNotFound(err)) throw err;
         });
     }
   }
@@ -2156,29 +1850,25 @@ export class CronStore {
   private async upsertDueIndexMonotonic(
     desired: CronDueIndexDocument,
   ): Promise<void> {
-    const raw = this.dueIndex.getRawContainer() as Container;
     const partitionKey = desired.shardId;
 
     for (let attempt = 0; attempt < 5; attempt += 1) {
       try {
-        const { resource } = await raw
-          .item(desired.id, partitionKey)
-          .read<CronDueIndexDocument>();
+        const resource = await this.dueIndex.read(desired.id, partitionKey);
 
         if (!resource) {
           try {
-            await raw.items.create<CronDueIndexDocument>(desired);
+            await this.dueIndex.create(desired);
             return;
           } catch (err) {
-            if (isConflictError(err)) {
+            if (isConflict(err)) {
               continue;
             }
             throw err;
           }
         }
 
-        const etag = (resource as unknown as { _etag?: string })._etag;
-        if (!etag) return;
+        const etag = resource._etag;
 
         const existingVersion =
           typeof resource.jobVersion === "number"
@@ -2199,18 +1889,10 @@ export class CronStore {
           updatedAtMs: Date.now(),
         };
 
-        await raw
-          .item(desired.id, partitionKey)
-          .replace<CronDueIndexDocument>(merged, {
-            accessCondition: { type: "IfMatch", condition: etag },
-          });
+        await this.dueIndex.replace(desired.id, partitionKey, merged, { ifMatch: etag });
         return;
       } catch (err) {
-        if (
-          isNotFoundError(err) ||
-          isPreconditionFailedError(err) ||
-          isConflictError(err)
-        ) {
+        if (isNotFound(err) || isPreconditionFailed(err) || isConflict(err)) {
           continue;
         }
         throw err;
@@ -2225,14 +1907,10 @@ export class CronStore {
     shardId: number,
   ): Promise<CronHeartbeatEventDocument | null> {
     const partitionKey = toDueIndexShardId(shardId);
-    const raw = this.heartbeatEvents.getRawContainer() as Container;
     try {
-      const { resource } = await raw
-        .item(candidate.id, partitionKey)
-        .read<CronHeartbeatEventDocument>();
+      const resource = await this.heartbeatEvents.read(candidate.id, partitionKey);
       if (!resource) return null;
-      const etag = (resource as unknown as { _etag?: string })._etag;
-      if (!etag) return null;
+      const etag = resource._etag;
 
       if (resource.shardId !== partitionKey) return null;
       if (!Number.isFinite(resource.dueAtMs) || resource.dueAtMs > nowMs)
@@ -2259,15 +1937,9 @@ export class CronStore {
         attempts: (resource.attempts ?? 0) + 1,
       };
 
-      const { resource: replaced } = await raw
-        .item(candidate.id, partitionKey)
-        .replace<CronHeartbeatEventDocument>(updated, {
-          accessCondition: { type: "IfMatch", condition: etag },
-        });
-
-      return replaced ?? null;
-    } catch (err) {
-      if (isNotFoundError(err) || isPreconditionFailedError(err)) return null;
+      return await this.heartbeatEvents.replace(candidate.id, partitionKey, updated, { ifMatch: etag });
+    } catch {
+      // Lost the race (412), gone (404) or failed: not claimed this tick.
       return null;
     }
   }
@@ -2278,17 +1950,13 @@ export class CronStore {
     staleBeforeMs: number,
     shardId: number,
   ): Promise<CronJob | null> {
-    const raw = this.jobs.getRawContainer() as Container;
     try {
-      const { resource } = await raw
-        .item(candidate.id, candidate.userId)
-        .read<CronJob>();
+      const resource = await this.jobs.read(candidate.id, candidate.userId);
       if (!resource) {
         await this.deleteDueIndexRowsForJobBestEffort(candidate.id, shardId);
         return null;
       }
-      const etag = (resource as unknown as { _etag?: string })._etag;
-      if (!etag) return null;
+      const etag = resource._etag;
 
       if (!resource.enabled) {
         await this.syncDueIndexFromJobBestEffort(resource, {
@@ -2313,11 +1981,7 @@ export class CronStore {
               runningStartedAtMs: undefined,
             },
           };
-          await raw
-            .item(candidate.id, candidate.userId)
-            .replace<CronJob>(disabled, {
-              accessCondition: { type: "IfMatch", condition: etag },
-            });
+          await this.jobs.replace(candidate.id, candidate.userId, disabled, { ifMatch: etag });
           await this.syncDueIndexFromJobBestEffort(disabled, {
             previousShardId: shardId,
           });
@@ -2372,24 +2036,17 @@ export class CronStore {
         },
       };
 
-      const { resource: replaced } = await raw
-        .item(candidate.id, candidate.userId)
-        .replace<CronJob>(updated, {
-          accessCondition: { type: "IfMatch", condition: etag },
-        });
-
-      if (replaced) {
-        await this.syncDueIndexFromJobBestEffort(replaced, {
-          previousShardId: shardId,
-        });
-      }
-      return replaced ?? null;
+      const replaced = await this.jobs.replace(candidate.id, candidate.userId, updated, { ifMatch: etag });
+      await this.syncDueIndexFromJobBestEffort(replaced, {
+        previousShardId: shardId,
+      });
+      return replaced;
     } catch (err) {
-      if (isNotFoundError(err)) {
+      if (isNotFound(err)) {
         await this.deleteDueIndexRowsForJobBestEffort(candidate.id, shardId);
         return null;
       }
-      if (isPreconditionFailedError(err)) return null;
+      // Lost the race (412) or failed: not claimed this tick.
       return null;
     }
   }
@@ -2414,7 +2071,7 @@ let _store: CronStore | null = null;
  */
 export function getCronStore(): CronStore {
   if (!_store) {
-    _store = new CronStore(getSharedDatabase());
+    _store = new CronStore(getSharedStorage());
   }
   return _store;
 }

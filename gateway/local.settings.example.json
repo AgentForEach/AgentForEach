@@ -5,9 +5,11 @@
     "AzureWebJobsStorage": "UseDevelopmentStorage=true",
     "CONFIG_FILE_JSON": "agentforeach.json",
 
+    "DATABASE_PROVIDER": "",
     "COSMOS_ENDPOINT": "",
     "COSMOS_KEY": "",
     "COSMOS_DATABASE": "agentforeach",
+    "DATABASE_URL": "",
 
     "OPENAI_API_KEY": "",
     "ANTHROPIC_API_KEY": "",

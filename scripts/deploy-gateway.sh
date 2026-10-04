@@ -28,7 +28,10 @@ echo "==> Deploying the gateway to ${APP_NAME}"
 # --------------------------------------------------------------------------
 echo "==> Building TypeScript..."
 cd "$GATEWAY_DIR"
-npx tsc
+# A clean build: compiled files of deleted sources must not ship.
+rm -rf "$GATEWAY_DIR/dist" "$ROOT_DIR"/packages/*/dist
+# Builds the storage and platform packages the gateway imports, then the gateway.
+npm run build
 
 # --------------------------------------------------------------------------
 # 2. Stage deployment package
@@ -78,12 +81,33 @@ EOF
 echo "==> Installing production dependencies..."
 cd "$STAGING_DIR"
 
-# Copy the real package.json deps into the staging package.json
+# The storage and platform packages are workspace packages, not on the npm registry:
+# pack them into the staging area and install them from those tarballs.
+mkdir -p "$STAGING_DIR/packages"
+(cd "$ROOT_DIR" && npm pack --silent \
+  --workspace @agentforeach/storage \
+  --workspace @agentforeach/storage-cosmos \
+  --workspace @agentforeach/storage-postgres \
+  --workspace @agentforeach/platform \
+  --workspace @agentforeach/platform-azure \
+  --workspace @agentforeach/platform-cloudflare \
+  --pack-destination "$STAGING_DIR/packages" >/dev/null)
+
+# Copy the real package.json deps into the staging package.json, pointing the
+# workspace packages at their tarballs.
 node -e "
+  const fs = require('fs');
   const gw = require('$GATEWAY_DIR/package.json');
   const pkg = require('./package.json');
-  pkg.dependencies = gw.dependencies;
-  require('fs').writeFileSync('./package.json', JSON.stringify(pkg, null, 2));
+  const tarballs = fs.readdirSync('packages');
+  pkg.dependencies = { ...gw.dependencies };
+  for (const name of Object.keys(pkg.dependencies)) {
+    if (!name.startsWith('@agentforeach/')) continue;
+    const file = tarballs.find((t) => t === name.slice(1).replace('/', '-') + '-' + pkg.dependencies[name] + '.tgz');
+    if (!file) throw new Error('no packed tarball for ' + name);
+    pkg.dependencies[name] = 'file:packages/' + file;
+  }
+  fs.writeFileSync('./package.json', JSON.stringify(pkg, null, 2));
 "
 
 npm install --omit=dev --ignore-scripts

@@ -58,7 +58,7 @@ Values of the form `"$NAME"` are read from app settings. The `"cosmos"` stores s
 
 ## Inbound
 
-WhatsApp is an `ackImmediately` channel: the webhook answers `200` once the payload is verified and parsed, and the agent turn runs in the `ChannelInboundTurn` Durable orchestration. Meta redelivers failed webhooks for up to seven days, so the parser, in order:
+WhatsApp is an `ackImmediately` channel: the webhook answers `200` once the payload is verified and parsed, and the agent turn runs as a `ChannelInboundTurn` durable job. Meta redelivers failed webhooks for up to seven days, so the parser, in order:
 
 1. drops senders not on `authorizedSenders` (when set);
 2. **claims the message id** with an atomic create in the dedupe store (8-day TTL); a redelivery that loses the claim is dropped;

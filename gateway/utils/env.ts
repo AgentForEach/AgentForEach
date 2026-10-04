@@ -5,6 +5,8 @@
  * Used by auth, llms, and cron config loaders to support "$ENV_VAR" references.
  */
 
+import { hostInfo } from "../runtime/host.js";
+
 // ============================================================================
 // Env Var Resolution
 // ============================================================================
@@ -34,12 +36,14 @@ export function resolveEnvValue(value: string | undefined): string | undefined {
 // ============================================================================
 
 /**
- * True on Azure App Service / Functions, which set WEBSITE_SITE_NAME. Checks
- * that must fail closed in production use this; other hosts (Docker, AKS)
- * can't be detected, so insecure behaviour there must be an explicit opt-in.
+ * True on a deployed production host: Azure App Service / Functions (which
+ * set WEBSITE_SITE_NAME), or any platform whose entry point installs a
+ * production `HostInfo`. Checks that must fail closed in production use
+ * this; hosts that can't be detected (Docker, AKS) count as local, so
+ * insecure behaviour there must be an explicit opt-in.
  */
 export function isCloudRuntime(): boolean {
-  return !!process.env.WEBSITE_SITE_NAME;
+  return hostInfo().isProductionHost;
 }
 
 /**

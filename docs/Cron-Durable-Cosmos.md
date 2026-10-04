@@ -1,10 +1,10 @@
 # AgentForEach cron on Azure Durable Functions + Cosmos DB
 
-This document is the implementation reference for AgentForEach cron/reminders.
+This document is the implementation reference for AgentForEach cron/reminders on Azure. The scheduler is written against the cloud-neutral Durable port ([Platforms](Platforms.md)); this document covers how the Azure pack runs it.
 
 It explains:
 
-- Architecture (Durable orchestration + Cosmos persistence)
+- Architecture (Durable Functions orchestrations + Cosmos persistence)
 - Scheduling semantics (`at`, `every`, `cron`)
 - Execution semantics (`main` vs `isolated`)
 - Non-duplication and reliability behavior
@@ -15,9 +15,9 @@ It explains:
 AgentForEach cron uses a **shared scheduler model**:
 
 - Jobs are stored in Cosmos DB (`cron-jobs`)
-- A Durable orchestrator loop (`CronScheduler`) fetches due jobs and executes them
+- A durable alarm per shard (`CronScheduler`; on Azure a `DurableAlarm` orchestration) claims due jobs and starts a `CronRun` durable job (a `DurableJob` orchestration) for each
 - Results are stored in Cosmos (`cron-runs`)
-- Scheduler wake-up is timer-driven + event-driven (`jobsChanged`)
+- Scheduler wake-up is timer-driven + event-driven (`wakeAlarm`, which raises the alarm's `wake` event)
 
 Important:
 
@@ -42,7 +42,9 @@ Core modules:
 
 Runtime registrations:
 
-- `gateway/index.ts`
+- `gateway/workflows.ts`: the durable kinds (`CronScheduler` alarm, `CronRun` job, and the gateway's other kinds)
+- `gateway/index.ts`: registers them with the Azure pack (`registerDurable`, `registerLegacyOrchestrations`) and adds `DurableHistoryPurge` (`withDurableMaintenance`)
+- `packages/platform-azure/src/durable/`: the generic orchestrations (`durable.ts`), the pre-port ones kept for one release (`legacy.ts`), history purge (`maintenance.ts`)
 
 ## 3. Data model in Cosmos
 
@@ -63,7 +65,7 @@ Runtime registrations:
   - Partition key: `/shardId`
   - Stores queued main-session events for `wakeMode="next-heartbeat"` and `wakeMode="now"`
   - Uses `enqueuedAtMs` as created-time ordering key for deterministic per-target drain ordering
-  - Claimed/retried by scheduler activities
+  - Claimed/retried by the scheduler tick
   - Events crossing max-attempt cutoff are marked dead-letter in-place (`deadLetteredAtMs`, `deadLetterReason`) and excluded from due processing
 
 ### 3.2 Job shape (high-level)
@@ -95,7 +97,7 @@ Each run document stores:
 
 1. API/tool writes job mutation in `cron-jobs`
 2. Mutation path also upserts/deletes the job's due-index row in `cron-due-index`
-3. Mutation path raises Durable external event `jobsChanged`
+3. Mutation path wakes the shard's alarm (`wakeAlarm`: the `wake` external event on its `DurableAlarm` orchestration)
 4. Scheduler wakes early and recomputes next due work
 
 Write consistency note:
@@ -111,20 +113,24 @@ Mutation signal paths:
 
 ### 4.2 Execution loop
 
-For each orchestrator iteration:
+For each `DurableAlarm` iteration (the tick, `schedulerTick`, runs in the `DurableAlarmTick` activity):
 
-1. `GetDueJobs` activity reads+claims due jobs for a shard
-2. `ExecuteAndRecordJob` activity runs each job
-3. `ProcessHeartbeatQueue` activity flushes due queued heartbeat events (shard-wide)
-4. Activity records runs in `cron-runs`
-5. Activity applies result/state transitions in `cron-jobs`
-6. `ComputeNextWake` returns earliest next run (including heartbeat queue wake)
-7. Orchestrator waits for timer or `jobsChanged`
-8. `continueAsNew` resets orchestration history
+1. `getDueJobs` reads+claims due jobs for a shard
+2. The tick starts one `CronRun` durable job per claimed job (id `cron-run-<jobId>-<runningToken>`): a `DurableJob` orchestration with one `DurableJobRun` activity, never retried
+3. `processHeartbeatQueue` flushes due queued heartbeat events (shard-wide)
+4. `computeNextWakeMs` returns earliest next run (including heartbeat queue wake); with nothing scheduled the tick returns now + `FALLBACK_WAKE_INTERVAL_MS`
+5. The orchestration waits for a timer to that time or the `wake` event
+6. `continueAsNew` resets orchestration history
+
+Each `CronRun` job (`executeAndRecordJob`):
+
+1. Re-validates the claim (`beginClaimedRun`) and executes the job
+2. Records the run in `cron-runs`
+3. Applies result/state transitions in `cron-jobs`
 
 Additional `wakeMode="now"` path:
 
-- `ExecuteAndRecordJob` enqueues a heartbeat event due immediately (`dueAtMs=now`)
+- The `CronRun` job enqueues a heartbeat event due immediately (`dueAtMs=now`)
 - Runtime attempts an immediate target-scoped heartbeat flush for the same `userId`/`agentId`/`sessionId`
 - If immediate flush fails, the event remains queued for retry by scheduler heartbeat processing
 
@@ -136,12 +142,12 @@ It wakes by this logic:
 
 - If a next due job exists: sleep until that due timestamp
 - If no jobs exist: fallback wake every `FALLBACK_WAKE_INTERVAL_MS` (5 minutes)
-- If a mutation occurs: wake immediately via `jobsChanged`
+- If a mutation occurs: wake immediately via `wakeAlarm`
 
 Also:
 
 - `CronSchedulerHealthCheck` runs every 5 minutes to ensure scheduler instances are alive.
-- Durable timer waits are capped by `MAX_DURABLE_TIMER_MS` due to JS Durable timer limits.
+- The `DurableAlarm` timer is capped at 6 days (`MAX_TIMER_MS` in `packages/platform-azure/src/durable/durable.ts`), the longest JavaScript Durable Functions timer; the alarm then ticks and sleeps again.
 
 ## 6. Scheduling semantics
 
@@ -265,7 +271,7 @@ Key protections:
 6. Force-run endpoint acquires an atomic running claim before execution
 7. If result persistence fails, runtime attempts explicit claim release to avoid long stale blocks
 8. Heartbeat queue events use claim tokens (`runningToken`) and stale-claim recovery, same anti-duplication pattern as jobs
-9. Due-job fetch is bounded per tick (`CRON_MAX_DUE_JOBS_PER_TICK`) to prevent unbounded orchestrator fan-out
+9. Due-job fetch is bounded per tick (`CRON_MAX_DUE_JOBS_PER_TICK`) to bound how many `CronRun` jobs one tick starts
 10. Heartbeat event claims are bounded per drain (`CRON_MAX_HEARTBEAT_EVENTS_PER_CLAIM`) to prevent per-iteration spikes
 11. Heartbeat processing has max-attempt cutoff (`CRON_HEARTBEAT_MAX_ATTEMPTS`); failed events are dead-lettered and no longer retried indefinitely
 12. Due-index sync is version-monotonic (`jobVersion`); stale index writes cannot overwrite newer rows
@@ -301,10 +307,7 @@ Scheduler query path:
 
 Backward-compatibility path:
 
-- A legacy fallback query against `cron-jobs` remains for pre-index rows and migration safety.
-- Fallback results are re-synced into `cron-due-index` opportunistically.
-- Next-wake computation always cross-checks legacy `cron-jobs` top-1 as a safety net.
-- The legacy sweep (a cross-partition query over `cron-jobs` every 60 s) is **off** by default; `CRON_LEGACY_SWEEP=true` turns it on. Prefer the one-off backfill.
+- Jobs created before the due index existed are indexed by the one-off backfill (`POST /cron/admin/backfill-due-index`). The old legacy sweep (a cross-partition query over `cron-jobs`, off by default) was removed with the move to the storage SDK.
 
 Operational threshold guidance:
 
@@ -327,7 +330,7 @@ Main endpoints:
 
 Functional notes:
 
-- `/cron/jobs/{id}/run` performs real execution, records run, applies state transitions, and signals scheduler
+- `/cron/jobs/{id}/run` claims the job and starts a `CronRun` durable job (id `force-run-<jobId>-<ms>`) that performs real execution, records the run and applies state transitions; the API wakes the scheduler when it dispatches the run
 - `/cron/status` supports per-shard inspection (`?shardId=`); **admin role required**
 - `/cron/start` can ensure one or all shard schedulers; **admin role required** (the `CronSchedulerHealthCheck` timer normally does this)
 
@@ -394,7 +397,7 @@ Set and verify:
 Track:
 
 - Durable instance runtime status (Failed/Terminated)
-- Activity failure counts (`ExecuteAndRecordJob`)
+- `DurableJobRun` activity failures for `CronRun` instances (ids `cron-run-*`, `force-run-*`)
 - 401 rates on cron APIs
 - Delivery failure rates (`delivered=false`, webhook non-2xx)
 - Cosmos RU spikes on due/wake query paths
@@ -416,6 +419,12 @@ What it validates:
 - Scheduler-due execution without force-run
 - Cross-user endpoint isolation and session-content isolation
 
+### 14.5 Upgrading from the pre-port scheduler
+
+Instance ids are unchanged. A shard still running the old `CronScheduler` orchestration doesn't listen for `wake`, so `wakeAlarm` skips it. The next `ensureAlarm` for that shard terminates it and starts a `DurableAlarm` with the same id: the `CronSchedulerHealthCheck` (within 5 minutes of deploy) or a cron tool change (`handlers/cron-signal.ts`). Until then `/cron/status` shows it running and `/cron/start` reports it as `already-running`.
+
+The pre-port `CronForceRunExecution` orchestration (and the `ChatTurn`, `ChannelInboundTurn` and `HitlAwaitInput` orchestrations) stay registered for one release, so instances in flight at deploy finish (`packages/platform-azure/src/durable/legacy.ts`). New work never starts them.
+
 ## 15. Troubleshooting guide
 
 ### Symptom: one-time reminder repeats
@@ -434,6 +443,7 @@ Check:
 - health timer logs (`CronSchedulerHealthCheck`)
 - job `enabled=true` and `state.nextRunAtMs` exists
 - shard config and instance id mapping
+- after an upgrade, whether the shard is still an old `CronScheduler` instance (§14.5)
 
 ### Symptom: job ran but no in-app reminder message
 
@@ -463,7 +473,7 @@ Check:
 ## 16. Design notes
 
 - Schedule types (`at`, `every`, `cron`), one-shot terminal behavior, error backoff, top-of-hour stagger, and tool-based cron UX.
-- Scheduling runs on Durable orchestrations with state in Cosmos.
+- Scheduling runs on durable alarms and jobs (on Azure, `DurableAlarm` and `DurableJob` orchestrations) with state in Cosmos.
 - Heartbeat queue cadence is scheduler-driven (`CRON_HEARTBEAT_INTERVAL_MS`) and shard-scoped.
 - Wake-now enqueues, then flushes the target's queue immediately, with queued retry as the fallback.
 
@@ -475,7 +485,7 @@ No. AgentForEach runs one scheduler per shard (8 by default); users are spread a
 
 ### Q: How often does scheduler loop?
 
-Not fixed polling. It wakes at the earliest due timestamp, or every 5 minutes when no jobs exist, and immediately on `jobsChanged` events.
+Not fixed polling. It wakes at the earliest due timestamp, or every 5 minutes when no jobs exist, and immediately when a cron change wakes it (`wakeAlarm`).
 
 ### Q: Is this production-ready with 1 shard?
 

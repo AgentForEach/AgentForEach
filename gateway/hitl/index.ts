@@ -21,6 +21,7 @@ export {
   HITL_RESUME_ACTIVITY,
   HITL_PUSH_REQUEST_ACTIVITY,
   HITL_TIMEOUT_ACTIVITY,
+  type HitlWaitInput,
 } from "./types.js";
 
 // ── Config ──
@@ -47,6 +48,5 @@ export {
   getChannelRequestUserInputToolDefinitions,
 } from "./tool.js";
 
-// Side-effect: register Durable Functions orchestration + activities.
-// Must be imported at app startup (via index.ts).
-export {} from "./orchestrator.js";
+// The durable wait for a user's answer (registered in workflows.ts).
+export { hitlWait } from "./orchestrator.js";

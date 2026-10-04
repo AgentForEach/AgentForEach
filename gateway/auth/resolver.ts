@@ -7,7 +7,7 @@
  * This is the primary entry point for all request authentication.
  */
 
-import type { HttpRequest } from "@azure/functions";
+import type { HttpRequestLike } from "@agentforeach/platform";
 import type { AuthConfig, AuthContext, AuthProvider } from "./types.js";
 import { loadAuthConfig } from "./config.js";
 import { createProvider } from "./factory.js";
@@ -73,7 +73,7 @@ function getProviderChain(): AuthProvider[] {
  * @returns AuthContext if authenticated, null if not.
  */
 export async function resolveAuthContext(
-  request: HttpRequest,
+  request: HttpRequestLike,
 ): Promise<AuthContext | null> {
   const providers = getProviderChain();
   const config = loadAuthConfig();
@@ -107,9 +107,11 @@ export async function resolveAuthContext(
 }
 
 /**
- * Sign-ins that can ride on a session cookie: App Service authentication,
- * and a trusted proxy (oauth2-proxy, Pomerium, Cloudflare Access), which
- * adds the user's identity to whatever the browser sends it.
+ * Sign-ins that always ride on a session cookie: App Service authentication,
+ * and a trusted proxy (oauth2-proxy, Pomerium), which adds the user's
+ * identity to whatever the browser sends it. Any other provider says so per
+ * request (`cookieBacked`): the jwt provider reading Cloudflare Access's
+ * header does, and a provider configured with `cookieBacked: true`.
  */
 const COOKIE_AUTH_SOURCES = new Set(["easy-auth", "trusted-proxy"]);
 
@@ -118,8 +120,9 @@ const COOKIE_AUTH_SOURCES = new Set(["easy-auth", "trusted-proxy"]);
  * CORS preflight, cookies included. Requiring JSON forces the preflight,
  * which CORS then governs.
  */
-export function isCrossSiteFormPost(request: HttpRequest, auth: AuthContext): boolean {
-  if (!COOKIE_AUTH_SOURCES.has(auth.source) || request.method.toUpperCase() !== "POST") return false;
+export function isCrossSiteFormPost(request: HttpRequestLike, auth: AuthContext): boolean {
+  const cookieBacked = auth.cookieBacked === true || COOKIE_AUTH_SOURCES.has(auth.source);
+  if (!cookieBacked || request.method.toUpperCase() !== "POST") return false;
   const type = (request.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
   return type !== "application/json";
 }

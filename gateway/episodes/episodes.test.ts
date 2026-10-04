@@ -25,7 +25,7 @@ import {
 import type { EpisodeDocument } from "./types.js";
 import type { EpisodeConfig } from "./config.js";
 import { EpisodeStore } from "./store.js";
-import { InMemoryCosmosDatabase } from "../database/testing/in-memory-cosmos.js";
+import { InMemoryStorage } from "@agentforeach/storage";
 
 // ============================================================================
 // Helpers
@@ -813,19 +813,24 @@ test("EpisodeToolHandler — memory consolidation on conclusion", async () => {
 });
 
 test("semantic search scores the closest episode highest", async () => {
-  const store = new EpisodeStore(new InMemoryCosmosDatabase());
+  const store = new EpisodeStore(new InMemoryStorage());
   await store.initialize();
-  // Cosmos returns cosine VectorDistance as a similarity, closest first.
-  const rows = [
-    { id: "near", userId: "u1", theme: "Trip to Goa", summary: "", distance: 0.93 },
-    { id: "far", userId: "u1", theme: "Tax filing", summary: "", distance: 0.12 },
-  ];
-  (store as unknown as { container: { getRawContainer(): unknown } }).container.getRawContainer = () => ({
-    items: { query: () => ({ fetchAll: async () => ({ resources: rows }) }) },
-  });
+  // 1536-dimension vectors whose cosine similarity to the query is 0.93 and 0.12.
+  const along = (cos: number) => {
+    const v = new Array<number>(1536).fill(0);
+    v[0] = cos;
+    v[1] = Math.sqrt(1 - cos * cos);
+    return v;
+  };
+  const now = new Date().toISOString();
+  const episode = (id: string, theme: string, cos: number) =>
+    ({ id, userId: "u1", theme, summary: "", vector: along(cos), topics: [], highlights: [], status: "active", salience: 0.5, createdAt: now, updatedAt: now }) as never;
+  await store.upsert(episode("far", "Tax filing", 0.12));
+  await store.upsert(episode("near", "Trip to Goa", 0.93));
 
-  const results = await store.semanticSearch([0.1, 0.2], "u1");
+  const results = await store.semanticSearch(along(1), "u1");
   assert.deepEqual(results.map((r) => r.episode.id), ["near", "far"]);
-  assert.equal(results[0]!.score, 0.93);
+  assert.ok(Math.abs(results[0]!.score - 0.93) < 1e-9);
   assert.ok(results[0]!.score > results[1]!.score);
+  assert.deepEqual(results[0]!.episode.vector, [], "search results don't carry the vector");
 });

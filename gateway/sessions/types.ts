@@ -48,7 +48,7 @@ export interface Session {
   /** Agent this session belongs to. */
   agentId: string;
 
-  /** Index signature required by Cosmos DB BaseDocument. */
+  /** Index signature for storage `Doc` compatibility. */
   [key: string]: unknown;
 
   /** Human-readable session identifier. */
@@ -186,7 +186,7 @@ export interface MessageDocument {
   /** ISO-8601 timestamp. */
   timestamp: string;
 
-  /** Index signature for Cosmos BaseDocument compatibility. */
+  /** Index signature for storage `Doc` compatibility. */
   [key: string]: unknown;
 
   // -- Assistant-specific --
@@ -241,7 +241,7 @@ export interface SessionSummary {
  *
  * Database connection is NOT duplicated here — it comes from the
  * agentforeach.json "database" section (resolved via `loadDatabaseConfig()`)
- * and the shared `DatabaseProvider` instance.
+ * and the shared storage adapter.
  */
 export interface SessionJsonConfig {
   /** Cosmos DB container name for sessions. Default: "sessions". */

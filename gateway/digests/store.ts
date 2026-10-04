@@ -1,5 +1,5 @@
 /**
- * AgentForEach Digests Module — Cosmos DB Store
+ * AgentForEach Digests Module — Store
  *
  * Persistence layer for short-lived session digest documents.
  * Simpler than episodes — no vector index needed, just time-ordered
@@ -11,26 +11,26 @@
  *   - No vector index (digests are time-ordered, not semantically searched)
  */
 
-import type { SqlQuerySpec } from "@azure/cosmos";
-import type {
-  DatabaseProvider,
-  ContainerHandle,
-  ContainerOptions,
-} from "../database/index.js";
+import { and, contains, eq, gte, type Collection, type CollectionSpec, type StorageAdapter } from "@agentforeach/storage";
 import type { DigestDocument } from "./types.js";
+
+/** The session-digests collection: per-document TTL (defaultTtl -1). */
+export function digestsCollection(containerId = "session-digests"): CollectionSpec {
+  return { name: containerId, partitionKey: "userId", defaultTtl: -1 };
+}
 
 // ============================================================================
 // Digest Store
 // ============================================================================
 
 export class DigestStore {
-  private db: DatabaseProvider;
+  private storage: StorageAdapter;
   private containerId: string;
-  private container!: ContainerHandle<DigestDocument>;
+  private container!: Collection<DigestDocument>;
   private initialized = false;
 
-  constructor(db: DatabaseProvider, containerId = "session-digests") {
-    this.db = db;
+  constructor(storage: StorageAdapter, containerId = "session-digests") {
+    this.storage = storage;
     this.containerId = containerId;
   }
 
@@ -41,24 +41,8 @@ export class DigestStore {
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
-    await this.db.initialize();
-
-    const containerDef: ContainerOptions = {
-      id: this.containerId,
-      partitionKey: {
-        paths: ["/userId"],
-      },
-      defaultTtl: -1, // Per-document TTL enabled
-      indexingPolicy: {
-        automatic: true,
-        indexingMode: "consistent",
-        includedPaths: [{ path: "/*" }],
-        excludedPaths: [{ path: '/"_etag"/?' }],
-      },
-    };
-
-    this.container =
-      await this.db.getOrCreateContainer<DigestDocument>(containerDef);
+    await this.storage.initialize();
+    this.container = await this.storage.collection<DigestDocument>(digestsCollection(this.containerId));
     this.initialized = true;
   }
 
@@ -86,21 +70,11 @@ export class DigestStore {
   async getRecent(userId: string, limit = 5): Promise<DigestDocument[]> {
     await this.ensureInitialized();
 
-    const query: SqlQuerySpec = {
-      query: `
-        SELECT TOP @limit *
-        FROM c
-        WHERE c.userId = @userId
-        ORDER BY c.createdAt DESC
-      `,
-      parameters: [
-        { name: "@userId", value: userId },
-        { name: "@limit", value: limit },
-      ],
-    };
-
-    return this.container.query<DigestDocument>(query, {
+    return this.container.find<DigestDocument>({
       partitionKey: userId,
+      where: eq("userId", userId),
+      orderBy: { field: "createdAt", direction: "desc" },
+      limit,
     });
   }
 
@@ -116,32 +90,23 @@ export class DigestStore {
   ): Promise<DigestDocument[]> {
     await this.ensureInitialized();
 
-    const lowerKeyword = keyword.toLowerCase();
-    let sql = `
-      SELECT TOP @limit *
-      FROM c
-      WHERE c.userId = @userId
-        AND CONTAINS(LOWER(c.summary), @keyword)
-    `;
-    const params: { name: string; value: string | number }[] = [
-      { name: "@userId", value: userId },
-      { name: "@keyword", value: lowerKeyword },
-      { name: "@limit", value: limit },
-    ];
-
+    let cutoff: string | undefined;
     if (maxAgeDays) {
-      const cutoff = new Date();
-      cutoff.setDate(cutoff.getDate() - maxAgeDays);
-      sql += ` AND c.createdAt >= @cutoff`;
-      params.push({ name: "@cutoff", value: cutoff.toISOString() });
+      const date = new Date();
+      date.setDate(date.getDate() - maxAgeDays);
+      cutoff = date.toISOString();
     }
 
-    sql += ` ORDER BY c.createdAt DESC`;
-
-    return this.container.query<DigestDocument>(
-      { query: sql, parameters: params },
-      { partitionKey: userId },
-    );
+    return this.container.find<DigestDocument>({
+      partitionKey: userId,
+      where: and(
+        eq("userId", userId),
+        contains("summary", keyword, { ignoreCase: true }),
+        cutoff !== undefined && gte("createdAt", cutoff),
+      ),
+      orderBy: { field: "createdAt", direction: "desc" },
+      limit,
+    });
   }
 
   // --------------------------------------------------------------------------

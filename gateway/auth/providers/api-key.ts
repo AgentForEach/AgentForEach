@@ -9,7 +9,7 @@
  */
 
 import { timingSafeEqual } from "node:crypto";
-import type { HttpRequest } from "@azure/functions";
+import type { HttpRequestLike } from "@agentforeach/platform";
 import { resolveEnvValue } from "../../utils/index.js";
 import type {
   AuthProvider,
@@ -63,7 +63,7 @@ export function createApiKeyProvider(
     id: "api-key",
     label: "API Key",
 
-    resolve(request: HttpRequest): AuthContext | null {
+    resolve(request: HttpRequestLike): AuthContext | null {
       const rawKey = request.headers.get(headerName);
       if (!rawKey?.trim()) return null;
 
@@ -86,6 +86,7 @@ export function createApiKeyProvider(
         email: matchedIdentity.email,
         metadata: matchedIdentity.metadata,
         source: "api-key",
+        ...(config.cookieBacked ? { cookieBacked: true } : {}),
       };
     },
   };

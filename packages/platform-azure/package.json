@@ -1,0 +1,52 @@
+{
+  "name": "@agentforeach/platform-azure",
+  "version": "0.1.0",
+  "description": "AgentForEach platform pack for Azure: serves the gateway on Azure Functions stores objects in Azure Blob Storage and pushes to clients with Azure Web PubSub.",
+  "type": "module",
+  "private": true,
+  "license": "Apache-2.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./objects": {
+      "types": "./dist/objects/azure-blob.d.ts",
+      "default": "./dist/objects/azure-blob.js"
+    },
+    "./realtime": {
+      "types": "./dist/realtime/web-pubsub.d.ts",
+      "default": "./dist/realtime/web-pubsub.js"
+    },
+    "./identity": {
+      "types": "./dist/identity.d.ts",
+      "default": "./dist/identity.js"
+    },
+    "./sandbox": {
+      "types": "./dist/sandbox/index.d.ts",
+      "default": "./dist/sandbox/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.test.*",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @agentforeach/platform && tsc",
+    "test": "npm run build && node --test \"dist/**/*.test.js\""
+  },
+  "dependencies": {
+    "@agentforeach/platform": "0.1.0",
+    "@azure/core-auth": "^1.11.0",
+    "@azure/functions": "^4.16.5",
+    "@azure/storage-blob": "^12.34.0",
+    "@azure/web-pubsub": "^1.2.0",
+    "durable-functions": "^3.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.4"
+  }
+}

@@ -9,6 +9,14 @@
  * Replies take a realistic shape: a pause before the first token (MOCK_TTFT_MS,
  * default 800), then MOCK_WORDS words (default 60) every MOCK_WORD_MS
  * (default 40). Usage is reported so cost accounting has numbers to add up.
+ *
+ * Tool calls: when the latest user message contains a scripted phrase and
+ * the request isn't the continuation of a tool call, the reply is a call to
+ * that phrase's tool. The continuation (the input carries a function_call_output) gets a
+ * normal reply. Built in: MOCK_ASK_PHRASE (default "ask me first") calls
+ * request_user_input with a confirmation form. MOCK_TOOL_CALLS adds more, as
+ * JSON: [{"phrase": "use the gated tool", "name": "fixture_send_note",
+ * "arguments": {"to": "sam", "note": "hi"}}] (checked first, in order).
  * No dependencies; runs anywhere Node 18+ runs (PORT, default 8080).
  */
 
@@ -20,6 +28,16 @@ const TTFT_MS = Number(process.env.MOCK_TTFT_MS ?? 800);
 const WORDS = Number(process.env.MOCK_WORDS ?? 60);
 const WORD_MS = Number(process.env.MOCK_WORD_MS ?? 40);
 const DIMENSIONS = Number(process.env.MOCK_EMBEDDING_DIMENSIONS ?? 1536);
+
+/** Phrase → tool call the reply makes. */
+const TOOL_CALLS = [
+  ...JSON.parse(process.env.MOCK_TOOL_CALLS ?? "[]"),
+  {
+    phrase: process.env.MOCK_ASK_PHRASE ?? "ask me first",
+    name: "request_user_input",
+    arguments: { type: "confirmation", title: "Go ahead?", subtitle: "The mock model asks before it answers." },
+  },
+].map((call) => ({ ...call, phrase: String(call.phrase).toLowerCase() }));
 
 const VOCAB = "the a quick simple plan works well today because every small step adds up over time and you can adjust as needed".split(" ");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -56,6 +74,36 @@ function responseObject(model, text, inputChars) {
   };
 }
 
+/** The latest user message's text, from a string input or a list of input items. */
+function latestUserText(input) {
+  if (typeof input === "string") return input;
+  const user = (Array.isArray(input) ? input : []).filter((item) => item?.role === "user").at(-1);
+  if (!user) return "";
+  return typeof user.content === "string" ? user.content : JSON.stringify(user.content ?? "");
+}
+
+/** The scripted tool call this request should be answered with, if any. */
+function scriptedCall(json) {
+  if (JSON.stringify(json.input ?? "").includes("function_call_output")) return undefined;
+  const text = latestUserText(json.input).toLowerCase();
+  return TOOL_CALLS.find((call) => text.includes(call.phrase));
+}
+
+function functionCallObject(model, chars, scripted) {
+  const final = responseObject(model, "", chars);
+  final.output = [
+    {
+      type: "function_call",
+      id: `fc_${randomUUID().replace(/-/g, "")}`,
+      call_id: `call_${randomUUID().replace(/-/g, "")}`,
+      name: scripted.name,
+      arguments: JSON.stringify(scripted.arguments ?? {}),
+      status: "completed",
+    },
+  ];
+  return final;
+}
+
 async function readJson(req) {
   let body = "";
   for await (const chunk of req) body += chunk;
@@ -67,6 +115,28 @@ async function responses(req, res) {
   const model = json.model ?? "mock-model";
   const parts = words(WORDS);
   const text = parts.join(" ");
+
+  const scripted = scriptedCall(json);
+  if (scripted) {
+    const final = functionCallObject(model, chars, scripted);
+    const call = final.output[0];
+    await sleep(TTFT_MS);
+    if (!json.stream) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(final));
+      return;
+    }
+    res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
+    const send = (event) => res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+    send({ type: "response.created", response: { ...final, status: "in_progress", output: [] } });
+    send({ type: "response.output_item.added", output_index: 0, item: { ...call, arguments: "", status: "in_progress" } });
+    send({ type: "response.function_call_arguments.delta", item_id: call.id, call_id: call.call_id, output_index: 0, delta: call.arguments });
+    send({ type: "response.function_call_arguments.done", item_id: call.id, call_id: call.call_id, output_index: 0, arguments: call.arguments });
+    send({ type: "response.output_item.done", output_index: 0, item: call });
+    send({ type: "response.completed", response: final });
+    res.end();
+    return;
+  }
 
   if (!json.stream) {
     await sleep(TTFT_MS + WORDS * WORD_MS);

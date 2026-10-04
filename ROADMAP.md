@@ -9,9 +9,12 @@ Done: a [one-command quickstart](scripts/quickstart.sh) (with a Codespaces butto
 - Local development without an Azure account
 - A starter app (web and mobile) that you can rebrand as your own product
 
-## Run on AWS and Google Cloud
+## Run on more clouds
 
-AgentForEach started on Azure. The same design (stateless turns, per-user data, durable orchestration, a real-time reply stream) comes to AWS and Google Cloud next, each created by its own infrastructure program.
+Done: the [platform layer](docs/Platforms.md). The gateway talks to six cloud-neutral contracts, each with a conformance suite, and a cloud is a pack that implements them. Azure was the first pack and [Cloudflare](docs/Cloudflare.md) is the second. Next:
+
+- AWS and Google Cloud packs, each with its own deploy program ([Adding a cloud](docs/Platforms.md#adding-a-cloud))
+- Production deployments on Cloudflare, and the fixes they turn up
 
 ## Measure more of the platform
 

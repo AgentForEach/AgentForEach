@@ -2,34 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { RateLimiter, rateLimitMessage, scopedRateLimitConfig, type RateLimitConfig } from "./index.js";
-import type { DatabaseProvider } from "../database/index.js";
+import { InMemoryStorage, type StorageAdapter } from "@agentforeach/storage";
 
-/** A container that implements create/patch-incr like Cosmos (404 / 409). */
+/** Counters on the storage SDK's in-memory adapter (atomic incr, 404, 409). */
 function counterDb() {
-  const docs = new Map<string, { id: string; count: number; ttl: number }>();
-  const err = (code: number) => Object.assign(new Error(String(code)), { code });
-  const container = {
-    async create(doc: { id: string; count: number; ttl: number }) {
-      if (docs.has(doc.id)) throw err(409);
-      docs.set(doc.id, { ...doc });
-      return doc;
-    },
-    async patch(id: string, _pk: string, ops: Array<{ op: string; path: string; value: number }>) {
-      const doc = docs.get(id);
-      if (!doc) throw err(404);
-      for (const op of ops) if (op.op === "incr") doc.count += op.value;
-      return { ...doc };
-    },
-  };
-  const db = {
-    name: "test",
-    async initialize() {},
-    async getOrCreateContainer() {
-      return container;
-    },
-    getDatabaseId: () => "test",
-  } as unknown as DatabaseProvider;
-  return { db, docs };
+  return { db: new InMemoryStorage() };
 }
 
 const config = (over: Partial<RateLimitConfig> = {}): RateLimitConfig => ({
@@ -71,14 +48,14 @@ test("exempt channels and a disabled limiter never refuse; a store outage fails 
   const off = new RateLimiter(db, config({ enabled: false, perMinute: 1 }));
   for (let i = 0; i < 5; i++) assert.equal((await off.check("u1", "push")).allowed, true);
 
-  const broken = {
+  const broken: StorageAdapter = {
     name: "broken",
+    capabilities: { vectorSearch: false, hybridSearch: false },
     async initialize() {},
-    async getOrCreateContainer() {
+    async collection() {
       throw new Error("cosmos down");
     },
-    getDatabaseId: () => "x",
-  } as unknown as DatabaseProvider;
+  };
   assert.equal((await new RateLimiter(broken, config()).check("u1", "push")).allowed, true);
 });
 

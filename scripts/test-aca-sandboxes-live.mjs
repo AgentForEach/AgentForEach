@@ -20,9 +20,8 @@
  * Creates one sandbox (1 vCPU / 2 GiB) and deletes it at the end.
  */
 
-import { AcaSandboxesClient, ACA_SANDBOXES_API_VERSION } from "../gateway/dist/gateway/skills/sandbox/aca-sandboxes-client.js";
-import { createDefaultTokenProvider } from "../gateway/dist/gateway/utils/azure-token.js";
-import { labelHash } from "../gateway/dist/gateway/skills/sandbox/aca-sandboxes-client.js";
+import { AcaSandboxesClient, ACA_SANDBOXES_API_VERSION, labelHash } from "../packages/platform-azure/dist/sandbox/aca-sandboxes-client.js";
+import { createDefaultTokenProvider } from "../packages/platform-azure/dist/identity.js";
 
 const env = (k) => {
   const v = process.env[k];

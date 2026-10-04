@@ -11,7 +11,7 @@
  *   4. Client opens WebSocket to the token URL
  *   5. Provider authenticates the connection using the embedded claims
  *
- * Delegates to the active WebSocket provider's generateToken() method.
+ * Delegates to the active WebSocket provider's clientAccess() method.
  * Previously coupled to Azure Web PubSub directly — now provider-agnostic.
  *
  * @see docs/Architecture.md#real-time-protocol
@@ -26,13 +26,11 @@ import type {
 } from "./types.js";
 import { GROUPS } from "./types.js";
 import {
-  resolveConnectionString,
   resolveDefaultTokenTtl,
   resolveMaxTokenTtl,
   resolveDefaultGroups,
 } from "./config.js";
 import { getActiveProvider } from "./providers/index.js";
-import { WebPubSubServiceClient } from "@azure/web-pubsub";
 
 // ============================================================================
 // Token Configuration
@@ -54,7 +52,7 @@ export type TokenOptions = {
 /**
  * Generate a client access token for WebSocket connection.
  *
- * Delegates to the active provider's generateToken() method.
+ * Delegates to the active provider's clientAccess() method.
  * The provider handles the actual token creation and URL construction.
  *
  * @param claims - Client identity claims.
@@ -78,7 +76,7 @@ export async function generateClientToken(
   claims: ClientTokenClaims,
   options?: TokenOptions,
 ): Promise<ClientAccessToken> {
-  const provider = getActiveProvider();
+  const provider = await getActiveProvider();
 
   const ttlMinutes = Math.min(
     options?.ttlMinutes ?? resolveDefaultTokenTtl(),
@@ -88,7 +86,7 @@ export async function generateClientToken(
   // Build provider-specific roles/permissions
   const roles = buildRoles(claims, options);
 
-  return provider.generateToken(claims.userId, {
+  return provider.clientAccess(claims.userId, {
     ttlMinutes,
     groups: claims.groups,
     roles,
@@ -147,27 +145,4 @@ export function getDefaultGroups(
   _clientId: ClientId,
 ): GroupName[] {
   return resolveDefaultGroups(role) as GroupName[];
-}
-
-/**
- * A client token for one group on a separate hub, for relays between two
- * parties the gateway introduces (the browser's live view). The hub has no
- * event handlers, so these tokens can't reach the gateway: they can only join
- * and send to their one group, until they expire.
- */
-export async function generateGroupToken(args: {
-  hub: string;
-  userId: string;
-  group: string;
-  ttlMinutes: number;
-}): Promise<{ url: string }> {
-  const connectionString = resolveConnectionString();
-  if (!connectionString) throw new Error("real-time messaging (Web PubSub) isn't configured");
-  const client = new WebPubSubServiceClient(connectionString, args.hub);
-  const token = await client.getClientAccessToken({
-    userId: args.userId,
-    roles: [`webpubsub.joinLeaveGroup.${args.group}`, `webpubsub.sendToGroup.${args.group}`],
-    expirationTimeInMinutes: args.ttlMinutes,
-  });
-  return { url: token.url };
 }

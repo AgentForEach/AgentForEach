@@ -45,7 +45,7 @@ export interface UsageRecord {
   /** Model used. */
   model: string;
 
-  /** Index signature for Cosmos BaseDocument compatibility. */
+  /** Index signature for storage `Doc` compatibility. */
   [key: string]: unknown;
 
   // -- Token counts (mirrors UsageStats) --

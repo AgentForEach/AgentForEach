@@ -13,7 +13,7 @@
  * persist across sessions and are managed by the LLM via tools.
  */
 
-import type { BaseDocument } from "../database/index.js";
+import type { Doc } from "@agentforeach/storage";
 
 // ============================================================================
 // Episode Highlight (individual contribution from a session)
@@ -48,7 +48,7 @@ export interface EpisodeHighlight {
  * background processes. The LLM decides when to create, update,
  * or conclude episodes based on conversational context.
  */
-export interface EpisodeDocument extends BaseDocument {
+export interface EpisodeDocument extends Doc {
   /** Deterministic ID: "ep_{hash(userId:normalizedTheme)}" */
   id: string;
   /** User who owns this episode. Partition key. */

@@ -333,7 +333,7 @@ export class SandboxToolHandler {
    * pages from sending their own requests there (the proxy would sign them).
    */
   injectedHosts(): string[] {
-    if (!this.client.setEgressCredentials) return [];
+    if (!this.client.capabilities.egressCredentials) return [];
     return Object.entries(this.credentialBindings)
       .filter(([key, binding]) => binding?.header && this.credentials[key] !== undefined)
       .flatMap(([, binding]) => binding.hosts);
@@ -668,7 +668,7 @@ export class SandboxToolHandler {
     for (const [key, value] of Object.entries(this.credentials)) {
       const safeKey = key.replace(/[^A-Za-z0-9_]/g, "_");
       const binding = this.credentialBindings[key];
-      if (this.client.setEgressCredentials && binding?.header) {
+      if (this.client.capabilities.egressCredentials && binding?.header) {
         injected.push({
           key: safeKey,
           hosts: binding.hosts,
@@ -682,7 +682,7 @@ export class SandboxToolHandler {
     }
 
     try {
-      if (this.client.setEgressCredentials) {
+      if (this.client.capabilities.egressCredentials) {
         await this.client.setEgressCredentials(injected, identifier);
       }
       await this.client.setEnv(vars, identifier);

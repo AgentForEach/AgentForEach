@@ -2,7 +2,7 @@
  * AgentForEach Memory Layer — Public API
  *
  * Factory function `createMemoryLayer()` wires up all components:
- *   - Database store (via shared database provider)
+ *   - Memory store (on the shared storage adapter)
  *   - OpenAI embeddings client (resolved from llms config)
  *   - Auto-recall middleware
  *   - Auto-capture middleware
@@ -13,18 +13,15 @@
  *
  * ```ts
  * import { createMemoryLayer } from "./memory/index.js";
- * import { resolveDatabaseProvider, loadDatabaseConfig } from "./database/index.js";
+ * import { getSharedStorage } from "./database/index.js";
  *
- * const db = resolveDatabaseProvider(loadDatabaseConfig());
- * await db.initialize();
- *
- * const memory = createMemoryLayer(db);
+ * const memory = createMemoryLayer(getSharedStorage());
  * await memory.initialize();
  * ```
  *
  * Embedding model and API key are resolved from the `llms.embedding` section.
- * Database connection is shared via the `DatabaseProvider` instance — no
- * duplicate endpoint/key config needed.
+ * Storage is shared through the `StorageAdapter` instance — no duplicate
+ * endpoint/key config needed.
  */
 
 import {
@@ -46,7 +43,7 @@ import { MemoryToolHandler, getToolDefinitions } from "./tools.js";
 import { detectCategory } from "./security.js";
 import { applyTemporalDecay } from "./temporal-decay.js";
 import { applyMMR } from "./mmr.js";
-import type { DatabaseProvider } from "../database/index.js";
+import type { StorageAdapter } from "@agentforeach/storage";
 
 // ============================================================================
 // Factory
@@ -55,26 +52,26 @@ import type { DatabaseProvider } from "../database/index.js";
 /**
  * Create a fully-wired memory layer instance.
  *
- * Call `initialize()` before first use to create the database container.
+ * Call `initialize()` before first use to open the memories collection.
  *
  * Configuration is auto-resolved from agentforeach.json ("memory" section).
  * Embedding config comes from the "llms.embedding" section.
  * Pass an explicit `config` to override the auto-resolved values
  * (useful for tests or standalone usage).
  *
- * @param db - Shared DatabaseProvider instance (required).
+ * @param storage - Shared storage adapter (required).
  * @param config - Optional explicit MemoryConfig. If omitted, resolved
  *                 automatically from agentforeach.json via `loadMemoryConfig()`.
  * @returns A MemoryLayer implementation.
  */
 export function createMemoryLayer(
-  db: DatabaseProvider,
+  storage: StorageAdapter,
   config?: MemoryConfig,
 ): MemoryLayer {
   const resolved = config ? validateConfig(config) : loadMemoryConfig();
 
   // Core components — store is resolved via the provider registry
-  const store = resolveStoreProvider(resolved, db);
+  const store = resolveStoreProvider(resolved, storage);
   const embeddings = new EmbeddingsClient(
     resolved.embeddingApiKey,
     resolved.embeddingModel,
@@ -241,7 +238,7 @@ export {
 } from "./config.js";
 
 // Store providers
-export { CosmosMemoryStore } from "./providers/cosmosdb.js";
+export { StorageMemoryStore, memoriesCollection } from "./providers/storage.js";
 export { NoopMemoryStore } from "./providers/noop.js";
 export {
   resolveStoreProvider,
@@ -272,12 +269,3 @@ export {
 export { applyMMR } from "./mmr.js";
 export { extractKeywords, expandQueryForFts } from "./query-expansion.js";
 
-// Database layer — re-export for convenience
-export { CosmosDatabase, CosmosContainerHandle } from "../database/index.js";
-export type {
-  DatabaseProvider,
-  ContainerHandle,
-  DatabaseConfig,
-  ContainerOptions,
-  BaseDocument,
-} from "../database/index.js";

@@ -489,4 +489,4 @@ Store is not initialized. Channel messages use `config.defaultUserId`, which aga
 | `handlers/ws-message.ts` | WebSocket flow: uses `ce-userId` from auth, no changes needed |
 | `channels/telegram/plugin.ts` | `toSendRequest()` returns `userId: config.defaultUserId`, which becomes the fallback |
 | `sessions/store.ts` | Pattern reference for IdentityStore constructor/init |
-| `database/client.ts` | Cosmos DB provider, used by IdentityStore |
+| `database/storage.ts` | Shared storage adapter (Cosmos DB by default), used by IdentityStore |

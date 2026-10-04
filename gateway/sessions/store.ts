@@ -18,11 +18,17 @@
  */
 
 import { randomBytes, randomUUID } from "node:crypto";
-import { PartitionKeyKind, type Container } from "@azure/cosmos";
-import type {
-  DatabaseProvider,
-  ContainerHandle,
-} from "../database/index.js";
+import {
+  and,
+  eq,
+  isConflict,
+  mutate,
+  ne,
+  present,
+  type Collection,
+  type CollectionSpec,
+  type StorageAdapter,
+} from "@agentforeach/storage";
 import type {
   Session,
   SessionMessage,
@@ -32,7 +38,6 @@ import type {
 import { loadSessionConfig, type SessionConfig } from "./config.js";
 import { MessageStore } from "./messages-store.js";
 import { redactId } from "../utils/redact.js";
-import { isNotFoundError, isPreconditionFailedError } from "../database/errors.js";
 
 // ============================================================================
 // Message partition key
@@ -72,9 +77,32 @@ export class SessionReplacedError extends Error {
 // Session Store
 // ============================================================================
 
+/**
+ * The sessions collection: TTL from the session config (an idle session
+ * expires; every write restarts the clock), the compaction summary (large
+ * text) left out of the index exactly as deployed (scalar `/?` path).
+ */
+export function sessionsCollection(config: SessionConfig): CollectionSpec {
+  return {
+    name: config.containerId,
+    partitionKey: "userId",
+    defaultTtl: config.ttlSeconds,
+    adapterOptions: {
+      cosmosdb: {
+        indexingPolicy: {
+          automatic: true,
+          indexingMode: "consistent",
+          includedPaths: [{ path: "/*" }],
+          excludedPaths: [{ path: "/compactionSummary/?" }, { path: '/"_etag"/?' }],
+        },
+      },
+    },
+  };
+}
+
 export class SessionStore {
-  private db: DatabaseProvider;
-  private container!: ContainerHandle<Session>;
+  private storage: StorageAdapter;
+  private container!: Collection<Session>;
   private messageStore: MessageStore;
   private initialized = false;
 
@@ -82,7 +110,7 @@ export class SessionStore {
   private config: SessionConfig;
 
   constructor(
-    db: DatabaseProvider,
+    storage: StorageAdapter,
     overrides?: {
       maxHistoryMessages?: number;
       ttlSeconds?: number;
@@ -90,7 +118,7 @@ export class SessionStore {
       compactionRetainCount?: number;
     },
   ) {
-    this.db = db;
+    this.storage = storage;
     const base = loadSessionConfig();
 
     // Allow explicit overrides (e.g. from AgentClientConfig.session for
@@ -106,7 +134,7 @@ export class SessionStore {
         overrides?.compactionRetainCount ?? base.compactionRetainCount,
     };
 
-    this.messageStore = new MessageStore(db, this.config);
+    this.messageStore = new MessageStore(storage, this.config);
   }
 
   // --------------------------------------------------------------------------
@@ -116,26 +144,9 @@ export class SessionStore {
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
-    // Initialize both containers in parallel
+    // Initialize both collections in parallel
     const [sessionContainer] = await Promise.all([
-      this.db.getOrCreateContainer<Session>({
-        id: this.config.containerId,
-        partitionKey: {
-          paths: ["/userId"],
-          kind: PartitionKeyKind.Hash,
-          version: 2,
-        },
-        defaultTtl: this.config.ttlSeconds,
-        indexingPolicy: {
-          automatic: true,
-          indexingMode: "consistent",
-          includedPaths: [{ path: "/*" }],
-          excludedPaths: [
-            { path: "/compactionSummary/?" }, // Don't index large summary text
-            { path: '/"_etag"/?' },
-          ],
-        },
-      }),
+      this.storage.collection<Session>(sessionsCollection(this.config)),
       this.messageStore.initialize(),
     ]);
 
@@ -209,7 +220,7 @@ export class SessionStore {
       return await this.container.create(session);
     } catch (err) {
       // Concurrent create on the same (userId, sessionId): return the winner.
-      if (!isConflictError(err)) {
+      if (!isConflict(err)) {
         throw err;
       }
       const existingAfterConflict = await this.container.read(docId, userId);
@@ -263,105 +274,92 @@ export class SessionStore {
     this.ensureInitialized();
 
     const docId = this.buildDocId(userId, sessionId);
-    const raw = this.container.getRawContainer() as Container;
 
-    // Optimistic concurrency loop: prevents lost updates under concurrent requests.
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      const { resource } = await raw.item(docId, userId).read<Session>();
-      if (!resource) {
-        throw new Error(`Session not found: ${redactId(sessionId)}`);
-      }
-      const etag = (resource as unknown as { _etag?: string })._etag;
-      if (expectedInstanceId !== undefined && resource.instanceId !== expectedInstanceId) {
-        throw new SessionReplacedError(`Session was replaced: ${redactId(sessionId)}`);
-      }
-      if (expectedLeaseId !== undefined && resource.activeRun?.leaseId !== expectedLeaseId) {
-        throw new RunLeaseLostError(`Run lease lost: ${redactId(sessionId)}`);
-      }
-
-      const startSeq = resource.messageSeq;
-      const pk = messagePartitionKey(resource);
-      const instance = instanceIdOf(resource);
-
-      // Build MessageDocuments with seq numbers
-      const messageDocs: MessageDocument[] = newMessages.map((msg, i) => ({
-        id: `${instance}:${String(startSeq + i).padStart(6, "0")}`,
-        pk,
-        sessionId,
-        userId,
-        seq: startSeq + i,
-        role: msg.role,
-        content: msg.content,
-        timestamp: msg.timestamp,
-        model: msg.model,
-        providerId: msg.providerId,
-        usage: msg.usage,
-        runId: msg.runId,
-        idempotencyKey: msg.idempotencyKey,
-        channelName: msg.channelName,
-        // -1: never expire (messageTtlSeconds 0)
-        ttl: this.config.messageTtlSeconds > 0 ? this.config.messageTtlSeconds : -1,
-      }));
-
-      // Update session metadata (no messages array — just counters and preview)
-      const updated: Session = {
-        ...resource,
-        messageSeq: startSeq + newMessages.length,
-        updatedAt: new Date().toISOString(),
-        ttl: this.config.ttlSeconds,
-      };
-
-      // Denormalize last message preview for efficient listing
-      if (newMessages.length > 0) {
-        updated.lastMessagePreview = truncatePreview(
-          newMessages[newMessages.length - 1].content,
-        );
-      }
-
-      // Update conversation state if provided.
-      // Pass null to explicitly clear (e.g., HITL breaks response chain).
-      if (conversationState === null) {
-        updated.conversationState = undefined;
-      } else if (conversationState) {
-        const next = { ...resource.conversationState, ...conversationState };
-        if (chainFromCompactedSeq !== undefined && (resource.lastCompactedSeq ?? 0) !== chainFromCompactedSeq) {
-          delete next.previousResponseId;
+    // Optimistic concurrency (etag): prevents lost updates under concurrent
+    // requests. Each attempt rebuilds the message docs from the version read.
+    let pk = "";
+    let messageDocs: MessageDocument[] = [];
+    const result = await mutate(
+      this.container,
+      docId,
+      userId,
+      (resource) => {
+        if (expectedInstanceId !== undefined && resource.instanceId !== expectedInstanceId) {
+          throw new SessionReplacedError(`Session was replaced: ${redactId(sessionId)}`);
         }
-        updated.conversationState = next.previousResponseId || next.containerId ? next : undefined;
-      }
+        if (expectedLeaseId !== undefined && resource.activeRun?.leaseId !== expectedLeaseId) {
+          throw new RunLeaseLostError(`Run lease lost: ${redactId(sessionId)}`);
+        }
 
-      // Merge session metadata if provided (channel state, etc.)
-      if (metadata && Object.keys(metadata).length > 0) {
-        updated.metadata = { ...resource.metadata, ...metadata };
-      }
+        const startSeq = resource.messageSeq;
+        pk = messagePartitionKey(resource);
+        const instance = instanceIdOf(resource);
 
-      try {
-        // Write session update first (with etag check for concurrency)
-        const { resource: replaced } = await raw
-          .item(docId, userId)
-          .replace<Session>(
-            updated,
-            etag
-              ? { accessCondition: { type: "IfMatch", condition: etag } }
-              : undefined,
+        // Build MessageDocuments with seq numbers
+        messageDocs = newMessages.map((msg, i) => ({
+          id: `${instance}:${String(startSeq + i).padStart(6, "0")}`,
+          pk,
+          sessionId,
+          userId,
+          seq: startSeq + i,
+          role: msg.role,
+          content: msg.content,
+          timestamp: msg.timestamp,
+          model: msg.model,
+          providerId: msg.providerId,
+          usage: msg.usage,
+          runId: msg.runId,
+          idempotencyKey: msg.idempotencyKey,
+          channelName: msg.channelName,
+          // -1: never expire (messageTtlSeconds 0)
+          ttl: this.config.messageTtlSeconds > 0 ? this.config.messageTtlSeconds : -1,
+        }));
+
+        // Update session metadata (no messages array — just counters and preview)
+        const updated: Session = {
+          ...resource,
+          messageSeq: startSeq + newMessages.length,
+          updatedAt: new Date().toISOString(),
+          ttl: this.config.ttlSeconds,
+        };
+
+        // Denormalize last message preview for efficient listing
+        if (newMessages.length > 0) {
+          updated.lastMessagePreview = truncatePreview(
+            newMessages[newMessages.length - 1].content,
           );
-
-        // Then write messages to the messages container
-        await this.messageStore.append(pk, messageDocs);
-
-        return replaced as Session;
-      } catch (err) {
-        if (isPreconditionFailedError(err)) {
-          continue;
         }
-        if (isNotFoundError(err)) {
-          throw new Error(`Session not found: ${redactId(sessionId)}`);
+
+        // Update conversation state if provided.
+        // Pass null to explicitly clear (e.g., HITL breaks response chain).
+        if (conversationState === null) {
+          updated.conversationState = undefined;
+        } else if (conversationState) {
+          const next = { ...resource.conversationState, ...conversationState };
+          if (chainFromCompactedSeq !== undefined && (resource.lastCompactedSeq ?? 0) !== chainFromCompactedSeq) {
+            delete next.previousResponseId;
+          }
+          updated.conversationState = next.previousResponseId || next.containerId ? next : undefined;
         }
-        throw err;
-      }
+
+        // Merge session metadata if provided (channel state, etc.)
+        if (metadata && Object.keys(metadata).length > 0) {
+          updated.metadata = { ...resource.metadata, ...metadata };
+        }
+        return updated;
+      },
+      { maxAttempts: 4 },
+    );
+
+    if (result.status === "notFound") {
+      throw new Error(`Session not found: ${redactId(sessionId)}`);
     }
-
-    throw new Error(`Session update conflict: ${redactId(sessionId)}`);
+    if (result.status !== "updated") {
+      throw new Error(`Session update conflict: ${redactId(sessionId)}`);
+    }
+    // The session write won; now the messages, from that same attempt.
+    await this.messageStore.append(pk, messageDocs);
+    return result.document;
   }
 
   /**
@@ -430,27 +428,21 @@ export class SessionStore {
   ): Promise<boolean> {
     this.ensureInitialized();
     const docId = this.buildDocId(userId, sessionId);
-    const raw = this.container.getRawContainer() as Container;
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      const { resource } = await raw.item(docId, userId).read<Session>();
-      if (!resource) return false;
-      const next = decide(resource.activeRun);
-      if (next === false) return false;
-      const etag = (resource as unknown as { _etag?: string })._etag;
-      const updated: Session = { ...resource, activeRun: next };
-      if (!next) delete updated.activeRun;
-      try {
-        await raw
-          .item(docId, userId)
-          .replace<Session>(updated, etag ? { accessCondition: { type: "IfMatch", condition: etag } } : undefined);
-        return true;
-      } catch (err) {
-        if (isPreconditionFailedError(err)) continue;
-        if (isNotFoundError(err)) return false;
-        throw err;
-      }
-    }
-    return false;
+    const result = await mutate(
+      this.container,
+      docId,
+      userId,
+      (resource) => {
+        const next = decide(resource.activeRun);
+        if (next === false) return undefined;
+        const updated: Session = { ...resource, activeRun: next };
+        if (!next) delete updated.activeRun;
+        return updated;
+      },
+      { maxAttempts: 4 },
+    );
+    // Declined, gone, or still contended after 4 attempts: false.
+    return result.status === "updated";
   }
 
   /**
@@ -477,38 +469,31 @@ export class SessionStore {
   ): Promise<boolean> {
     this.ensureInitialized();
     const docId = this.buildDocId(userId, sessionId);
-    const raw = this.container.getRawContainer() as Container;
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      const { resource } = await raw.item(docId, userId).read<Session>();
-      if (!resource) return false;
-      // Compaction runs for seconds; /new may have replaced the session.
-      if (expectedInstanceId !== undefined && resource.instanceId !== expectedInstanceId) return false;
-      if (fromSeq !== undefined && (resource.lastCompactedSeq ?? 0) !== fromSeq) return false;
+    const result = await mutate(
+      this.container,
+      docId,
+      userId,
+      (resource) => {
+        // Compaction runs for seconds; /new may have replaced the session.
+        if (expectedInstanceId !== undefined && resource.instanceId !== expectedInstanceId) return undefined;
+        if (fromSeq !== undefined && (resource.lastCompactedSeq ?? 0) !== fromSeq) return undefined;
 
-      const updated: Session = {
-        ...resource,
-        compactionSummary: summary,
-        lastCompactedSeq,
-        lastCompactedAt: new Date().toISOString(),
-      };
-      if (updated.conversationState?.previousResponseId) {
-        const { previousResponseId: _replaced, ...rest } = updated.conversationState;
-        if (Object.keys(rest).length > 0) updated.conversationState = rest;
-        else delete updated.conversationState;
-      }
-      const etag = (resource as unknown as { _etag?: string })._etag;
-      try {
-        await raw
-          .item(docId, userId)
-          .replace<Session>(updated, etag ? { accessCondition: { type: "IfMatch", condition: etag } } : undefined);
-        return true;
-      } catch (err) {
-        if (isPreconditionFailedError(err)) continue;
-        if (isNotFoundError(err)) return false;
-        throw err;
-      }
-    }
-    return false;
+        const updated: Session = {
+          ...resource,
+          compactionSummary: summary,
+          lastCompactedSeq,
+          lastCompactedAt: new Date().toISOString(),
+        };
+        if (updated.conversationState?.previousResponseId) {
+          const { previousResponseId: _replaced, ...rest } = updated.conversationState;
+          if (Object.keys(rest).length > 0) updated.conversationState = rest;
+          else delete updated.conversationState;
+        }
+        return updated;
+      },
+      { maxAttempts: 4 },
+    );
+    return result.status === "updated";
   }
 
   /**
@@ -624,35 +609,25 @@ export class SessionStore {
   ): Promise<SessionSummary[]> {
     this.ensureInitialized();
 
-    const maxResults = Math.min(Math.max(opts?.limit ?? 50, 1), 200);
+    // Applied now: the old Cosmos layer silently ignored its maxResults
+    // option (only the test double honoured it), so lists were unbounded.
+    const requested = Math.floor(Number(opts?.limit ?? 50));
+    const limit = Number.isFinite(requested) ? Math.min(Math.max(requested, 1), 200) : 50;
 
-    const columns =
-      "c.sessionId, c.agentId, c.messageSeq AS messageCount, " +
-      "c.lastMessagePreview, c.createdAt, c.updatedAt";
-
-    const sql = agentId
-      ? `SELECT ${columns} FROM c ` +
-        "WHERE c.userId = @userId AND c.agentId = @agentId " +
-        "ORDER BY c.updatedAt DESC"
-      : `SELECT ${columns} FROM c ` +
-        "WHERE c.userId = @userId " +
-        "ORDER BY c.updatedAt DESC";
-
-    const params = agentId
-      ? [
-          { name: "@userId", value: userId },
-          { name: "@agentId", value: agentId },
-        ]
-      : [{ name: "@userId", value: userId }];
-
-    const rows = await this.container.queryWithParams<{
+    const rows = await this.container.find<{
       sessionId: string;
       agentId: string;
       messageCount: number;
       lastMessagePreview?: string;
       createdAt: string;
       updatedAt: string;
-    }>(sql, params, { partitionKey: userId, maxResults });
+    }>({
+      partitionKey: userId,
+      where: and(eq("userId", userId), agentId && eq("agentId", agentId)),
+      orderBy: { field: "updatedAt", direction: "desc" },
+      limit,
+      select: ["sessionId", "agentId", { field: "messageSeq", as: "messageCount" }, "lastMessagePreview", "createdAt", "updatedAt"],
+    });
 
     return rows.map((r) => ({
       sessionId: r.sessionId,
@@ -662,6 +637,30 @@ export class SessionStore {
       createdAt: r.createdAt,
       updatedAt: r.updatedAt,
     }));
+  }
+
+  /**
+   * The channel and chat of the user's most recently updated session that
+   * has both (cron "last channel" delivery). One query over all the user's
+   * sessions, newest first — not a page of the session list, which would
+   * miss a chat session buried under scheduled-run sessions.
+   */
+  async findLastChannel(userId: string): Promise<{ channelName: string; chatId: string } | undefined> {
+    this.ensureInitialized();
+    const [row] = await this.container.find<{ lastChannelName: string; lastChatId: string }>({
+      partitionKey: userId,
+      where: and(
+        eq("userId", userId),
+        present("metadata.lastChannelName"),
+        ne("metadata.lastChannelName", ""),
+        present("metadata.lastChatId"),
+        ne("metadata.lastChatId", ""),
+      ),
+      orderBy: { field: "updatedAt", direction: "desc" },
+      limit: 1,
+      select: ["metadata.lastChannelName", "metadata.lastChatId"],
+    });
+    return row ? { channelName: row.lastChannelName, chatId: row.lastChatId } : undefined;
   }
 
   // --------------------------------------------------------------------------
@@ -697,15 +696,6 @@ function truncatePreview(text: string): string {
   return oneLine.slice(0, MAX_PREVIEW_LENGTH - 1) + "\u2026";
 }
 
-// ============================================================================
-// Error Helpers
-// ============================================================================
-
-function isConflictError(err: unknown): boolean {
-  if (typeof err !== "object" || err === null) return false;
-  const e = err as Record<string, unknown>;
-  return e.code === 409 || e.code === "Conflict" || e.statusCode === 409;
-}
 
 
 

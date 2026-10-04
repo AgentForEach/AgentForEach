@@ -3,8 +3,6 @@ import assert from "node:assert/strict";
 
 // Pin the env-tunable knobs so the agentforeach.json defaults apply.
 for (const name of [
-  "CRON_LEGACY_SWEEP",
-  "CRON_DUE_INDEX_MIGRATED",
   "CRON_SCHEDULER_SHARDS",
   "CRON_MIN_EVERY_MS",
   "CRON_MIN_CRON_INTERVAL_MS",
@@ -17,7 +15,7 @@ for (const name of [
   delete process.env[name];
 }
 
-import { InMemoryCosmosDatabase } from "../database/testing/in-memory-cosmos.js";
+import { InMemoryStorage } from "@agentforeach/storage";
 import { CronStore } from "./store.js";
 import {
   CRON_DUE_INDEX_CONTAINER,
@@ -33,6 +31,7 @@ import {
   getMinEveryMs,
   getSchedulerShardCount,
   getSchedulerShardForUser,
+  MAX_PENDING_HEARTBEAT_EVENTS_PER_USER,
 } from "./config.js";
 import type { CronHeartbeatEventDocument, CronJob, CronJobCreate } from "./types.js";
 
@@ -66,21 +65,21 @@ function useClock(t: TestContext, now = T0) {
 }
 
 async function setup() {
-  const db = new InMemoryCosmosDatabase();
+  const db = new InMemoryStorage();
   const store = new CronStore(db);
   await store.initialize();
-  const jobs = db.container<CronJob>(CRON_JOBS_CONTAINER);
-  const dueIndex = db.container<DueRow>(CRON_DUE_INDEX_CONTAINER);
-  const heartbeats = db.container<CronHeartbeatEventDocument>(CRON_HEARTBEAT_EVENTS_CONTAINER);
+  const jobs = db.getCollection(CRON_JOBS_CONTAINER);
+  const dueIndex = db.getCollection(CRON_DUE_INDEX_CONTAINER);
+  const heartbeats = db.getCollection(CRON_HEARTBEAT_EVENTS_CONTAINER);
   return {
     db,
     store,
     jobs,
     dueIndex,
     heartbeats,
-    dueRows: () => dueIndex.raw.all<DueRow>(),
+    dueRows: () => dueIndex.all<DueRow>(),
     dueRow: (job: Pick<CronJob, "id" | "userId">) =>
-      dueIndex.raw.peek<DueRow>(job.id, String(getSchedulerShardForUser(job.userId))),
+      dueIndex.peek<DueRow>(job.id, String(getSchedulerShardForUser(job.userId))),
   };
 }
 
@@ -207,7 +206,7 @@ test("createJob rejects an interval below the minimum and writes nothing", async
     store.createJob(everyJob("alice", { schedule: { kind: "every", everyMs: getMinEveryMs() - 1 } })),
     /Interval too short/,
   );
-  assert.equal(jobs.raw.all().length, 0);
+  assert.equal(jobs.all().length, 0);
   assert.equal(dueRows().length, 0);
 });
 
@@ -380,10 +379,10 @@ test("updateJob retries on an etag conflict and keeps the concurrent write", asy
 
   // A concurrent writer changes the description between our read and replace.
   let raced = false;
-  const remove = jobs.raw.beforeOperation(async ({ op }) => {
+  const remove = jobs.beforeOperation(async ({ op }) => {
     if (op === "replace" && !raced) {
       raced = true;
-      const current = jobs.raw.peek<CronJob>(job.id, "alice")!;
+      const current = jobs.peek<CronJob>(job.id, "alice")!;
       await jobs.upsert({ ...current, description: "set concurrently" });
     }
   });
@@ -403,7 +402,7 @@ test("deleteJob removes the job and its due-index row", async (t) => {
   assert.equal(await store.deleteJob(job.id, "alice"), true);
   assert.equal(await store.getJob(job.id, "alice"), null);
   assert.deepEqual(dueRows().map((r) => r.id), [other.id]);
-  assert.equal(jobs.raw.all().length, 1);
+  assert.equal(jobs.all().length, 1);
 
   assert.equal(await store.deleteJob(job.id, "alice"), false);
   assert.equal(await store.deleteJob(other.id, "mallory"), false);
@@ -499,10 +498,10 @@ test("a claim loses cleanly when the job changes between read and replace (etag)
   clock.set(now);
 
   let raced = false;
-  const remove = jobs.raw.beforeOperation(async ({ op }) => {
+  const remove = jobs.beforeOperation(async ({ op }) => {
     if (op === "replace" && !raced) {
       raced = true;
-      const current = jobs.raw.peek<CronJob>(job.id, "alice")!;
+      const current = jobs.peek<CronJob>(job.id, "alice")!;
       await jobs.upsert({ ...current, name: "edited concurrently" });
     }
   });
@@ -541,7 +540,7 @@ test("a due-index row in the wrong shard is moved to the job's shard instead of 
   const now = T0 + 5 * MIN;
   clock.set(now);
   assert.deepEqual(await store.getDueJobs(now, wrong), []);
-  assert.equal(dueIndex.raw.peek(job.id, String(wrong)), undefined);
+  assert.equal(dueIndex.peek(job.id, String(wrong)), undefined);
   assert.equal(dueRow(job)?.shardId, String(home));
   // And the job is claimable from its own shard.
   await claim(store, job, now);
@@ -574,6 +573,50 @@ test("beginClaimedRun starts a claimed run once, and only for the current token"
   const started = await store.beginClaimedRun(job.id, "alice", claimed.state.runningToken!);
   assert.equal(started?.state.runningStartedAtMs, now);
   assert.equal(await store.beginClaimedRun(job.id, "alice", claimed.state.runningToken!), null);
+});
+
+test("countInFlightRuns counts a shard's live claims, and getDueJobs claims only up to its limit", async (t) => {
+  const clock = useClock(t);
+  const { store } = await setup();
+  const { users, shard } = usersInOneShard(3);
+  for (const user of users) await store.createJob(everyJob(user));
+  const now = T0 + 5 * MIN;
+  clock.set(now);
+  assert.equal(await store.countInFlightRuns(now, shard), 0);
+  const claimed = await store.getDueJobs(now, shard, 2);
+  assert.equal(claimed.length, 2, "the limit caps the claims");
+  assert.equal(await store.countInFlightRuns(now, shard), 2);
+  assert.deepEqual(await store.getDueJobs(now, shard, 0), [], "no room, no claims");
+  const stale = now + RUNNING_CLAIM_STALE_MS + 1;
+  clock.set(stale);
+  assert.equal(await store.countInFlightRuns(stale, shard), 0, "stale claims don't count");
+});
+
+test("a renewed claim isn't stale, so a long run can't be claimed a second time", async (t) => {
+  const clock = useClock(t);
+  const { store } = await setup();
+  const job = await store.createJob(everyJob("alice"));
+  const start = T0 + 5 * MIN;
+  clock.set(start);
+  const claimed = await claim(store, job, start);
+  await store.beginClaimedRun(job.id, "alice", claimed.state.runningToken!);
+
+  // Still running past the stale window, renewing as it goes.
+  const later = start + RUNNING_CLAIM_STALE_MS + MIN;
+  clock.set(later - MIN);
+  assert.equal(await store.renewRunningClaim(job.id, "alice", claimed.state.runningToken!), true);
+  clock.set(later);
+  const again = await store.getDueJobs(later, getSchedulerShardForUser("alice"));
+  assert.equal(again.find((j) => j.id === job.id), undefined, "not claimed again while renewed");
+
+  // Another run's token can't renew it.
+  assert.equal(await store.renewRunningClaim(job.id, "alice", "not-the-token"), false);
+
+  // Without renewal it goes stale and can be claimed again.
+  const stale = later + RUNNING_CLAIM_STALE_MS + MIN;
+  clock.set(stale);
+  const reclaimed = await store.getDueJobs(stale, getSchedulerShardForUser("alice"));
+  assert.ok(reclaimed.find((j) => j.id === job.id), "a run that stopped renewing loses its claim");
 });
 
 test("a force run can't take a job that is actively claimed; releasing the claim frees it", async (t) => {
@@ -899,7 +942,7 @@ test("applyResult for a job deleted mid-run reports it deleted and recreates not
     runningToken: claimed.state.runningToken,
   });
   assert.equal(action, "deleted");
-  assert.equal(jobs.raw.all().length, 0);
+  assert.equal(jobs.all().length, 0);
   assert.equal(dueRows().length, 0);
 });
 
@@ -914,7 +957,7 @@ test("backfillDueIndex indexes enabled jobs missing from the due index and is id
   const b = await store.createJob(everyJob("bob", { schedule: { kind: "every", everyMs: 10 * MIN } }));
   await store.createJob(everyJob("carol", { enabled: false }));
   // Jobs from before the due index existed: drop their rows.
-  dueIndex.raw.clear();
+  dueIndex.clear();
 
   assert.deepEqual(await store.backfillDueIndex(), { indexed: 2, failed: 0 });
   const snapshot = (rows: DueRow[]) =>
@@ -946,9 +989,9 @@ test("backfillDueIndex counts a job it could not index as failed and carries on"
   const { store, dueIndex, dueRows } = await setup();
   const a = await store.createJob(everyJob("alice"));
   await store.createJob(everyJob("bob"));
-  dueIndex.raw.clear();
+  dueIndex.clear();
 
-  const remove = dueIndex.raw.beforeOperation(({ op, id }) => {
+  const remove = dueIndex.beforeOperation(({ op, id }) => {
     if (op === "read" && id === a.id) throw Object.assign(new Error("Service Unavailable"), { code: 503 });
   });
   t.after(remove);
@@ -971,10 +1014,12 @@ test("recordRun / getRuns return a job's runs newest first, limited", async (t) 
   }
   await store.recordRun(other, { status: "error", error: "x", durationMs: 1 });
 
-  const runs = await store.getRuns(job.id, 2);
+  const runs = await store.getRuns(job.id, "alice", 2);
   assert.deepEqual(runs.map((r) => r.summary), ["run 2", "run 1"]);
   assert.equal(runs[0].userId, "alice");
-  assert.equal((await store.getRuns(job.id)).length, 3);
+  assert.equal((await store.getRuns(job.id, "alice")).length, 3);
+  // A job id alone reveals nothing to another user.
+  assert.deepEqual(await store.getRuns(job.id, "mallory"), []);
 });
 
 // ============================================================================
@@ -1021,7 +1066,7 @@ test("heartbeat events are claimed once, retried after release, dead-lettered at
     await store.releaseHeartbeatEventClaim(event.id, shard, current.runningToken!, 30_000, "busy");
     now += 30_000;
   }
-  const deadLettered = heartbeats.raw.peek<CronHeartbeatEventDocument>(event.id, String(shard))!;
+  const deadLettered = heartbeats.peek<CronHeartbeatEventDocument>(event.id, String(shard))!;
   assert.equal(typeof deadLettered.deadLetteredAtMs, "number");
   assert.match(deadLettered.deadLetterReason ?? "", /max-attempt-cutoff/);
   assert.deepEqual(await store.claimDueHeartbeatEvents(now + DAY, shard), []);
@@ -1043,4 +1088,167 @@ test("completing a heartbeat event needs its current claim token", async (t) => 
   assert.ok(await store.getHeartbeatEvent(event.id, job.shardId));
   await store.completeHeartbeatEvent(event.id, job.shardId, claimed.runningToken!);
   assert.equal(await store.getHeartbeatEvent(event.id, job.shardId), null);
+});
+
+// ============================================================================
+// Storage SDK review: conditional writes, dead letters, the version guard
+// ============================================================================
+
+/** Run `write` once, just before the next `op` on `collection` takes effect. */
+function beforeNext(
+  t: TestContext,
+  collection: { beforeOperation(hook: (ctx: { op: string }) => void | Promise<void>): () => void },
+  op: string,
+  write: () => Promise<unknown>,
+) {
+  let done = false;
+  const remove = collection.beforeOperation(async (ctx) => {
+    if (ctx.op === op && !done) {
+      done = true;
+      await write();
+    }
+  });
+  t.after(remove);
+}
+
+function heartbeatJob(store: CronStore, userId = "alice", overrides: Partial<CronJobCreate> = {}) {
+  return store.createJob(
+    everyJob(userId, { sessionTarget: "main", wakeMode: "next-heartbeat", payload: { kind: "systemEvent", text: "ping" }, ...overrides }),
+  );
+}
+
+test("releasing a heartbeat claim loses to a concurrent write (etag), on both the retry and the dead-letter path", async (t) => {
+  useClock(t);
+  const { store, heartbeats } = await setup();
+  const job = await heartbeatJob(store);
+  const shard = String(job.shardId);
+
+  for (const deadLetter of [false, true]) {
+    const event = await store.enqueueHeartbeatEvent(job, `ping ${deadLetter}`, T0, T0);
+    const [claimed] = await store.claimDueHeartbeatEvents(T0, job.shardId);
+    assert.equal(claimed.id, event.id);
+    if (deadLetter) {
+      await heartbeats.patch(event.id, shard, [{ op: "set", path: "/attempts", value: getHeartbeatMaxAttempts() }]);
+    }
+    const current = heartbeats.peek<CronHeartbeatEventDocument>(event.id, shard)!;
+    beforeNext(t, heartbeats, "replace", () => heartbeats.upsert({ ...current, text: "changed concurrently" }));
+
+    await store.releaseHeartbeatEventClaim(event.id, job.shardId, claimed.runningToken!, 30_000, "busy");
+    const stored = heartbeats.peek<CronHeartbeatEventDocument>(event.id, shard)!;
+    assert.equal(stored.text, "changed concurrently", "the concurrent write is kept");
+    assert.equal(stored.runningToken, claimed.runningToken, "the release didn't apply");
+    assert.equal(stored.deadLetteredAtMs, undefined);
+    await store.completeHeartbeatEvent(event.id, job.shardId, claimed.runningToken!);
+  }
+});
+
+test("beginClaimedRun loses to another runner that started first (etag)", async (t) => {
+  const clock = useClock(t);
+  const { store, jobs } = await setup();
+  const job = await store.createJob(everyJob("alice"));
+  const now = T0 + 5 * MIN;
+  clock.set(now);
+  const claimed = await claim(store, job, now);
+  const current = jobs.peek<CronJob>(job.id, "alice")!;
+  beforeNext(t, jobs, "replace", () =>
+    jobs.upsert({ ...current, state: { ...current.state, runningStartedAtMs: now - 1 } }),
+  );
+  assert.equal(await store.beginClaimedRun(job.id, "alice", claimed.state.runningToken!), null);
+  assert.equal(jobs.peek<CronJob>(job.id, "alice")?.state.runningStartedAtMs, now - 1);
+});
+
+test("a force run loses to a scheduler claim made between its read and write (etag)", async (t) => {
+  const clock = useClock(t);
+  const { store, jobs } = await setup();
+  const job = await store.createJob(everyJob("alice"));
+  clock.set(T0 + MIN);
+  const current = jobs.peek<CronJob>(job.id, "alice")!;
+  beforeNext(t, jobs, "replace", () =>
+    jobs.upsert({ ...current, state: { ...current.state, runningToken: "scheduler", runningAtMs: T0 + MIN } }),
+  );
+  assert.equal(await store.claimJobForForceRun(job.id, "alice"), null);
+  assert.equal(jobs.peek<CronJob>(job.id, "alice")?.state.runningToken, "scheduler");
+});
+
+test("at the job limit, a finished job changed since it was read is not pruned (etag)", async (t) => {
+  const clock = useClock(t);
+  process.env.CRON_MAX_JOBS_PER_USER = "1";
+  t.after(() => delete process.env.CRON_MAX_JOBS_PER_USER);
+  const { store, jobs } = await setup();
+  const reminder = await store.createJob(atJob("alice", T0 + 10 * MIN));
+  await store.updateJob(reminder.id, "alice", { enabled: false });
+  clock.set(T0 + 20 * MIN);
+
+  // The user re-enables it while createJob is pruning.
+  const finished = jobs.peek<CronJob>(reminder.id, "alice")!;
+  beforeNext(t, jobs, "delete", () =>
+    jobs.upsert({ ...finished, enabled: true, state: { ...finished.state, nextRunAtMs: T0 + DAY } }),
+  );
+  await assert.rejects(store.createJob(everyJob("alice")), /cron job limit exceeded for user \(1\)/);
+  assert.equal(jobs.peek<CronJob>(reminder.id, "alice")?.enabled, true, "the re-enabled job is kept");
+});
+
+test("dead-lettered heartbeat events are never claimed, never wake the scheduler, and don't count toward the cap", async (t) => {
+  useClock(t);
+  const { store, heartbeats } = await setup();
+  // A disabled job: no due-index row, so only heartbeat events can set the next wake.
+  const job = await heartbeatJob(store, "alice", { enabled: false });
+  const shard = String(job.shardId);
+  const event = await store.enqueueHeartbeatEvent(job, "ping", T0, T0 + MIN);
+  assert.equal(await store.computeNextWakeMs(job.shardId), T0 + MIN);
+
+  await heartbeats.patch(event.id, shard, [{ op: "set", path: "/deadLetteredAtMs", value: T0 }]);
+  assert.deepEqual(await store.claimDueHeartbeatEvents(T0 + DAY, job.shardId), []);
+  assert.equal(await store.computeNextWakeMs(job.shardId), undefined);
+  assert.equal(await store.countDueHeartbeatEventsForTarget(T0 + DAY, job.shardId, { userId: "alice" }, 10), 0);
+
+  // The per-user cap counts pending events only.
+  for (let i = 1; i < MAX_PENDING_HEARTBEAT_EVENTS_PER_USER; i++) await store.enqueueHeartbeatEvent(job, `e${i}`, T0, T0);
+  await store.enqueueHeartbeatEvent(job, "the last one under the cap", T0, T0);
+  await assert.rejects(store.enqueueHeartbeatEvent(job, "one too many", T0, T0), /Heartbeat event limit exceeded/);
+});
+
+test("a stale due-index write never overwrites a newer row (jobVersion guard)", async (t) => {
+  useClock(t);
+  const { store, dueIndex, dueRow } = await setup();
+  const job = await store.createJob(everyJob("alice"));
+  const row = dueRow(job)!;
+  // A newer version of the job was indexed by another instance.
+  await dueIndex.patch(row.id, row.shardId, [
+    { op: "set", path: "/jobVersion", value: 99 },
+    { op: "set", path: "/nextRunAtMs", value: T0 + DAY },
+  ]);
+  await store.updateJob(job.id, "alice", { name: "renamed" }); // version 2 < 99
+  const after = dueRow(job)!;
+  assert.equal(after.jobVersion, 99);
+  assert.equal(after.nextRunAtMs, T0 + DAY);
+});
+
+test("two claimers racing for one heartbeat event: exactly one wins (etag)", async (t) => {
+  useClock(t);
+  const { store, heartbeats } = await setup();
+  const job = await heartbeatJob(store);
+  const event = await store.enqueueHeartbeatEvent(job, "ping", T0, T0);
+  // Another scheduler claims it between this claimer's read and write.
+  const current = heartbeats.peek<CronHeartbeatEventDocument>(event.id, String(job.shardId))!;
+  beforeNext(t, heartbeats, "replace", () =>
+    heartbeats.upsert({ ...current, runningToken: "other-scheduler", runningAtMs: T0, attempts: 1 }),
+  );
+  assert.deepEqual(await store.claimDueHeartbeatEvents(T0, job.shardId), []);
+  assert.equal(heartbeats.peek<CronHeartbeatEventDocument>(event.id, String(job.shardId))?.runningToken, "other-scheduler");
+});
+
+test("dead-lettered events due earlier don't crowd a live event out of the claim page", async (t) => {
+  useClock(t);
+  process.env.CRON_MAX_HEARTBEAT_EVENTS_PER_CLAIM = "2";
+  t.after(() => delete process.env.CRON_MAX_HEARTBEAT_EVENTS_PER_CLAIM);
+  const { store, heartbeats } = await setup();
+  const job = await heartbeatJob(store);
+  const shard = String(job.shardId);
+  for (let i = 0; i < 3; i++) {
+    const dead = await store.enqueueHeartbeatEvent(job, `dead ${i}`, T0, T0 - (10 - i) * MIN);
+    await heartbeats.patch(dead.id, shard, [{ op: "set", path: "/deadLetteredAtMs", value: T0 }]);
+  }
+  const live = await store.enqueueHeartbeatEvent(job, "live", T0, T0 - MIN);
+  assert.deepEqual((await store.claimDueHeartbeatEvents(T0, job.shardId)).map((e) => e.id), [live.id]);
 });

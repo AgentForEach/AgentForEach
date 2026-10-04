@@ -13,7 +13,7 @@ import {
   resetAllConfig,
   CONFIG_RESET_FUNCTIONS,
 } from "./reset-all-config.js";
-import { loadConfigSection, resetConfigCache } from "./config.js";
+import { installConfig, loadConfigSection, resetConfigCache } from "./config.js";
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -107,4 +107,19 @@ test("resetConfigCache alone — only clears root JSON cache", () => {
   // loadConfigSection should still work (re-reads from disk)
   const section = loadConfigSection<Record<string, unknown>>("llms");
   assert.ok(section === undefined || typeof section === "object");
+});
+
+test("installConfig: a host with no filesystem supplies the config, and no file is read", () => {
+  const fromFile = loadConfigSection<Record<string, unknown>>("llms");
+  try {
+    installConfig({ llms: { installed: true }, cron: {} });
+    assert.deepEqual(loadConfigSection("llms"), { installed: true });
+    assert.equal(loadConfigSection("cron"), undefined, "an empty section reads as absent, as from the file");
+    assert.equal(loadConfigSection("auth"), undefined, "sections the installed config lacks aren't taken from the file");
+    resetConfigCache();
+    assert.deepEqual(loadConfigSection("llms"), { installed: true }, "an installed config survives a cache reset");
+  } finally {
+    installConfig(null);
+  }
+  assert.deepEqual(loadConfigSection("llms"), fromFile, "installConfig(null) goes back to the file");
 });

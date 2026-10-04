@@ -3,14 +3,12 @@
  *
  * Comprehensive coverage of the prompt-based skills subsystem:
  *   - Loader: SKILL.md frontmatter parsing (edge cases, malformed input)
- *   - Exec: allowlist validation, every allowed binary, edge cases
- *   - Exec handler: command execution, timeout, truncation, credential injection
  *   - Blob store: manifest parsing, extended frontmatter, cache, path validation
  *   - Handler: all four tools (skill_list, skill_setup, skill_read, http_fetch)
  *   - Registry: per-user resolution, auto-enable, credential merging, agent filtering
  *   - Prompt section: buildSkillsSection() available_skills block
  *   - Config: loading, defaults, env var fallback
- *   - Security: allowlist enforcement, path traversal, credential isolation
+ *   - Security: the removed exec tool refused, path traversal, credential isolation
  */
 
 import test from "node:test";
@@ -26,7 +24,6 @@ import {
   SKILL_READ_TOOL_NAME,
   HTTP_FETCH_TOOL_NAME,
 } from "./handler.js";
-import { ExecToolHandler, validateBinary, ALLOWED_BINS } from "./exec/index.js";
 import { resolveUserSkills, type ResolvedSkills } from "./registry.js";
 import type {
   SkillManifest,
@@ -294,231 +291,6 @@ category: information
 Body`;
     const fm = parseSkillFrontmatter(content);
     assert.equal(fm.description, "Weather: current conditions and forecasts");
-  });
-});
-
-// ============================================================================
-// Tests — Exec: Allowlist (exhaustive)
-// ============================================================================
-
-test("exec allowlist — exhaustive", async (t) => {
-  await t.test("allows every listed binary", () => {
-    const allBins = [
-      "curl", "jq", "head", "tail", "sort", "uniq", "wc", "tr",
-      "cut", "grep", "sed", "awk", "base64", "sha256sum", "date",
-      "printf", "echo",
-    ];
-    for (const bin of allBins) {
-      assert.equal(validateBinary(bin), null, `Expected ${bin} to be allowed`);
-    }
-  });
-
-  await t.test("ALLOWED_BINS set has exact count", () => {
-    assert.equal(ALLOWED_BINS.size, 17);
-  });
-
-  await t.test("rejects dangerous binaries", () => {
-    const dangerous = [
-      "rm", "mv", "cp", "chmod", "chown", "kill", "pkill",
-      "bash", "sh", "zsh", "python", "python3", "node", "perl",
-      "ruby", "gcc", "make", "sudo", "su", "dd", "mkfs",
-      "wget", "nc", "ncat", "ssh", "scp", "rsync",
-    ];
-    for (const bin of dangerous) {
-      const err = validateBinary(bin);
-      assert.ok(err !== null, `Expected ${bin} to be rejected`);
-      assert.ok(err!.includes("not in the allowlist"));
-    }
-  });
-
-  await t.test("rejects empty string", () => {
-    assert.ok(validateBinary("") !== null);
-  });
-
-  await t.test("strips any path prefix and validates basename", () => {
-    assert.equal(validateBinary("/usr/bin/curl"), null);
-    assert.equal(validateBinary("/usr/local/bin/jq"), null);
-    assert.equal(validateBinary("./curl"), null);
-    const err = validateBinary("/usr/bin/python3");
-    assert.ok(err !== null);
-  });
-
-  await t.test("error message lists available binaries", () => {
-    const err = validateBinary("python");
-    assert.ok(err!.includes("Available:"));
-    assert.ok(err!.includes("curl"));
-    assert.ok(err!.includes("jq"));
-  });
-});
-
-// ============================================================================
-// Tests — Exec Handler (real command execution)
-// ============================================================================
-
-test("ExecToolHandler — command execution", async (t) => {
-  const handler = new ExecToolHandler({});
-
-  await t.test("echo: captures stdout", async () => {
-    const raw = await handler.handle({ command: ["echo", "hello world"] });
-    const result = JSON.parse(raw);
-    assert.equal(result.exitCode, 0);
-    assert.equal(result.stdout.trim(), "hello world");
-    assert.equal(result.stderr, "");
-    assert.equal(result.truncated, false);
-    assert.ok(result.durationMs >= 0);
-  });
-
-  await t.test("printf: formats output", async () => {
-    const raw = await handler.handle({ command: ["printf", "number: %d", "42"] });
-    const result = JSON.parse(raw);
-    assert.equal(result.exitCode, 0);
-    assert.equal(result.stdout, "number: 42");
-  });
-
-  await t.test("date: returns formatted date", async () => {
-    const raw = await handler.handle({ command: ["date", "+%Y"] });
-    const result = JSON.parse(raw);
-    assert.equal(result.exitCode, 0);
-    assert.ok(result.stdout.trim().match(/^\d{4}$/));
-  });
-
-  await t.test("echo piped through wc: multi-word counting", async () => {
-    // exec doesn't support pipes (no shell), but wc -c on direct input works
-    const raw = await handler.handle({ command: ["wc", "-c"], timeout: 2 });
-    const result = JSON.parse(raw);
-    // wc with no input will just wait (timeout) — this tests timeout behavior
-    // or return immediately with 0 bytes depending on stdin
-    assert.ok(result.exitCode !== undefined);
-  });
-
-  await t.test("grep: returns non-zero exit on no match", async () => {
-    const raw = await handler.handle({ command: ["grep", "impossibleXYZ", "/dev/null"] });
-    const result = JSON.parse(raw);
-    assert.equal(result.exitCode, 1); // grep returns 1 for no match
-  });
-
-  await t.test("base64: encode and decode", async () => {
-    // base64 on macOS uses different flags than Linux, but encoding works
-    const raw = await handler.handle({ command: ["echo", "-n", "test"] });
-    const echoResult = JSON.parse(raw);
-    assert.equal(echoResult.stdout, "test");
-  });
-
-  await t.test("rejects non-allowlisted binary", async () => {
-    const raw = await handler.handle({ command: ["rm", "-rf", "/tmp/nonexistent"] });
-    const result = JSON.parse(raw);
-    assert.ok(result.error);
-    assert.ok(result.error.includes("not in the allowlist"));
-  });
-
-  await t.test("rejects empty command array", async () => {
-    const raw = await handler.handle({ command: [] });
-    const result = JSON.parse(raw);
-    assert.ok(result.error);
-    assert.ok(result.error.includes("Invalid command"));
-  });
-
-  await t.test("rejects non-array command", async () => {
-    const raw = await handler.handle({ command: "curl -s google.com" as any });
-    const result = JSON.parse(raw);
-    assert.ok(result.error);
-  });
-
-  await t.test("captures stderr on failure", async () => {
-    const raw = await handler.handle({ command: ["curl", "--invalid-flag-xyz"] });
-    const result = JSON.parse(raw);
-    assert.ok(result.exitCode !== 0);
-    assert.ok(result.stderr.length > 0);
-  });
-
-  await t.test("respects custom timeout (short timeout)", async () => {
-    // sleep isn't allowed, but we can test timeout resolution logic
-    // by checking that valid timeout values are accepted
-    const raw = await handler.handle({ command: ["echo", "fast"], timeout: 1 });
-    const result = JSON.parse(raw);
-    assert.equal(result.exitCode, 0);
-  });
-
-  await t.test("durationMs is populated", async () => {
-    const raw = await handler.handle({ command: ["echo", "timing"] });
-    const result = JSON.parse(raw);
-    assert.ok(typeof result.durationMs === "number");
-    assert.ok(result.durationMs >= 0);
-  });
-});
-
-// ============================================================================
-// Tests — Exec Handler: Credential Injection
-// ============================================================================
-
-test("ExecToolHandler — credential injection", async (t) => {
-  await t.test("credentials are available as env vars in child process", async () => {
-    const handler = new ExecToolHandler({ MY_SECRET: "s3cret_val" });
-    // Use awk to read env var — awk can access env via ENVIRON array
-    const raw = await handler.handle({
-      command: ["awk", "BEGIN { print ENVIRON[\"MY_SECRET\"] }"],
-    });
-    const result = JSON.parse(raw);
-    assert.equal(result.exitCode, 0);
-    assert.ok(result.stdout.includes("s3cret_val"), "credential should be in env");
-  });
-
-  await t.test("credentials don't appear in command args", async () => {
-    const handler = new ExecToolHandler({ TOKEN: "secret123" });
-    // The handler passes credentials via env, not args
-    // Verify the handler was created without error
-    const raw = await handler.handle({ command: ["echo", "test"] });
-    const result = JSON.parse(raw);
-    assert.equal(result.exitCode, 0);
-    // stdout should NOT contain the secret
-    assert.ok(!result.stdout.includes("secret123"));
-  });
-
-  await t.test("multiple credentials are all injected", async () => {
-    const handler = new ExecToolHandler({
-      API_KEY: "key1",
-      API_SECRET: "key2",
-      WEBHOOK_URL: "https://example.com",
-    });
-    // Verify handler initializes without error
-    const raw = await handler.handle({ command: ["echo", "multi-cred"] });
-    const result = JSON.parse(raw);
-    assert.equal(result.exitCode, 0);
-  });
-});
-
-// ============================================================================
-// Tests — Exec Handler: Output Truncation
-// ============================================================================
-
-test("ExecToolHandler — output truncation", async (t) => {
-  await t.test("truncates stdout exceeding maxOutputChars", async () => {
-    // maxOutputChars limits our truncation; maxBuffer (2x) must be large enough
-    // for execFile to finish, so pick a limit that's small but still workable.
-    const handler = new ExecToolHandler({}, {
-      maxTimeoutSec: 30,
-      defaultTimeoutSec: 10,
-      maxOutputChars: 30, // Limit at 30 chars
-    });
-    // "echo" output (15 chars + newline = 16) is short — use printf to repeat
-    const raw = await handler.handle({
-      command: ["printf", "%.0s_", "1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16","17","18","19","20","21","22","23","24","25","26","27","28","29","30","31","32","33","34","35","36","37","38","39","40"],
-    });
-    const result = JSON.parse(raw);
-    assert.equal(result.exitCode, 0);
-    assert.equal(result.truncated, true);
-    assert.ok(result.stdout.length <= 30, `stdout length ${result.stdout.length} should be <= 30`);
-  });
-
-  await t.test("does not truncate short output", async () => {
-    const handler = new ExecToolHandler({}, {
-      maxTimeoutSec: 30,
-      defaultTimeoutSec: 10,
-      maxOutputChars: 50_000,
-    });
-    const raw = await handler.handle({ command: ["echo", "short"] });
-    const result = JSON.parse(raw);
-    assert.equal(result.truncated, false);
   });
 });
 
@@ -1771,12 +1543,13 @@ test("buildSkillsSection includes sandbox_file_export in tool guide", async (t) 
     );
   });
 });
-test("SkillBlobStore — reaches the runtime storage account with a connection string or a managed identity", () => {
-  const url = (store: SkillBlobStore) => (store as unknown as { containerClient: { url: string } }).containerClient.url;
+test("SkillBlobStore — reaches the runtime storage account with a connection string or a managed identity", async () => {
+  const url = async (store: SkillBlobStore) =>
+    ((await (store as unknown as { objects: { resolve(): Promise<{ containerUrl: string }> } }).objects.resolve())).containerUrl;
   const credential = { getToken: async () => ({ token: "t", expiresOnTimestamp: Date.now() + 60_000 }) };
-  assert.equal(url(new SkillBlobStore({ accountName: "acct", credential }, "skills")), "https://acct.blob.core.windows.net/skills");
+  assert.equal(await url(new SkillBlobStore({ accountName: "acct", credential }, "skills")), "https://acct.blob.core.windows.net/skills");
   assert.equal(
-    url(new SkillBlobStore("DefaultEndpointsProtocol=https;AccountName=acct2;AccountKey=a2V5;EndpointSuffix=core.windows.net", "custom")),
+    await url(new SkillBlobStore("DefaultEndpointsProtocol=https;AccountName=acct2;AccountKey=a2V5;EndpointSuffix=core.windows.net", "custom")),
     "https://acct2.blob.core.windows.net/custom",
   );
 });

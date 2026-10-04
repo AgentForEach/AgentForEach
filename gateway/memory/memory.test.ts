@@ -1353,11 +1353,11 @@ test("Category assignment — new broader patterns categorize correctly", async 
 
 import { createMemoryLayer } from "./index.js";
 import { validateConfig } from "./config.js";
-import type { DatabaseProvider } from "../database/index.js";
+import type { StorageAdapter } from "@agentforeach/storage";
 
 test("memory layer — enabled:false offers no tools to the model", () => {
   const off = createMemoryLayer(
-    undefined as unknown as DatabaseProvider,
+    undefined as unknown as StorageAdapter,
     makeConfig({ enabled: false, storeProvider: "noop" }),
   );
   assert.deepEqual(
@@ -1367,7 +1367,7 @@ test("memory layer — enabled:false offers no tools to the model", () => {
   );
 
   const on = createMemoryLayer(
-    undefined as unknown as DatabaseProvider,
+    undefined as unknown as StorageAdapter,
     makeConfig({ storeProvider: "noop" }),
   );
   assert.equal(on.getToolDefinitions().length, 3);
@@ -1385,7 +1385,7 @@ test("memory config — enabled:false forces autoRecall and autoCapture off", ()
 // Vector similarity (Cosmos cosine VectorDistance is a similarity, not a distance)
 // ============================================================================
 
-import { similarityFromVectorDistance } from "./providers/cosmosdb.js";
+import { similarityFromVectorDistance } from "./providers/storage.js";
 
 test("closer vectors get higher scores (cosine VectorDistance is a similarity)", () => {
   const identical = similarityFromVectorDistance(1);

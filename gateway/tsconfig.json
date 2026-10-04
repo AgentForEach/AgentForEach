@@ -25,6 +25,7 @@
     "credits/**/*.ts",
     "cron/**/*.ts",
     "database/**/*.ts",
+    "objects/**/*.ts",
     "ratelimit/**/*.ts",
     "digests/**/*.ts",
     "episodes/**/*.ts",
@@ -37,10 +38,12 @@
     "mcp/**/*.ts",
     "memory/**/*.ts",
     "prompt/**/*.ts",
+    "runtime/**/*.ts",
     "sessions/**/*.ts",
     "usage/**/*.ts",
     "skills/**/*.ts",
     "utils/**/*.ts",
+    "web/**/*.ts",
     "websocket/**/*.ts"
   ],
   "exclude": ["node_modules", "dist"]

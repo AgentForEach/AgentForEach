@@ -1,7 +1,7 @@
 /**
  * AgentForEach — per-user message rate limit
  *
- * Fixed-window counters in Cosmos (one doc per user per window, removed by
+ * Fixed-window counters in storage (one doc per user per window, removed by
  * TTL), incremented with an atomic patch, so every instance sees the same
  * count. Checked once per inbound message, before any credit reservation or
  * LLM call. Scheduled runs (cron jobs, heartbeats) don't count against the
@@ -12,8 +12,8 @@
  * a rate limiter outage shouldn't take chat down with it.
  */
 
-import { PartitionKeyKind } from "@azure/cosmos";
-import { getSharedDatabase, type ContainerHandle, type DatabaseProvider } from "../database/index.js";
+import { isConflict, isNotFound, type Collection, type CollectionSpec, type StorageAdapter } from "@agentforeach/storage";
+import { getSharedStorage } from "../database/index.js";
 import { loadConfigSection } from "../utils/index.js";
 import { redactId } from "../utils/redact.js";
 
@@ -77,8 +77,29 @@ const scopedShared = new Map<string, RateLimiter>();
 
 /** The process-wide limiter for scheduled runs, force-runs or browser actions. */
 export function getScopedRateLimiter(kind: ScopedLimitKind): RateLimiter {
-  let limiter = scopedShared.get(kind);
-  if (!limiter) scopedShared.set(kind, (limiter = new RateLimiter(getSharedDatabase(), scopedRateLimitConfig(kind))));
+  const config = scopedRateLimitConfig(kind);
+  return sharedRateLimiter(config.scope!, config, config.enabled);
+}
+
+/**
+ * The process-wide limiter for one counter namespace (`scope`), on the
+ * shared storage, so every instance and Worker isolate counts the same.
+ * For any per-user limit a feature has (`enabled` false turns it off).
+ */
+export function sharedRateLimiter(scope: string, limit: ScopedLimit, enabled = true): RateLimiter {
+  const key = `${scope}:${limit.perMinute}:${limit.perDay}:${enabled}`;
+  let limiter = scopedShared.get(key);
+  if (!limiter) {
+    const config: RateLimitConfig = {
+      enabled,
+      perMinute: limit.perMinute,
+      perDay: limit.perDay,
+      exemptChannels: [],
+      containerId: loadRateLimitConfig().containerId,
+      scope,
+    };
+    scopedShared.set(key, (limiter = new RateLimiter(getSharedStorage(), config)));
+  }
   return limiter;
 }
 
@@ -88,21 +109,28 @@ export type RateLimitDecision =
 
 type CounterDoc = { id: string; count: number; ttl: number };
 
+/** Counters partitioned by their own id; per-document TTL. */
+export function rateLimitCollection(containerId: string): CollectionSpec {
+  return {
+    name: containerId,
+    partitionKey: "id",
+    defaultTtl: -1,
+    // Deployed without an indexing policy (the account default).
+    adapterOptions: { cosmosdb: { indexingPolicy: null } },
+  };
+}
+
 export class RateLimiter {
-  private container?: ContainerHandle<CounterDoc>;
+  private container?: Collection<CounterDoc>;
 
   constructor(
-    private readonly db: DatabaseProvider,
+    private readonly storage: StorageAdapter,
     private readonly config: RateLimitConfig = loadRateLimitConfig(),
   ) {}
 
   async initialize(): Promise<void> {
     if (this.container) return;
-    this.container = await this.db.getOrCreateContainer<CounterDoc>({
-      id: this.config.containerId,
-      partitionKey: { paths: ["/id"], kind: PartitionKeyKind.Hash, version: 2 },
-      defaultTtl: -1,
-    });
+    this.container = await this.storage.collection<CounterDoc>(rateLimitCollection(this.config.containerId));
   }
 
   /** Count one message for `userId` and say whether it may proceed. */
@@ -146,23 +174,17 @@ export class RateLimiter {
         const doc = await container.patch(id, id, [{ op: "incr", path: "/count", value: 1 }]);
         return doc.count;
       } catch (err) {
-        if (statusOf(err) !== 404) throw err;
+        if (!isNotFound(err)) throw err;
       }
       try {
         await container.create({ id, count: 1, ttl });
         return 1;
       } catch (err) {
-        if (statusOf(err) !== 409) throw err; // another instance created it: patch again
+        if (!isConflict(err)) throw err; // another instance created it: patch again
       }
     }
     throw new Error("rate limit counter contention");
   }
-}
-
-function statusOf(err: unknown): number | undefined {
-  const e = err as { code?: unknown; statusCode?: unknown };
-  const v = e?.statusCode ?? e?.code;
-  return typeof v === "number" ? v : undefined;
 }
 
 /** The user-facing text for a refused message. */
@@ -174,7 +196,7 @@ export function rateLimitMessage(decision: Extract<RateLimitDecision, { allowed:
 
 let shared: RateLimiter | undefined;
 
-/** The process-wide limiter (shared database), for the HTTP handlers. */
+/** The process-wide limiter (shared storage), for the HTTP handlers. */
 export function getSharedRateLimiter(): RateLimiter {
-  return (shared ??= new RateLimiter(getSharedDatabase()));
+  return (shared ??= new RateLimiter(getSharedStorage()));
 }

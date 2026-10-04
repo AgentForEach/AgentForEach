@@ -39,8 +39,6 @@ export type CronConfig = {
     jobsChangedEvent: string;
     runningClaimStaleMs: number;
     claimConcurrency: number;
-    legacySweepIntervalMs: number;
-    legacySweepMaxJobs: number;
   };
   heartbeat: {
     intervalMs: number;

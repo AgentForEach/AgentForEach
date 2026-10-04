@@ -28,7 +28,6 @@
 
 import type { ToolDefinition } from "../../memory/types.js";
 import { checkUrl } from "../../utils/safe-fetch.js";
-import { AcaSandboxesClient } from "../sandbox/aca-sandboxes-client.js";
 import type { SandboxToolHandler } from "../sandbox/handler.js";
 import type { SandboxBackend, SandboxConfig } from "../sandbox/types.js";
 import type { RateLimitDecision } from "../../ratelimit/index.js";
@@ -167,8 +166,8 @@ export function isBrowserTool(toolName: string): boolean {
 
 /**
  * Whether to offer this user the browser: it is enabled, the user is on the
- * `users` list if there is one, and the backend really is ACA Sandboxes (a
- * Dynamic Sessions fallback has no browser image or daemon).
+ * `users` list if there is one, and the backend can run it
+ * (`capabilities.browser`; a Dynamic Sessions fallback has no browser image).
  */
 export function isBrowserEnabled(
   sandbox: SandboxConfig | undefined,
@@ -180,7 +179,7 @@ export function isBrowserEnabled(
     sandbox?.enabled &&
       sandbox.browser?.enabled &&
       (!users || (userId !== undefined && users.includes(userId))) &&
-      client instanceof AcaSandboxesClient &&
+      client?.capabilities.browser &&
       client.isReady(),
   );
 }

@@ -1,0 +1,79 @@
+// AgentForEach on Cloudflare Workers.
+//
+// - Entry: worker.ts (the gateway's route and schedule table on the Worker host).
+// - Database: Postgres through Hyperdrive. Set the Hyperdrive id below; for `wrangler dev`,
+//   set CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE to a local Postgres.
+// - Config: the alias "@agentforeach/config" points at the agentforeach.json to bundle.
+// - Azure-only modules: the gateway reaches them only through `await import()`, and each is
+//   aliased to azure-only.ts, so they are never bundled. scripts/check-bundle.mjs fails if
+//   anything reaches Azure code another way.
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "agentforeach",
+  "main": "worker.ts",
+  "compatibility_date": "2026-09-30",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "alias": {
+    "@agentforeach/config": "../../gateway/config/agentforeach.json",
+
+    "@agentforeach/storage-cosmos/adapter": "./azure-only.ts",
+    "@agentforeach/platform-azure/identity": "./azure-only.ts",
+    "@agentforeach/platform-azure/objects": "./azure-only.ts",
+    "@agentforeach/platform-azure/realtime": "./azure-only.ts",
+    "@agentforeach/platform-azure/sandbox": "./azure-only.ts",
+    "@modelcontextprotocol/sdk/client/stdio.js": "./azure-only.ts"
+  },
+
+  "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "REPLACE_WITH_YOUR_HYPERDRIVE_ID" }],
+
+  // The platform pack's Durable Objects (exported from worker.ts).
+  "durable_objects": {
+    "bindings": [
+      { "name": "DURABLE_INSTANCES", "class_name": "DurableInstance" },
+      { "name": "REALTIME_USER_SOCKET", "class_name": "UserSocket" },
+      { "name": "REALTIME_RELAY", "class_name": "Relay" },
+      { "name": "SANDBOX", "class_name": "ContainerSandbox" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["DurableInstance", "UserSocket", "Relay", "ContainerSandbox"] }],
+
+  // The sandbox image (one per sandbox Durable Object). The deploy script builds it with the
+  // browser (build_vars SANDBOX_IMAGE_BROWSER=1) when agentforeach.json sets
+  // skills.sandbox.containers.browser, and leaves it out when sandboxes are off.
+  "containers": [
+    {
+      "class_name": "ContainerSandbox",
+      "scheduling_policy": "durable_object",
+      "images": { "sandbox": { "dockerfile": "../../gateway/sandbox-container/Dockerfile" } }
+    }
+  ],
+
+  // Chat turns and cron runs run inside a DurableInstance's alarm handler: up to 15 minutes of
+  // wall time, and the turn deadline (9 minutes) fits. CPU time is what this raises.
+  "limits": { "cpu_ms": 300000 },
+
+  // One trigger per distinct schedule; the Worker host runs every schedule on a trigger's cron.
+  // Today both run every 5 minutes: the cron scheduler's health check and the database sweep.
+  // scripts/check-bundle.mjs checks this list against the schedules the Worker serves.
+  "triggers": { "crons": ["*/5 * * * *"] },
+
+  // Secrets (wrangler secret put): REALTIME_SIGNING_KEY (any long random string),
+  // OBJECT_STORE_S3_ACCESS_KEY_ID and OBJECT_STORE_S3_SECRET_ACCESS_KEY (an R2 API token's S3 keys),
+  // plus the model provider keys agentforeach.json refers to. Optional: CLOUDFLARE_ACCOUNT_ID and
+  // CLOUDFLARE_IMAGES_API_TOKEN (Containers write), to delete sandbox snapshots from the registry.
+  "vars": {
+    "DATABASE_PROVIDER": "postgres",
+    // Hyperdrive pools connections, and like PgBouncer refuses timeouts as startup parameters.
+    "DATABASE_SERVER_TIMEOUTS": "false",
+    "WEBSOCKET_PROVIDER": "cloudflare",
+    "SANDBOX_PROVIDER": "cloudflare-containers",
+    // R2 through its S3 API (signed export links need it); create the buckets "skills" and "user-exports".
+    "OBJECT_STORE_PROVIDER": "s3",
+    "OBJECT_STORE_S3_ENDPOINT": "https://REPLACE_WITH_YOUR_ACCOUNT_ID.r2.cloudflarestorage.com",
+    // The gateway's own https origin, for links and the realtime provider.
+    "PUBLIC_BASE_URL": "https://REPLACE_WITH_YOUR_WORKER_HOST"
+  },
+
+  "observability": { "enabled": true }
+}

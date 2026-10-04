@@ -94,13 +94,13 @@ export const DEFAULT_MMR_CONFIG: MMRConfig = {
  *
  * Database connection is NOT duplicated here — it comes from the
  * agentforeach.json "database" section (resolved via `loadDatabaseConfig()`)
- * and the shared `DatabaseProvider` instance passed to `createMemoryLayer()`.
+ * and the shared storage adapter passed to `createMemoryLayer()`.
  */
 export interface MemoryJsonConfig {
   /** Enable/disable the memory subsystem entirely. Default: true. */
   enabled?: boolean;
 
-  /** Store provider name. Default: "cosmosdb". */
+  /** Store provider name. Default: "storage" ("cosmosdb", its old name, also works). */
   provider?: string;
 
   /** Cosmos DB container name for memories. Default: "memories". */
@@ -180,7 +180,7 @@ export type MemoryConfig = {
   /** Whether memory is enabled. */
   enabled: boolean;
 
-  /** Store provider name (e.g. "cosmosdb", "noop"). */
+  /** Store provider name (e.g. "storage", "noop"). */
   storeProvider: string;
 
   /** Cosmos DB container name. */
@@ -314,7 +314,7 @@ export function loadMemoryConfig(): MemoryConfig {
   const enabled = json.enabled !== false;
   _memoryConfig = {
     enabled,
-    storeProvider: json.provider ?? "cosmosdb",
+    storeProvider: json.provider ?? "storage",
     containerId: json.containerId ?? DEFAULT_CONTAINER_ID,
     embeddingApiKey,
     embeddingModel,

@@ -1,8 +1,8 @@
 /**
- * AgentForEach Episode Layer — Cosmos DB Store
+ * AgentForEach Episode Layer — Store
  *
  * Persistence layer for theme-based episode documents. Follows the same
- * container setup pattern as `memory/providers/cosmosdb.ts`:
+ * collection pattern as `memory/providers/storage.ts`:
  *   - Partition key: /userId
  *   - Vector index: /vector (DiskANN, cosine) — for semantic search
  *   - Full-text index: /summary — for keyword search
@@ -15,18 +15,17 @@
  */
 
 import {
-  VectorIndexType,
-  VectorEmbeddingDataType,
-  VectorEmbeddingDistanceFunction,
-  type Container,
-  type SqlQuerySpec,
-} from "@azure/cosmos";
-import type {
-  DatabaseProvider,
-  ContainerHandle,
-  ContainerOptions,
-} from "../database/index.js";
+  StorageError,
+  and,
+  eq,
+  gte,
+  mutate,
+  type Collection,
+  type CollectionSpec,
+  type StorageAdapter,
+} from "@agentforeach/storage";
 import type { EpisodeDocument } from "./types.js";
+import { resolveEmbeddingModel, vectorDimsForModel } from "../memory/config.js";
 import { similarityFromVectorDistance } from "../database/vector.js";
 
 // ============================================================================
@@ -43,14 +42,34 @@ export interface EpisodeSearchResult {
 // Episode Store
 // ============================================================================
 
+/**
+ * The episodes collection: vector search on /vector, a full-text policy on
+ * /summary, and the large text fields left out of the index. Episodes are
+ * embedded by the shared embeddings client, so the vector size follows the
+ * configured embedding model (1536 for the default text-embedding-3-small),
+ * as it does for memories.
+ */
+export function episodesCollection(
+  containerId = "episodes",
+  dimensions = vectorDimsForModel(resolveEmbeddingModel()),
+): CollectionSpec {
+  return {
+    name: containerId,
+    partitionKey: "userId",
+    vector: { field: "vector", dimensions, distance: "cosine", dataType: "float32" },
+    fullText: { fields: ["summary"], language: "en-US" },
+    unindexed: ["summary", "highlights"],
+  };
+}
+
 export class EpisodeStore {
-  private db: DatabaseProvider;
+  private storage: StorageAdapter;
   private containerId: string;
-  private container!: ContainerHandle<EpisodeDocument>;
+  private container!: Collection<EpisodeDocument>;
   private initialized = false;
 
-  constructor(db: DatabaseProvider, containerId = "episodes") {
-    this.db = db;
+  constructor(storage: StorageAdapter, containerId = "episodes") {
+    this.storage = storage;
     this.containerId = containerId;
   }
 
@@ -61,47 +80,8 @@ export class EpisodeStore {
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
-    await this.db.initialize();
-
-    const containerDef: ContainerOptions = {
-      id: this.containerId,
-      partitionKey: { paths: ["/userId"] },
-      indexingPolicy: {
-        automatic: true,
-        indexingMode: "consistent",
-        includedPaths: [{ path: "/*" }],
-        excludedPaths: [
-          { path: "/vector/*" },
-          { path: "/summary/*" },
-          { path: "/highlights/*" },
-          { path: '/"_etag"/?' },
-        ],
-        fullTextIndexes: [{ path: "/summary" }],
-        vectorIndexes: [
-          {
-            path: "/vector",
-            type: VectorIndexType.DiskANN,
-          },
-        ],
-      },
-      vectorEmbeddingPolicy: {
-        vectorEmbeddings: [
-          {
-            path: "/vector",
-            dataType: VectorEmbeddingDataType.Float32,
-            dimensions: 1536, // text-embedding-3-small
-            distanceFunction: VectorEmbeddingDistanceFunction.Cosine,
-          },
-        ],
-      },
-      fullTextPolicy: {
-        defaultLanguage: "en-US",
-        fullTextPaths: [{ path: "/summary", language: "en-US" }],
-      },
-    };
-
-    this.container =
-      await this.db.getOrCreateContainer<EpisodeDocument>(containerDef);
+    await this.storage.initialize();
+    this.container = await this.storage.collection<EpisodeDocument>(episodesCollection(this.containerId));
     this.initialized = true;
   }
 
@@ -139,40 +119,18 @@ export class EpisodeStore {
     maxRetries = 3,
   ): Promise<EpisodeDocument | null> {
     await this.ensureInitialized();
-    const raw = this.container.getRawContainer() as Container;
-
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      const { resource } = await raw.item(episodeId, userId).read<
-        EpisodeDocument & { _etag?: string }
-      >();
-      if (!resource) return null;
-
-      const etag = resource._etag;
-      const updated = await updater(resource);
-
-      // If no ETag available (shouldn't happen with Cosmos), fall back to upsert
-      if (!etag) {
-        return this.container.upsert(updated);
-      }
-
-      try {
-        const { resource: replaced } = await raw
-          .item(episodeId, userId)
-          .replace<EpisodeDocument>(updated, {
-            accessCondition: { type: "IfMatch", condition: etag },
-          });
-        return replaced ?? updated;
-      } catch (err) {
-        if (isPreconditionFailed(err) && attempt < maxRetries) {
-          continue; // Retry with fresh read
-        }
-        throw err;
-      }
+    const result = await mutate(this.container, episodeId, userId, (episode) => updater(episode), {
+      maxAttempts: maxRetries + 1,
+    });
+    if (result.status === "notFound") return null;
+    if (result.status === "contention") {
+      // Every attempt lost the race (412 on the last replace, as before).
+      throw new StorageError(
+        "PreconditionFailed",
+        `Episode conditional update failed after ${maxRetries + 1} attempts: ${episodeId}`,
+      );
     }
-
-    throw new Error(
-      `Episode conditional update failed after ${maxRetries + 1} attempts: ${episodeId}`,
-    );
+    return result.document;
   }
 
   // --------------------------------------------------------------------------
@@ -198,7 +156,7 @@ export class EpisodeStore {
   /**
    * Find episodes semantically relevant to a query vector.
    *
-   * Uses Cosmos DB VectorDistance() for cosine similarity search.
+   * Vector search by cosine similarity.
    * Only returns episodes within the max age window (based on updatedAt).
    * Results are ordered by similarity (most relevant first).
    */
@@ -213,36 +171,20 @@ export class EpisodeStore {
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - maxAgeDays);
 
-    // VectorDistance with cosine returns a similarity (higher = closer).
-    const query: SqlQuerySpec = {
-      query: `
-        SELECT TOP @limit
-          c.id, c.userId, c.theme, c.summary, c.topics,
-          c.highlights, c.status, c.salience, c.decisions, c.pending,
-          c.createdAt, c.updatedAt,
-          VectorDistance(c.vector, @queryVector) AS distance
-        FROM c
-        WHERE c.userId = @userId
-          AND c.updatedAt >= @cutoff
-        ORDER BY VectorDistance(c.vector, @queryVector)
-      `,
-      parameters: [
-        { name: "@userId", value: userId },
-        { name: "@queryVector", value: queryVector },
-        { name: "@limit", value: limit },
-        { name: "@cutoff", value: cutoff.toISOString() },
+    // The score is a cosine similarity (higher = closer), best first.
+    const results = await this.container.vectorSearch<EpisodeDocument>({
+      partitionKey: userId,
+      where: and(eq("userId", userId), gte("updatedAt", cutoff.toISOString())),
+      vector: queryVector,
+      limit,
+      select: [
+        "id", "userId", "theme", "summary", "topics",
+        "highlights", "status", "salience", "decisions", "pending",
+        "createdAt", "updatedAt",
       ],
-    };
+    });
 
-    const results = await (
-      this.container.getRawContainer() as Container
-    ).items
-      .query<EpisodeDocument & { distance: number }>(query, {
-        partitionKey: userId,
-      })
-      .fetchAll();
-
-    return results.resources.map((doc) => ({
+    return results.map(({ document: doc, score }) => ({
       episode: {
         id: doc.id,
         userId: doc.userId,
@@ -258,7 +200,7 @@ export class EpisodeStore {
         createdAt: doc.createdAt,
         updatedAt: doc.updatedAt,
       },
-      score: similarityFromVectorDistance(doc.distance),
+      score: similarityFromVectorDistance(score),
     }));
   }
 
@@ -282,23 +224,11 @@ export class EpisodeStore {
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - maxAgeDays);
 
-    const query: SqlQuerySpec = {
-      query: `
-        SELECT TOP @limit *
-        FROM c
-        WHERE c.userId = @userId
-          AND c.updatedAt >= @cutoff
-        ORDER BY c.updatedAt DESC
-      `,
-      parameters: [
-        { name: "@userId", value: userId },
-        { name: "@limit", value: limit },
-        { name: "@cutoff", value: cutoff.toISOString() },
-      ],
-    };
-
-    return this.container.query<EpisodeDocument>(query, {
+    return this.container.find<EpisodeDocument>({
       partitionKey: userId,
+      where: and(eq("userId", userId), gte("updatedAt", cutoff.toISOString())),
+      orderBy: { field: "updatedAt", direction: "desc" },
+      limit,
     });
   }
 
@@ -316,22 +246,11 @@ export class EpisodeStore {
   ): Promise<EpisodeDocument[]> {
     await this.ensureInitialized();
 
-    const query: SqlQuerySpec = {
-      query: `
-        SELECT TOP @limit *
-        FROM c
-        WHERE c.userId = @userId
-          AND c.status = "active"
-        ORDER BY c.updatedAt DESC
-      `,
-      parameters: [
-        { name: "@userId", value: userId },
-        { name: "@limit", value: limit },
-      ],
-    };
-
-    return this.container.query<EpisodeDocument>(query, {
+    return this.container.find<EpisodeDocument>({
       partitionKey: userId,
+      where: and(eq("userId", userId), eq("status", "active")),
+      orderBy: { field: "updatedAt", direction: "desc" },
+      limit,
     });
   }
 
@@ -367,12 +286,3 @@ export class EpisodeStore {
   }
 }
 
-// ============================================================================
-// Helpers
-// ============================================================================
-
-function isPreconditionFailed(err: unknown): boolean {
-  if (typeof err !== "object" || err === null) return false;
-  const e = err as Record<string, unknown>;
-  return e.code === 412 || e.statusCode === 412;
-}

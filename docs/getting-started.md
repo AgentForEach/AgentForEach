@@ -2,7 +2,9 @@
 
 Deploy AgentForEach to Azure, let your users sign in, and talk to your first agent. Then run it locally for development.
 
-Prerequisites: Node 22, [Azure Functions Core Tools](https://learn.microsoft.com/azure/azure-functions/functions-run-local) 4, the Azure CLI, [Pulumi](https://www.pulumi.com/docs/install/), and an Azure subscription where you can assign roles (Owner, or Contributor plus User Access Administrator). `pulumi up` creates role assignments that give the Function App's identities access to storage, Key Vault and Cosmos DB. With Contributor alone it fails with `AuthorizationFailed`.
+On Cloudflare instead? See [Cloudflare](Cloudflare.md).
+
+Prerequisites: Node 22, [Azure Functions Core Tools](https://learn.microsoft.com/azure/azure-functions/functions-run-local) 4.15.2 or newer, the Azure CLI, [Pulumi](https://www.pulumi.com/docs/install/), and an Azure subscription where you can assign roles (Owner, or Contributor plus User Access Administrator). `pulumi up` creates role assignments that give the Function App's identities access to storage, Key Vault and Cosmos DB. With Contributor alone it fails with `AuthorizationFailed`.
 
 ## Deploy to Azure
 
@@ -67,22 +69,26 @@ Telegram and WhatsApp are off until you configure them. See [Channels](Channel.m
 
 ## Run locally
 
-Durable Functions needs a storage emulator, and the runtime needs a Cosmos DB account (the Cosmos emulator lacks vector search). A serverless account costs nothing while idle:
+Use Azure Functions Core Tools **4.15.2 or newer**. Older ones can't start any Durable Functions orchestration: 4.6.0 fails with `Could not load file or assembly 'Microsoft.AspNetCore.Mvc.WebApiCompatShim'`. 4.15.2 with extension bundle 4.38.1 works. Check with `func --version`.
+
+Durable Functions needs a storage emulator, and the runtime needs a database: PostgreSQL with pgvector in Docker is the quickest, or a Cosmos DB account like production (the Cosmos emulator lacks vector search; a serverless account costs nothing while idle). See [Database](Database.md).
 
 ```bash
 docker run -d -p 10000-10002:10000-10002 mcr.microsoft.com/azure-storage/azurite   # or: npx azurite
-az cosmosdb create -g <rg> -n <account> --capabilities EnableServerless EnableNoSQLVectorSearch
+docker run -d -e POSTGRES_PASSWORD=pw -p 5432:5432 pgvector/pgvector:pg17
+#   or Cosmos: az cosmosdb create -g <rg> -n <account> --capabilities EnableServerless EnableNoSQLVectorSearch
 
 npm ci
 cp gateway/local.settings.example.json gateway/local.settings.json
-# set COSMOS_ENDPOINT and COSMOS_KEY (az cosmosdb keys list -g <rg> -n <account>),
+# set DATABASE_PROVIDER=postgres and DATABASE_URL=postgres://postgres:pw@localhost:5432/postgres
+#   (or, for Cosmos, COSMOS_ENDPOINT and COSMOS_KEY from az cosmosdb keys list -g <rg> -n <account>),
 # OPENAI_API_KEY, and AUTH_ALLOW_INSECURE_USER_ID_HEADER=true
 cd gateway
 npm start                                   # builds, then starts the Functions host on :7071
 curl -X POST localhost:7071/api/chat -H 'x-user-id: me' -H 'content-type: application/json' -d '{"message":"hi"}'
 ```
 
-Locally, turns run inside the HTTP request, containers are created on first use, and `x-user-id` identifies the user (never honoured on Azure). The [web chat sample](../examples/web-chat/) works against the local gateway too.
+Locally, turns run inside the HTTP request, tables or containers are created on first use, and `x-user-id` identifies the user (never honoured on Azure). The [web chat sample](../examples/web-chat/) works against the local gateway too.
 
 ## Tests
 

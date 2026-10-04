@@ -18,18 +18,18 @@
  *   7. Return 200 OK to the webhook sender
  *
  * Plugins that set `ackImmediately` get the 200 before the agent turn runs,
- * and the turn is handed to a Durable Functions orchestration. That is for
+ * and the turn is handed to a durable job. That is for
  * providers which redeliver aggressively while a slow turn is still in flight
  * (Meta retries for up to 7 days); such plugins must dedupe inbound ids
  * durably.
  *
- * An orchestration, not a floating promise: in the Functions programming
- * model the invocation is over when the handler's promise resolves, and the
- * host is free to recycle the instance immediately after — a detached
- * `void processInbound(...)` is killable mid-turn, and because the message id
- * was already claimed for dedupe, the redelivery that could have rescued it
- * gets dropped. The durable activity survives a recycle (at-least-once), at
- * the accepted cost that a crash AFTER the reply was sent can rerun a turn.
+ * A durable job, not a floating promise: on serverless hosts the invocation
+ * is over when the handler's promise resolves, and the host is free to
+ * recycle the instance immediately after — a detached `processInbound(...)`
+ * is killable mid-turn, and because the message id was already claimed for
+ * dedupe, the redelivery that could have rescued it gets dropped. The job
+ * survives a recycle (at-least-once), at the accepted cost that a crash
+ * AFTER the reply was sent can rerun a turn.
  *
  * Design decisions:
  *   - Single handler for all channels (not one per channel). New channels
@@ -44,21 +44,15 @@
  * @see handlers/ws-message.ts — similar pipeline for WebSocket messages
  */
 
-import {
-  app,
-  type HttpRequest,
-  type HttpResponseInit,
-  type InvocationContext,
-} from "@azure/functions";
-import * as df from "durable-functions";
+import { background, type HandlerContext, type HttpRequestLike, type HttpResult, type JobDefinition, type RouteDef } from "@agentforeach/platform";
+import { durable } from "../runtime/durable.js";
 import type { InboundMessage } from "../channels/index.js";
 import { getChannel, processInbound, ensureIdentityStore } from "../channels/index.js";
 import { createCronMutationSignal } from "./cron-signal.js";
 import { describeText, redactId } from "../utils/redact.js";
 
-/** Names on the Durable Functions wire — renaming them strands in-flight turns. */
-const CHANNEL_TURN_ORCHESTRATION = "ChannelInboundTurn";
-const CHANNEL_TURN_ACTIVITY = "ProcessChannelInboundTurn";
+/** The durable job kind for a detached channel turn. */
+export const CHANNEL_TURN_KIND = "ChannelInboundTurn";
 
 type ChannelTurnInput = {
   channelId: string;
@@ -70,9 +64,9 @@ type ChannelTurnInput = {
 // ============================================================================
 
 async function channelWebhook(
-  request: HttpRequest,
-  context: InvocationContext,
-): Promise<HttpResponseInit> {
+  request: HttpRequestLike,
+  context: HandlerContext,
+): Promise<HttpResult> {
   const channelId = request.params.channelId;
 
   if (!channelId) {
@@ -122,7 +116,7 @@ async function channelWebhook(
     // status callback delay the 200 and earn a redelivery, which is the exact
     // failure it exists to help with.
     if (plugin.handleEvent) {
-      void Promise.resolve(plugin.handleEvent(body)).catch((err) => {
+      background(Promise.resolve(plugin.handleEvent(body)), (err) => {
         context.error(
           `channelWebhook: handleEvent failed for ${channelId}: ${
             err instanceof Error ? err.message : String(err)
@@ -144,31 +138,28 @@ async function channelWebhook(
   // 7. Process through the full pipeline (AgentClient → reply)
   //
   // Channels facing a retry-happy provider ack first and run the turn in a
-  // durable orchestration, so a 40-second tool loop cannot earn a redelivery
+  // durable job, so a 40-second tool loop cannot earn a redelivery
   // mid-flight — and an instance recycle cannot kill the turn either, which
   // a detached promise would allow (see the module docblock).
   if (plugin.ackImmediately) {
     try {
-      const client = df.getClient(context);
       const input: ChannelTurnInput = { channelId, message };
-      const instanceId = await client.startNew(CHANNEL_TURN_ORCHESTRATION, {
-        input,
-      });
+      const { id } = await durable().startJob(CHANNEL_TURN_KIND, input);
       context.log(
-        `channelWebhook: ${channelId} turn handed to orchestration ${instanceId}`,
+        `channelWebhook: ${channelId} turn handed to job ${id}`,
       );
     } catch (err) {
-      // No durable client (e.g. storage down): a detached promise is killable
+      // No durable runtime (e.g. storage down): a detached promise is killable
       // but still better than dropping a claimed message on the floor.
       context.warn(
-        `channelWebhook: could not start turn orchestration for ${channelId} ` +
+        `channelWebhook: could not start turn job for ${channelId} ` +
           `(${err instanceof Error ? err.message : String(err)}); ` +
           `falling back to detached processing`,
       );
       const partial = plugin.toSendRequest(message);
       const userId = partial.userId ?? message.senderId;
       const onCronMutation = createCronMutationSignal(context, userId);
-      void processInbound(channelId, message, { onCronMutation }).catch(() => {
+      background(processInbound(channelId, message, { onCronMutation }), () => {
         // Invocation is already complete; nowhere reliable to report to.
       });
     }
@@ -176,7 +167,7 @@ async function channelWebhook(
     return jsonResponse(200, { ok: true, accepted: true });
   }
 
-  // Signal the Durable Functions scheduler when cron tools mutate jobs.
+  // Wake the cron scheduler when cron tools mutate jobs.
   const partial = plugin.toSendRequest(message);
   const userId = partial.userId ?? message.senderId;
   const onCronMutation = createCronMutationSignal(context, userId);
@@ -204,7 +195,7 @@ async function channelWebhook(
 // Helpers
 // ============================================================================
 
-function jsonResponse(status: number, body: unknown): HttpResponseInit {
+function jsonResponse(status: number, body: unknown): HttpResult {
   return {
     status,
     headers: { "Content-Type": "application/json" },
@@ -224,9 +215,9 @@ function jsonResponse(status: number, body: unknown): HttpResponseInit {
  * is what every non-Meta channel wants.
  */
 async function channelWebhookVerify(
-  request: HttpRequest,
-  context: InvocationContext,
-): Promise<HttpResponseInit> {
+  request: HttpRequestLike,
+  context: HandlerContext,
+): Promise<HttpResult> {
   const channelId = request.params.channelId;
 
   if (!channelId) {
@@ -263,30 +254,23 @@ async function channelWebhookVerify(
 }
 
 // ============================================================================
-// Detached Turn — Durable Orchestration
+// Detached Turn — Durable Job
 // ============================================================================
 
 /**
- * The whole agent turn for one inbound message, as a single activity.
+ * The whole agent turn for one inbound message, as a single job.
  *
- * One activity rather than a decomposition: the turn is already orchestrated
- * internally by processInbound, and the property we need from Durable
- * Functions is only that the work survives the webhook invocation ending.
+ * One job rather than a decomposition: the turn is already orchestrated
+ * internally by processInbound, and the property we need from the durable
+ * runtime is only that the work survives the webhook invocation ending.
  * At-least-once execution means a mid-turn instance recycle reruns the turn;
  * a rerun after the reply was already sent (crash in the gap between send and
  * checkpoint) can double-send, which is accepted as the rarer, recoverable
  * direction — silent no-reply is the failure users actually notice.
  */
-df.app.orchestration(CHANNEL_TURN_ORCHESTRATION, function* (ctx) {
-  const input = ctx.df.getInput() as ChannelTurnInput;
-  yield ctx.df.callActivity(CHANNEL_TURN_ACTIVITY, input);
-});
-
-df.app.activity(CHANNEL_TURN_ACTIVITY, {
-  extraInputs: [df.input.durableClient()],
-  handler: async (rawInput: unknown, context: InvocationContext): Promise<boolean> => {
-    const { channelId, message } = rawInput as ChannelTurnInput;
-
+export const channelTurnJob: JobDefinition<ChannelTurnInput> = {
+  kind: CHANNEL_TURN_KIND,
+  async run({ channelId, message }, context) {
     // Fresh invocation, possibly a fresh instance — same bootstrap the
     // webhook handler does before parsing.
     await ensureIdentityStore();
@@ -302,25 +286,26 @@ df.app.activity(CHANNEL_TURN_ACTIVITY, {
         `channelTurn: pipeline failed for ${channelId}: ${result.error}`,
       );
     }
-    return result.success;
   },
-});
+};
 
 // ============================================================================
 // Function Registration
 // ============================================================================
 
-app.http("channelWebhook", {
+export const routes: RouteDef[] = [];
+
+routes.push({
+  name: "channelWebhook",
   methods: ["POST"],
-  authLevel: "anonymous",
   route: "api/channels/{channelId}/webhook",
-  extraInputs: [df.input.durableClient()],
+  durable: true,
   handler: channelWebhook,
 });
 
-app.http("channelWebhookVerify", {
+routes.push({
+  name: "channelWebhookVerify",
   methods: ["GET"],
-  authLevel: "anonymous",
   route: "api/channels/{channelId}/webhook",
   handler: channelWebhookVerify,
 });

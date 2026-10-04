@@ -12,6 +12,7 @@
  * each config module.
  */
 
+import { background } from "@agentforeach/platform";
 import { createAgentClient, type AgentClient } from "./client/index.js";
 
 let _client: AgentClient | null = null;
@@ -30,6 +31,10 @@ export async function getAgentClient(): Promise<AgentClient> {
   if (!_client) {
     _client = createAgentClient();
     _initPromise = _client.initialize();
+    // Every request in this process or isolate awaits it. On a Worker, a
+    // request that ends first would take its I/O with it and leave the rest
+    // waiting forever, so it is background work of the request that began it.
+    background(_initPromise, () => {});
   }
 
   try {

@@ -1,13 +1,13 @@
 /**
  * AgentForEach — erase a user's data
  *
- * Deletes everything stored about one user: every Cosmos document that
- * belongs to them, their sandboxes and their exported files. Driven by the
- * container catalog (database/catalog.ts), the same list the IaC provisions,
- * so a container added later is covered without touching this file:
+ * Deletes everything stored about one user: every document that belongs to
+ * them, their sandboxes and their exported files. Driven by the collection
+ * catalog (database/catalog.ts), the same list the IaC provisions, so a
+ * collection added later is covered without touching this file:
  *
- *   - containers partitioned by the user (/userId): the whole partition;
- *   - other containers (messages, channel index, pairing codes, cron index,
+ *   - collections partitioned by the user (userId): the whole partition;
+ *   - other collections (messages, channel index, pairing codes, cron index,
  *     runs, heartbeat events): documents whose userId is the
  *     user, found with one cross-partition query each.
  *
@@ -18,18 +18,19 @@
  * within minutes.
  */
 
-import type { DatabaseProvider } from "../database/index.js";
-import { recordContainerCatalog, type CatalogContainer } from "../database/catalog.js";
+import { eq, type CollectionSpec, type StorageAdapter } from "@agentforeach/storage";
+import type { SandboxBackend } from "@agentforeach/platform";
+import { recordCollectionSpecs } from "../database/catalog.js";
 import { redactId } from "../utils/redact.js";
 
 /** Deletes in flight at once per container. */
 const DELETE_CONCURRENCY = 16;
 
-/** Partition key path that means "one partition per user". */
-const USER_PARTITION = "/userId";
+/** Partition key field that means "one partition per user". */
+const USER_PARTITION = "userId";
 
 export type ErasureReport = {
-  /** Documents deleted, by container. */
+  /** Documents deleted, by collection. */
   containers: Record<string, number>;
   sandboxes: number;
   exportedFiles: number;
@@ -40,40 +41,41 @@ export type ErasureReport = {
 };
 
 export type ErasureTargets = {
-  /** Sandbox backend with per-user deletion (ACA Sandboxes). */
-  sandbox?: { deleteUserSandboxes?(userId: string): Promise<number> };
+  /** The sandbox backend: its sandboxes are deleted unless they keep nothing anyway. */
+  sandbox?: Pick<SandboxBackend, "capabilities" | "deleteUserSandboxes" | "erasureNotes">;
   /** Export store (sandbox_file_export downloads). */
   exports?: { deleteUserFiles(userId: string): Promise<number> };
-  /** Containers to consider (default: the catalog). For tests. */
-  catalog?: CatalogContainer[];
+  /** Collections to consider (default: the catalog). For tests. */
+  catalog?: CollectionSpec[];
 };
 
 type Keyed = { id: string; pk?: string };
 
 export async function eraseUserData(
-  db: DatabaseProvider,
+  storage: StorageAdapter,
   userId: string,
   targets: ErasureTargets = {},
 ): Promise<ErasureReport> {
   const report: ErasureReport = { containers: {}, sandboxes: 0, exportedFiles: 0, errors: [], skipped: [] };
-  const catalog = targets.catalog ?? (await recordContainerCatalog());
-  await db.initialize();
+  const catalog = targets.catalog ?? (await recordCollectionSpecs());
+  await storage.initialize();
 
-  for (const def of catalog) {
-    const pkPath = (def.partitionKey as { paths: string[] }).paths[0]!;
+  for (const spec of catalog) {
     try {
-      const container = await db.getOrCreateContainer(def);
+      const container = await storage.collection(spec);
       let docs: Keyed[];
-      if (pkPath === USER_PARTITION) {
-        docs = (await container.queryWithParams<{ id: string }>("SELECT c.id FROM c", [], { partitionKey: userId })).map(
-          (d) => ({ id: d.id, pk: userId }),
-        );
+      if (spec.partitionKey === USER_PARTITION) {
+        // The user's partition: everything in it.
+        docs = (await container.find<{ id: string }>({ partitionKey: userId, select: ["id"] })).map((d) => ({
+          id: d.id,
+          pk: userId,
+        }));
       } else {
-        const field = pkPath.slice(1);
-        docs = await container.queryWithParams<Keyed>(
-          `SELECT c.id, c["${field}"] AS pk FROM c WHERE c.userId = @user`,
-          [{ name: "@user", value: userId }],
-        );
+        // Across partitions: the documents carrying the user's id.
+        docs = await container.find<Keyed>({
+          where: eq("userId", userId),
+          select: ["id", { field: spec.partitionKey, as: "pk" }],
+        });
       }
       let deleted = 0;
       const pending = docs.filter((d) => typeof d.pk === "string");
@@ -83,20 +85,21 @@ export async function eraseUserData(
         );
         deleted += results.filter(Boolean).length;
       }
-      if (deleted > 0) report.containers[def.id] = deleted;
+      if (deleted > 0) report.containers[spec.name] = deleted;
     } catch (err) {
-      report.errors.push(`${def.id}: ${err instanceof Error ? err.message : String(err)}`);
+      report.errors.push(`${spec.name}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
-  if (targets.sandbox?.deleteUserSandboxes) {
+  if (targets.sandbox && targets.sandbox.capabilities.persistence !== "none") {
     try {
       report.sandboxes = await targets.sandbox.deleteUserSandboxes(userId);
     } catch (err) {
       report.errors.push(`sandboxes: ${err instanceof Error ? err.message : String(err)}`);
     }
+    for (const note of targets.sandbox.erasureNotes ?? []) report.skipped.push(`sandboxes: ${note}`);
   } else if (targets.sandbox) {
-    report.skipped.push("sandboxes: this sandbox backend can't delete per user; sessions expire after their cooldown");
+    report.skipped.push("sandboxes: this sandbox backend keeps nothing per user; sessions expire after their cooldown");
   }
   if (targets.exports) {
     try {

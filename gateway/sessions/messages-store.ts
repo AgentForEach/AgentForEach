@@ -18,11 +18,16 @@
  * what scopes messages to their user. Queries never scan across partitions.
  */
 
-import { PartitionKeyKind } from "@azure/cosmos";
-import type {
-  DatabaseProvider,
-  ContainerHandle,
-} from "../database/index.js";
+import {
+  and,
+  eq,
+  gt,
+  gte,
+  lt,
+  type Collection,
+  type CollectionSpec,
+  type StorageAdapter,
+} from "@agentforeach/storage";
 import type { MessageDocument } from "./types.js";
 import { loadSessionConfig, type SessionConfig } from "./config.js";
 
@@ -30,14 +35,42 @@ import { loadSessionConfig, type SessionConfig } from "./config.js";
 // Message Store
 // ============================================================================
 
+/**
+ * The messages collection, partitioned by `pk` (user:session:instance). TTL
+ * is on with no default: each message carries its own ttl. Message content
+ * (large text) is not indexed, exactly as deployed (scalar `/content/?`).
+ */
+export function messagesCollection(config: SessionConfig): CollectionSpec {
+  return {
+    name: config.messagesContainerId,
+    partitionKey: "pk",
+    defaultTtl: -1,
+    // Account erasure finds a user's messages by userId, across partitions.
+    indexes: ["userId"],
+    adapterOptions: {
+      cosmosdb: {
+        indexingPolicy: {
+          automatic: true,
+          indexingMode: "consistent",
+          includedPaths: [{ path: "/*" }],
+          excludedPaths: [{ path: "/content/?" }, { path: '/"_etag"/?' }],
+        },
+        // An old config pointing at "session-messages" (partitioned on
+        // /sessionId) would fail every write: fail at startup instead.
+        verifyPartitionKey: true,
+      },
+    },
+  };
+}
+
 export class MessageStore {
-  private db: DatabaseProvider;
-  private container!: ContainerHandle<MessageDocument>;
+  private storage: StorageAdapter;
+  private container!: Collection<MessageDocument>;
   private initialized = false;
   private config: SessionConfig;
 
-  constructor(db: DatabaseProvider, config?: SessionConfig) {
-    this.db = db;
+  constructor(storage: StorageAdapter, config?: SessionConfig) {
+    this.storage = storage;
     this.config = config ?? loadSessionConfig();
   }
 
@@ -48,49 +81,19 @@ export class MessageStore {
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
-    this.container = await this.db.getOrCreateContainer<MessageDocument>({
-      id: this.config.messagesContainerId,
-      partitionKey: {
-        paths: ["/pk"],
-        kind: PartitionKeyKind.Hash,
-        version: 2,
-      },
-      // TTL on, no default: each message carries its own ttl.
-      defaultTtl: -1,
-      indexingPolicy: {
-        automatic: true,
-        indexingMode: "consistent",
-        includedPaths: [{ path: "/*" }],
-        excludedPaths: [
-          { path: "/content/?" }, // Don't index message content (large text)
-          { path: '/"_etag"/?' },
-        ],
-      },
-    });
-
-    await this.assertPartitionKey();
-    this.initialized = true;
-  }
-
-  /**
-   * An existing container keeps the partition key it was created with. A
-   * config still pointing at the old "session-messages" container
-   * (partitioned on /sessionId) would fail every write, so fail at startup.
-   */
-  private async assertPartitionKey(): Promise<void> {
-    const raw = this.container.getRawContainer() as {
-      read?: () => Promise<{ resource?: { partitionKey?: { paths?: string[] } } }>;
-    };
-    if (typeof raw?.read !== "function") return; // in-memory providers
-    const { resource } = await raw.read();
-    const paths = resource?.partitionKey?.paths;
-    if (paths && paths[0] !== "/pk") {
+    try {
+      this.container = await this.storage.collection<MessageDocument>(messagesCollection(this.config));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!/partitioned on/.test(message)) throw err;
       throw new Error(
-        `Messages container "${this.config.messagesContainerId}" is partitioned on ${paths[0]}, ` +
-          `expected /pk. Point sessions.messagesContainerId at a new container ` +
+        `Messages container "${this.config.messagesContainerId}" ${message.replace(/^.*?is (partitioned on)/, "is $1")}. ` +
+          `Point sessions.messagesContainerId at a new container ` +
           `(default "session-messages-v2"); see docs/Session-management.md.`,
+        { cause: err },
       );
     }
+    this.initialized = true;
   }
 
   // --------------------------------------------------------------------------
@@ -132,14 +135,12 @@ export class MessageStore {
     const max = limit ?? this.config.maxHistoryMessages;
 
     // Query newest first, then reverse for chronological order
-    const rows = await this.container.queryWithParams<MessageDocument>(
-      "SELECT TOP @limit * FROM c WHERE c.pk = @pk ORDER BY c.seq DESC",
-      [
-        { name: "@pk", value: pk },
-        { name: "@limit", value: max },
-      ],
-      { partitionKey: pk },
-    );
+    const rows = await this.container.find<MessageDocument>({
+      partitionKey: pk,
+      where: eq("pk", pk),
+      orderBy: { field: "seq", direction: "desc" },
+      limit: max,
+    });
 
     return rows.reverse();
   }
@@ -149,11 +150,11 @@ export class MessageStore {
    */
   async getAll(pk: string): Promise<MessageDocument[]> {
     this.ensureInitialized();
-    return this.container.queryWithParams<MessageDocument>(
-      "SELECT * FROM c WHERE c.pk = @pk ORDER BY c.seq ASC",
-      [{ name: "@pk", value: pk }],
-      { partitionKey: pk },
-    );
+    return this.container.find<MessageDocument>({
+      partitionKey: pk,
+      where: eq("pk", pk),
+      orderBy: { field: "seq", direction: "asc" },
+    });
   }
 
   /**
@@ -165,15 +166,11 @@ export class MessageStore {
     toSeq: number,
   ): Promise<MessageDocument[]> {
     this.ensureInitialized();
-    return this.container.queryWithParams<MessageDocument>(
-      "SELECT * FROM c WHERE c.pk = @pk AND c.seq >= @from AND c.seq < @to ORDER BY c.seq ASC",
-      [
-        { name: "@pk", value: pk },
-        { name: "@from", value: fromSeq },
-        { name: "@to", value: toSeq },
-      ],
-      { partitionKey: pk },
-    );
+    return this.container.find<MessageDocument>({
+      partitionKey: pk,
+      where: and(eq("pk", pk), gte("seq", fromSeq), lt("seq", toSeq)),
+      orderBy: { field: "seq", direction: "asc" },
+    });
   }
 
   /**
@@ -181,11 +178,7 @@ export class MessageStore {
    */
   async count(pk: string): Promise<number> {
     this.ensureInitialized();
-    return this.container.count(
-      "c.pk = @pk",
-      [{ name: "@pk", value: pk }],
-      { partitionKey: pk },
-    );
+    return this.container.count({ partitionKey: pk, where: eq("pk", pk) });
   }
 
   // --------------------------------------------------------------------------
@@ -204,11 +197,11 @@ export class MessageStore {
   async deleteAll(pk: string): Promise<number> {
     this.ensureInitialized();
 
-    const toDelete = await this.container.queryWithParams<{ id: string }>(
-      "SELECT c.id FROM c WHERE c.pk = @pk",
-      [{ name: "@pk", value: pk }],
-      { partitionKey: pk },
-    );
+    const toDelete = await this.container.find<{ id: string }>({
+      partitionKey: pk,
+      where: eq("pk", pk),
+      select: ["id"],
+    });
 
     let deleted = 0;
     for (const doc of toDelete) {
@@ -226,14 +219,11 @@ export class MessageStore {
   async deleteBefore(pk: string, beforeSeq: number): Promise<number> {
     this.ensureInitialized();
 
-    const toDelete = await this.container.queryWithParams<{ id: string }>(
-      "SELECT c.id FROM c WHERE c.pk = @pk AND c.seq < @before",
-      [
-        { name: "@pk", value: pk },
-        { name: "@before", value: beforeSeq },
-      ],
-      { partitionKey: pk },
-    );
+    const toDelete = await this.container.find<{ id: string }>({
+      partitionKey: pk,
+      where: and(eq("pk", pk), lt("seq", beforeSeq)),
+      select: ["id"],
+    });
 
     let deleted = 0;
     for (const doc of toDelete) {
@@ -257,14 +247,11 @@ export class MessageStore {
   /** The assistant reply a run stored, if any (replaying a redelivered run). */
   async findByRunId(pk: string, runId: string): Promise<MessageDocument | null> {
     this.ensureInitialized();
-    const found = await this.container.queryWithParams<MessageDocument>(
-      "SELECT * FROM c WHERE c.pk = @pk AND c.runId = @runId AND c.role = 'assistant'",
-      [
-        { name: "@pk", value: pk },
-        { name: "@runId", value: runId },
-      ],
-      { partitionKey: pk, maxResults: 1 },
-    );
+    const found = await this.container.find<MessageDocument>({
+      partitionKey: pk,
+      where: and(eq("pk", pk), eq("runId", runId), eq("role", "assistant")),
+      limit: 1,
+    });
     return found[0] ?? null;
   }
 
@@ -278,27 +265,23 @@ export class MessageStore {
     if (!trimmed) return null;
 
     // Find the most recent user message with this idempotency key
-    const userMsgs = await this.container.queryWithParams<MessageDocument>(
-      "SELECT * FROM c WHERE c.pk = @pk AND c.idempotencyKey = @key AND c.role = 'user' ORDER BY c.seq DESC",
-      [
-        { name: "@pk", value: pk },
-        { name: "@key", value: trimmed },
-      ],
-      { partitionKey: pk, maxResults: 1 },
-    );
+    const userMsgs = await this.container.find<MessageDocument>({
+      partitionKey: pk,
+      where: and(eq("pk", pk), eq("idempotencyKey", trimmed), eq("role", "user")),
+      orderBy: { field: "seq", direction: "desc" },
+      limit: 1,
+    });
 
     if (userMsgs.length === 0) return null;
     const userMsg = userMsgs[0];
 
     // Find the next assistant message after it
-    const assistantMsgs = await this.container.queryWithParams<MessageDocument>(
-      "SELECT * FROM c WHERE c.pk = @pk AND c.seq > @seq AND c.role = 'assistant' ORDER BY c.seq ASC",
-      [
-        { name: "@pk", value: pk },
-        { name: "@seq", value: userMsg.seq },
-      ],
-      { partitionKey: pk, maxResults: 1 },
-    );
+    const assistantMsgs = await this.container.find<MessageDocument>({
+      partitionKey: pk,
+      where: and(eq("pk", pk), gt("seq", userMsg.seq), eq("role", "assistant")),
+      orderBy: { field: "seq", direction: "asc" },
+      limit: 1,
+    });
 
     return assistantMsgs.length > 0 ? assistantMsgs[0] : null;
   }

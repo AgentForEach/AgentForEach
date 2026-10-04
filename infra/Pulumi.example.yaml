@@ -43,3 +43,6 @@ config:
 
   # Settings the stack doesn't model (values go to Key Vault):
   # pulumi config set --secret --path 'agentforeach:extraAppSettings.ANTHROPIC_API_KEY' sk-ant-...
+  # PostgreSQL instead of Cosmos DB (bring your own server; docs/Database.md):
+  # pulumi config set --path 'agentforeach:extraAppSettings.DATABASE_PROVIDER' postgres
+  # pulumi config set --secret --path 'agentforeach:extraAppSettings.DATABASE_URL' postgres://...?sslmode=require

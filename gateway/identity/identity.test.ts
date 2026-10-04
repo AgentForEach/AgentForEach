@@ -1,15 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import type {
-  BaseDocument,
-  ContainerHandle,
-  ContainerOptions,
-  DatabaseProvider,
-  PatchOperation,
-  QueryOptions,
-  QueryParameter,
-} from "../database/index.js";
+import { InMemoryStorage, type Collection } from "@agentforeach/storage";
 import {
   IdentityConflictError,
   IdentityStore,
@@ -19,228 +11,6 @@ import {
 import { resolveChannelIdentity, tryPairChannel } from "./resolver.js";
 import type { IdentityLink, PairingCode } from "./types.js";
 import type { IdentityConfig } from "./config.js";
-
-// ============================================================================
-// In-Memory Database Mock
-// ============================================================================
-
-/**
- * In-memory container that is partition-key aware and supports the subset
- * of Cosmos SQL used by IdentityStore:
- *
- *   - Equality:   c.id = @id, c.userId = @userId
- *   - TOP @limit
- *
- * Two containers are created by IdentityStore.initialize():
- *   - "identity-links"   partition key: /userId
- *   - "identity-pairing" partition key: /code
- */
-class InMemoryContainer<T extends BaseDocument> implements ContainerHandle<T> {
-  /** Keyed by partition key + id, like Cosmos: one id may exist in two partitions. */
-  private docs = new Map<string, T>();
-  private partitionKeyPath: string;
-
-  constructor(partitionKeyPath = "/userId") {
-    this.partitionKeyPath = partitionKeyPath.replace(/^\//, "");
-  }
-
-  private pkOf(doc: T): string {
-    return String((doc as Record<string, unknown>)[this.partitionKeyPath]);
-  }
-
-  private key(id: string, partitionKey: string): string {
-    return `${partitionKey}\u0000${id}`;
-  }
-
-  async create(document: T): Promise<T> {
-    const key = this.key(document.id, this.pkOf(document));
-    if (this.docs.has(key)) {
-      const err: Record<string, unknown> = new Error(
-        "Conflict",
-      ) as unknown as Record<string, unknown>;
-      err.code = 409;
-      throw err;
-    }
-    this.docs.set(key, structuredClone(document));
-    return structuredClone(document);
-  }
-
-  async upsert(document: T): Promise<T> {
-    this.docs.set(this.key(document.id, this.pkOf(document)), structuredClone(document));
-    return structuredClone(document);
-  }
-
-  async read(id: string, partitionKey: string): Promise<T | null> {
-    const doc = this.docs.get(this.key(id, partitionKey));
-    return doc ? structuredClone(doc) : null;
-  }
-
-  async replace(id: string, partitionKey: string, document: T): Promise<T> {
-    const existing = await this.read(id, partitionKey);
-    if (!existing) throw new Error("not found");
-    this.docs.set(this.key(id, partitionKey), structuredClone(document));
-    return structuredClone(document);
-  }
-
-  async patch(
-    id: string,
-    partitionKey: string,
-    operations: PatchOperation[],
-  ): Promise<T> {
-    const existing = await this.read(id, partitionKey);
-    if (!existing) throw new Error("not found");
-    const target = existing as unknown as Record<string, unknown>;
-
-    for (const op of operations) {
-      const path = op.path.replace(/^\//, "").split("/");
-      if (path.length === 0) continue;
-      if (op.op === "set") {
-        const key = path[path.length - 1]!;
-        let ptr = target;
-        for (let i = 0; i < path.length - 1; i += 1) {
-          if (!ptr[path[i]!] || typeof ptr[path[i]!] !== "object") {
-            ptr[path[i]!] = {};
-          }
-          ptr = ptr[path[i]!] as Record<string, unknown>;
-        }
-        ptr[key] = op.value;
-      }
-    }
-
-    this.docs.set(this.key(id, partitionKey), structuredClone(existing));
-    return structuredClone(existing);
-  }
-
-  /** Synchronous check-and-delete, so concurrent deletes behave like Cosmos (one wins). */
-  async delete(id: string, partitionKey: string): Promise<boolean> {
-    return this.docs.delete(this.key(id, partitionKey));
-  }
-
-  async query<R = T>(
-    _querySpec: unknown,
-    options: QueryOptions = {},
-  ): Promise<R[]> {
-    const partitionKey = options.partitionKey;
-    const out: unknown[] = [];
-    for (const doc of this.docs.values()) {
-      if (
-        partitionKey !== undefined &&
-        (doc as Record<string, unknown>)[this.partitionKeyPath] !== partitionKey
-      ) {
-        continue;
-      }
-      out.push(structuredClone(doc));
-    }
-    return out as R[];
-  }
-
-  async queryWithParams<R = T>(
-    sql: string,
-    parameters: QueryParameter[] = [],
-    options: QueryOptions = {},
-  ): Promise<R[]> {
-    const paramMap = new Map<string, unknown>();
-    for (const p of parameters) {
-      paramMap.set(p.name, p.value);
-    }
-
-    let candidates: T[] = [];
-    for (const doc of this.docs.values()) {
-      if (
-        options.partitionKey !== undefined &&
-        (doc as Record<string, unknown>)[this.partitionKeyPath] !==
-          options.partitionKey
-      ) {
-        continue;
-      }
-      candidates.push(structuredClone(doc));
-    }
-
-    // Apply WHERE conditions
-    candidates = candidates.filter((doc) => {
-      const obj = doc as Record<string, unknown>;
-      const whereMatch = sql.match(/WHERE\s+(.+?)(?:\s+ORDER\s+BY|\s*$)/i);
-      if (!whereMatch) return true;
-
-      const whereClause = whereMatch[1]!;
-      const conditions = whereClause.split(/\s+AND\s+/i);
-
-      for (const cond of conditions) {
-        const trimmed = cond.trim();
-
-        // c.field = @param
-        const eqMatch = trimmed.match(/c\.(\w+)\s*=\s*(@\w+)/);
-        if (eqMatch) {
-          const val = obj[eqMatch[1]!];
-          const paramVal = paramMap.get(eqMatch[2]!);
-          if (val !== paramVal) return false;
-          continue;
-        }
-
-        // c.field = 'literal'
-        const literalMatch = trimmed.match(/c\.(\w+)\s*=\s*'([^']*)'/);
-        if (literalMatch) {
-          if (obj[literalMatch[1]!] !== literalMatch[2]) return false;
-          continue;
-        }
-      }
-
-      return true;
-    });
-
-    // Apply maxResults
-    if (options.maxResults !== undefined) {
-      candidates = candidates.slice(0, options.maxResults);
-    }
-
-    return candidates as unknown as R[];
-  }
-
-  async count(
-    _whereClause?: string,
-    _parameters?: QueryParameter[],
-    _options?: QueryOptions,
-  ): Promise<number> {
-    return this.docs.size;
-  }
-
-  getRawContainer(): unknown {
-    return {};
-  }
-}
-
-// ============================================================================
-// In-Memory Database Provider
-// ============================================================================
-
-class InMemoryDatabaseProvider implements DatabaseProvider {
-  readonly name = "memory";
-  private containers = new Map<string, InMemoryContainer<BaseDocument>>();
-
-  async initialize(): Promise<void> {
-    return;
-  }
-
-  async getOrCreateContainer<T extends BaseDocument = BaseDocument>(
-    options: ContainerOptions,
-  ): Promise<ContainerHandle<T>> {
-    const id = options.id;
-    if (!id) throw new Error("container id required");
-
-    const existing = this.containers.get(id);
-    if (existing) return existing as unknown as ContainerHandle<T>;
-
-    const pkPath = options.partitionKey?.paths?.[0] ?? "/id";
-
-    const container = new InMemoryContainer<BaseDocument>(pkPath);
-    this.containers.set(id, container);
-    return container as unknown as ContainerHandle<T>;
-  }
-
-  getDatabaseId(): string {
-    return "memory";
-  }
-}
 
 // ============================================================================
 // Helpers
@@ -267,7 +37,7 @@ async function setupStore(
   configOverrides?: Partial<IdentityConfig>,
 ): Promise<IdentityStore> {
   resetIdentityConfigCache();
-  const db = new InMemoryDatabaseProvider();
+  const db = new InMemoryStorage();
   const config = makeConfig(configOverrides);
   const store = new IdentityStore(db, config);
   await store.initialize();
@@ -457,9 +227,8 @@ test("consumePairingCode returns null for expired code", async () => {
 
   // Manually set expiresAt to the past by consuming and recreating
   // We'll directly test the expiry logic by creating a code with past expiry
-  // Since the in-memory mock doesn't support Cosmos TTL auto-delete,
   // we test that consumePairingCode checks expiresAt
-  const db = new InMemoryDatabaseProvider();
+  const db = new InMemoryStorage();
   const config = makeConfig({ pairingCodeTtlSeconds: -1 }); // already expired
   const expiredStore = new IdentityStore(db, config);
   await expiredStore.initialize();
@@ -625,7 +394,7 @@ test("tryPairChannel preserves sender metadata on link", async () => {
 
 test("IdentityStore throws when not initialized", async () => {
   resetIdentityConfigCache();
-  const db = new InMemoryDatabaseProvider();
+  const db = new InMemoryStorage();
   const store = new IdentityStore(db, makeConfig());
 
   await assert.rejects(
@@ -662,10 +431,10 @@ test("re-linking a channel account to another user leaves exactly one link", asy
 
 async function setupStoreAndDb(configOverrides?: Partial<IdentityConfig>) {
   resetIdentityConfigCache();
-  const db = new InMemoryDatabaseProvider();
+  const db = new InMemoryStorage();
   const store = new IdentityStore(db, makeConfig(configOverrides));
   await store.initialize();
-  const links = await db.getOrCreateContainer<IdentityLink>({ id: "identity-links" });
+  const links: Collection<IdentityLink> = db.getCollection<IdentityLink>("identity-links");
   return { store, db, links };
 }
 
@@ -703,11 +472,11 @@ test("backfillChannelIndex indexes legacy links once and skips conflicts", async
 test("a legacy-lookup miss is remembered, so unlinked senders don't query every message", async () => {
   const { store, links } = await setupStoreAndDb({ legacyLinkLookup: true });
   let queries = 0;
-  const original = links.queryWithParams.bind(links);
-  links.queryWithParams = (async (...args: Parameters<typeof original>) => {
+  const original = links.find.bind(links);
+  links.find = (async (...args: Parameters<typeof original>) => {
     queries++;
     return original(...args);
-  }) as typeof links.queryWithParams;
+  }) as typeof links.find;
 
   assert.equal(await store.resolveByChannel("telegram", "999"), null);
   assert.equal(await store.resolveByChannel("telegram", "999"), null);

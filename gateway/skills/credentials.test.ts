@@ -17,7 +17,7 @@ import { SkillBlobStore } from "./blob-store.js";
 import { resolveUserSkills } from "./registry.js";
 import { SkillToolHandler } from "./handler.js";
 import { SandboxToolHandler } from "./sandbox/handler.js";
-import type { SandboxBackend, EgressCredential } from "./sandbox/types.js";
+import type { SandboxBackend, SandboxCapabilities, EgressCredential } from "./sandbox/types.js";
 import type { SkillManifest, UserSkillConfig, CredentialBinding } from "./types.js";
 import type { UserSkillStore } from "./store.js";
 import type { SkillBlobStore as BlobStoreType } from "./blob-store.js";
@@ -230,6 +230,7 @@ test("with requireCredentialHosts off, legacy credentials are substituted anywhe
 // ============================================================================
 
 class RecordingBackend implements SandboxBackend {
+  capabilities: SandboxCapabilities = { browser: false, egressCredentials: false, persistence: "disk" };
   env?: Record<string, string>;
   egress?: EgressCredential[];
   async exec() {
@@ -240,11 +241,16 @@ class RecordingBackend implements SandboxBackend {
   async fileList() { return []; }
   async fileReadBinary() { return { contentBase64: "", filename: "", sizeBytes: 0, sessionId: "s" }; }
   async setEnv(vars: Record<string, string>) { this.env = vars; }
+  async setEgressCredentials(_credentials: EgressCredential[]): Promise<void> {
+    throw new Error("no egress proxy");
+  }
+  async deleteUserSandboxes() { return 0; }
   resolveIdentifier(userId: string) { return userId; }
   isReady() { return true; }
 }
 
 class InjectingBackend extends RecordingBackend {
+  capabilities: SandboxCapabilities = { browser: false, egressCredentials: true, persistence: "disk" };
   async setEgressCredentials(credentials: EgressCredential[]) { this.egress = credentials; }
 }
 

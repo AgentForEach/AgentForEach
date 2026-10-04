@@ -8,7 +8,6 @@
  *   - Config loader for agentforeach.json "skills" section
  *   - User skill store (Cosmos DB persistence)
  *   - Blob store (Azure Blob Storage for SKILL.md files)
- *   - Exec module (legacy shell execution with allowlist)
  *   - Per-user skill resolution
  *   - Tool handler (skill_list, skill_setup, skill_read, http_fetch)
  *
@@ -55,11 +54,7 @@ export { UserSkillStore } from "./store.js";
 export { SkillBlobStore } from "./blob-store.js";
 
 // -- Loader --
-export { parseSkillFrontmatter, loadSkillMd } from "./loader.js";
-
-// -- Exec --
-export { ExecToolHandler, ALLOWED_BINS, validateBinary } from "./exec/index.js";
-export type { ExecArgs, ExecResult, ExecConfig } from "./exec/index.js";
+export { parseSkillFrontmatter } from "./loader.js";
 
 // -- Registry --
 export {

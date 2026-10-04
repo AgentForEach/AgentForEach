@@ -1,0 +1,14 @@
+{
+  "name": "afe-realtime-conformance",
+  "main": "worker.ts",
+  "compatibility_date": "2025-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": { "REALTIME_SIGNING_KEY": "local-conformance-only" },
+  "durable_objects": {
+    "bindings": [
+      { "name": "REALTIME_USER_SOCKET", "class_name": "UserSocket" },
+      { "name": "REALTIME_RELAY", "class_name": "Relay" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["UserSocket", "Relay"] }]
+}

@@ -6,7 +6,8 @@
  * `websocket/providers/index.ts`.
  *
  * Built-in providers:
- *   - "cosmosdb"  — Cosmos DB with vector + full-text search (default)
+ *   - "storage"   — the shared storage adapter, vector + hybrid search
+ *                   (default; "cosmosdb" is accepted as an alias, its old name)
  *   - "noop"      — Silent no-op (used when memory is disabled)
  *
  * Third-party or test providers can be registered at runtime via
@@ -15,8 +16,8 @@
 
 import type { MemoryStoreProvider } from "../types.js";
 import type { MemoryConfig } from "../config.js";
-import type { DatabaseProvider } from "../../database/index.js";
-import { CosmosMemoryStore } from "./cosmosdb.js";
+import type { StorageAdapter } from "@agentforeach/storage";
+import { StorageMemoryStore } from "./storage.js";
 import { NoopMemoryStore } from "./noop.js";
 
 // ============================================================================
@@ -27,12 +28,12 @@ import { NoopMemoryStore } from "./noop.js";
  * Factory function that creates a store provider from resolved config.
  *
  * @param config - Fully-resolved MemoryConfig.
- * @param db    - Optional shared DatabaseProvider instance.  Required for
- *                providers that use a database backend; ignored by others.
+ * @param storage - Optional shared storage adapter. Required for providers
+ *                  that store in the database; ignored by others.
  */
 export type StoreProviderFactory = (
   config: MemoryConfig,
-  db?: DatabaseProvider,
+  storage?: StorageAdapter,
 ) => MemoryStoreProvider;
 
 // ============================================================================
@@ -43,14 +44,14 @@ const _registry = new Map<string, StoreProviderFactory>();
 
 // -- Built-in providers ------------------------------------------------------
 
-_registry.set("cosmosdb", (config, db) => {
-  if (!db) {
-    throw new Error(
-      'memory: "cosmosdb" store provider requires a DatabaseProvider instance',
-    );
+const storageStore: StoreProviderFactory = (config, storage) => {
+  if (!storage) {
+    throw new Error('memory: the "storage" store provider requires a storage adapter');
   }
-  return new CosmosMemoryStore(config, db);
-});
+  return new StorageMemoryStore(config, storage);
+};
+_registry.set("storage", storageStore);
+_registry.set("cosmosdb", storageStore);
 
 _registry.set("noop", () => new NoopMemoryStore());
 
@@ -76,12 +77,12 @@ export function registerStoreProvider(
  * Resolve the store provider for the given config.
  *
  * @param config - Resolved MemoryConfig (contains `storeProvider` field).
- * @param db    - Optional DatabaseProvider instance (needed by "cosmosdb").
+ * @param storage - Optional storage adapter (needed by "storage").
  * @returns A ready-to-use (but not yet initialized) MemoryStoreProvider.
  */
 export function resolveStoreProvider(
   config: MemoryConfig,
-  db?: DatabaseProvider,
+  storage?: StorageAdapter,
 ): MemoryStoreProvider {
   const name = config.storeProvider;
   const factory = _registry.get(name);
@@ -91,7 +92,7 @@ export function resolveStoreProvider(
       `memory: unknown store provider "${name}". Available: ${known}`,
     );
   }
-  return factory(config, db);
+  return factory(config, storage);
 }
 
 /**

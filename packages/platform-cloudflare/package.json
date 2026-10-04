@@ -1,0 +1,45 @@
+{
+  "name": "@agentforeach/platform-cloudflare",
+  "version": "0.1.0",
+  "description": "AgentForEach platform pack for Cloudflare: the gateway on Workers, with Durable Objects, Workflows and Containers.",
+  "type": "module",
+  "private": true,
+  "license": "Apache-2.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./realtime/objects": {
+      "types": "./dist/realtime/objects.d.ts",
+      "default": "./dist/realtime/objects.js"
+    },
+    "./durable/objects": {
+      "types": "./dist/durable/objects.d.ts",
+      "default": "./dist/durable/objects.js"
+    },
+    "./sandbox/objects": {
+      "types": "./dist/sandbox/objects.d.ts",
+      "default": "./dist/sandbox/objects.js"
+    }
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.test.*",
+    "!dist/**/*.testkit.*",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @agentforeach/platform && tsc && tsc -p tsconfig.test.json",
+    "test": "npm run build && node --test \"dist/**/*.test.js\""
+  },
+  "dependencies": {
+    "@agentforeach/platform": "0.1.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261002.1",
+    "@types/node": "^22.20.4"
+  }
+}

@@ -1,310 +1,246 @@
 /**
- * AgentForEach Cron System — Durable Functions Orchestrator & Activities
+ * AgentForEach Cron System — the scheduler alarm and cron runs
  *
- * An eternal orchestration per scheduler shard, instead of an in-process
- * timer loop.
+ * One durable alarm per scheduler shard (see `@agentforeach/platform`'s
+ * Durable port), instead of an in-process timer loop.
  *
- * Architecture:
- *   CronScheduler (orchestrator) — eternal loop:
- *     1. GetDueJobs activity → query Cosmos DB
- *     2. Fan-out ExecuteAndRecordJob activities → parallel execution
- *     3. ComputeNextWake activity → earliest next run
- *     4. createTimer(nextWake) | waitForExternalEvent("jobsChanged")
- *     5. continueAsNew → bounded history
+ *   CronScheduler (alarm) — each tick:
+ *     1. claim the shard's due jobs
+ *     2. start a CronRun job for each (they run in parallel, each on its own)
+ *     3. drain the shard's heartbeat queue
+ *     4. return the earliest next run: the alarm sleeps until then, or until
+ *        a cron change wakes it
  *
- *   SchedulerHealthCheck (timer trigger) — ensures orchestrator is alive
+ *   CronRun (job) — execute one claimed job and record the result.
+ *
+ *   CronSchedulerHealthCheck (schedule) — keeps every shard's alarm running.
  */
 
-import * as df from "durable-functions";
-import { app, type InvocationContext, type Timer } from "@azure/functions";
+import type { AlarmDefinition, HandlerContext, JobDefinition, ScheduleDef } from "@agentforeach/platform";
+import { durable } from "../runtime/durable.js";
 import type { CronJob, JobResult } from "./types.js";
-import { getCronStore } from "./store.js";
+import { getCronStore, type CronStore } from "./store.js";
 import { executeJob, getExecutorConfig, processHeartbeatQueue } from "./executor.js";
 import {
   FALLBACK_WAKE_INTERVAL_MS,
-  MAX_DURABLE_TIMER_MS,
+  getMaxDueJobsPerTick,
+  RUNNING_CLAIM_STALE_MS,
   HEALTH_CHECK_SCHEDULE,
-  JOBS_CHANGED_EVENT,
   getSchedulerShardCount,
   normalizeSchedulerShardId,
   getSchedulerInstanceId,
 } from "./config.js";
+
+/** The durable alarm kind for a scheduler shard. */
+export const CRON_SCHEDULER_KIND = "CronScheduler";
+/** The durable job kind that runs one claimed cron job. */
+export const CRON_RUN_KIND = "CronRun";
+
+/** At capacity, when to check again if no finishing run wakes the shard first. */
+const AT_CAPACITY_RECHECK_MS = 30_000;
+
+/** How often a running job renews its claim: well inside the stale window. */
+const CLAIM_RENEW_INTERVAL_MS = Math.max(1_000, Math.min(60_000, Math.floor(RUNNING_CLAIM_STALE_MS / 4)));
 
 type SchedulerShardInput = {
   shardId?: number;
 };
 
 // ============================================================================
-// Activities
+// Cron runs
 // ============================================================================
 
-/**
- * Activity: Query Cosmos DB for all jobs that are due to run.
- */
-df.app.activity("GetDueJobs", {
-  handler: async (input?: SchedulerShardInput): Promise<CronJob[]> => {
-    const shardId = normalizeSchedulerShardId(input?.shardId);
-    const store = getCronStore();
-    return store.getDueJobs(Date.now(), shardId);
-  },
-});
+/** Renew a run's claim every `intervalMs` until the returned function is called. */
+export function renewClaimWhileRunning(
+  store: Pick<CronStore, "renewRunningClaim">,
+  job: Pick<CronJob, "id" | "userId">,
+  runningToken: string,
+  intervalMs = CLAIM_RENEW_INTERVAL_MS,
+): () => void {
+  const timer = setInterval(() => {
+    store.renewRunningClaim(job.id, job.userId, runningToken).catch(() => undefined);
+  }, intervalMs);
+  return () => clearInterval(timer);
+}
 
 /**
- * Activity: Execute a single job and record the result.
+ * Execute a single claimed job and record the result.
  *
- * This is the workhorse — calls OpenAI, records run history, applies
+ * This is the workhorse — calls the model, records run history, applies
  * result to job state (backoff, disable, delete).
  */
-df.app.activity("ExecuteAndRecordJob", {
-  handler: async (job: CronJob): Promise<JobResult> => {
-    const store = getCronStore();
-    const startMs = Date.now();
-    const runningToken = job.state.runningToken;
-    if (!runningToken) {
-      return {
-        status: "skipped",
-        error: "duplicate-suppressed: missing running claim token",
-        durationMs: Date.now() - startMs,
-      };
-    }
+export async function executeAndRecordJob(
+  job: CronJob,
+  /** For tests: how a job executes, and how often its claim is renewed. */
+  deps: { execute?: typeof executeJob; renewEveryMs?: number } = {},
+): Promise<JobResult> {
+  const store = getCronStore();
+  const startMs = Date.now();
+  const runningToken = job.state.runningToken;
+  if (!runningToken) {
+    return {
+      status: "skipped",
+      error: "duplicate-suppressed: missing running claim token",
+      durationMs: Date.now() - startMs,
+    };
+  }
 
-    const started = await store.beginClaimedRun(job.id, job.userId, runningToken);
-    if (!started) {
-      return {
-        status: "skipped",
-        error: "duplicate-suppressed: claim no longer valid",
-        durationMs: Date.now() - startMs,
-      };
-    }
+  const started = await store.beginClaimedRun(job.id, job.userId, runningToken);
+  if (!started) {
+    return {
+      status: "skipped",
+      error: "duplicate-suppressed: claim no longer valid",
+      durationMs: Date.now() - startMs,
+    };
+  }
 
-    let result: JobResult;
+  // A run may take longer than the claim's stale window: renew the claim
+  // while it runs, so no tick claims the job again for a second run.
+  const stopRenewing = renewClaimWhileRunning(store, job, runningToken, deps.renewEveryMs);
+
+  let result: JobResult;
+  try {
+    const config = getExecutorConfig();
+    result = await (deps.execute ?? executeJob)(started, config);
+  } catch (err) {
+    result = {
+      status: "error",
+      error: err instanceof Error ? err.message : String(err),
+      durationMs: Date.now() - startMs,
+    };
+  } finally {
+    stopRenewing();
+  }
+
+  try {
+    await store.recordRun(started, result);
+  } catch {
+    // Best-effort write; avoid changing execution semantics on storage issues.
+  }
+
+  try {
+    await store.applyResult(started, result, { runningToken });
+  } catch {
+    // Best-effort state transition; if this fails, release claim to avoid long stale block.
     try {
-      const config = getExecutorConfig();
-      result = await executeJob(started, config);
-    } catch (err) {
-      result = {
-        status: "error",
-        error: err instanceof Error ? err.message : String(err),
-        durationMs: Date.now() - startMs,
-      };
-    }
-
-    try {
-      await store.recordRun(started, result);
+      await store.releaseRunningClaim(started.id, started.userId, runningToken);
     } catch {
-      // Best-effort write; avoid changing execution semantics on storage issues.
-    }
-
-    try {
-      await store.applyResult(started, result, { runningToken });
-    } catch {
-      // Best-effort state transition; if this fails, release claim to avoid long stale block.
-      try {
-        await store.releaseRunningClaim(started.id, started.userId, runningToken);
-      } catch {
-        // Ignore recovery failures.
-      }
-    }
-
-    return result;
-  },
-});
-
-/**
- * Activity: Compute the next wake time across all scheduled jobs.
- * Returns epoch ms of the earliest due job, or 0 if no jobs exist.
- */
-df.app.activity("ComputeNextWake", {
-  handler: async (input?: SchedulerShardInput): Promise<number> => {
-    const shardId = normalizeSchedulerShardId(input?.shardId);
-    const store = getCronStore();
-    const nextMs = await store.computeNextWakeMs(shardId);
-    return nextMs ?? 0;
-  },
-});
-
-/**
- * Activity: Drain queued wakeMode="next-heartbeat" events for a shard.
- */
-df.app.activity("ProcessHeartbeatQueue", {
-  handler: async (input?: SchedulerShardInput): Promise<{ processed: number; groups: number }> => {
-    const shardId = normalizeSchedulerShardId(input?.shardId);
-    return processHeartbeatQueue(shardId);
-  },
-});
-
-/**
- * One-shot orchestration for async force-run.
- *
- * Runs ExecuteAndRecordJob as an activity and signals the scheduler
- * when done. This avoids tying up an HTTP request for the full
- * execution duration.
- */
-df.app.orchestration("CronForceRunExecution", function* (ctx: df.OrchestrationContext) {
-  const oc = ctx.df;
-  const job: CronJob = oc.getInput() as CronJob;
-
-  yield oc.callActivity("ExecuteAndRecordJob", job);
-
-  // Signal scheduler to re-evaluate wake time after the run completes.
-  // This is done inside the orchestration so it fires even if the
-  // original HTTP caller has already received their 202 response.
-  const shardId = normalizeSchedulerShardId(
-    typeof job.shardId === "number" ? job.shardId : 0,
-  );
-  yield oc.callActivity("SignalJobsChanged", { shardId });
-});
-
-/**
- * Activity: Signal scheduler that jobs have changed.
- * Separated into an activity so it can be called from orchestrations.
- */
-df.app.activity("SignalJobsChanged", {
-  handler: async (_input?: SchedulerShardInput): Promise<void> => {
-    // Durable client is not available inside activities, so we import
-    // the Durable Functions SDK and use the management client directly.
-    // However, activity functions don't have a durable client context.
-    // Instead, we rely on the scheduler's own next-wake re-evaluation:
-    // the applyResult inside ExecuteAndRecordJob already updates the
-    // job state (nextRunAtMs), and the scheduler will pick it up on
-    // its next iteration. The signal from the HTTP handler (already
-    // sent before the 202) handles immediate wake. This activity is
-    // a no-op placeholder for future enhancement if needed.
-  },
-});
-
-// ============================================================================
-// Orchestrator — Eternal Scheduler Loop
-// ============================================================================
-
-/**
- * The core scheduler orchestration.
- *
- * This is an "eternal orchestration" — it loops forever using continueAsNew()
- * to prevent unbounded history growth. Each iteration:
- *
- * 1. Gets all due jobs from Cosmos DB
- * 2. Fans out execution across due jobs (parallel)
- * 3. Computes when to wake next
- * 4. Sleeps until the next job is due OR a "jobsChanged" signal arrives
- * 5. Calls continueAsNew() to reset history
- *
- * Wakes with exact createTimer() calls, not a fixed polling interval.
- */
-df.app.orchestration("CronScheduler", function* (ctx: df.OrchestrationContext) {
-  const oc = ctx.df;
-  const input = (oc.getInput() as SchedulerShardInput | undefined) ?? {};
-  const shardId = normalizeSchedulerShardId(input.shardId);
-
-  // 1. Get due jobs
-  const dueJobs: CronJob[] = yield oc.callActivity("GetDueJobs", { shardId });
-
-  // 2. Execute due jobs AND flush heartbeat queue in parallel.
-  //    Previously heartbeat processing was gated behind job execution,
-  //    meaning one slow OpenAI call could stall all heartbeat delivery.
-  //    Running them concurrently ensures heartbeats are delivered promptly
-  //    even when job execution is slow.
-  {
-    const parallelTasks: ReturnType<typeof oc.callActivity>[] = [];
-
-    if (dueJobs.length > 0) {
-      for (const job of dueJobs) {
-        parallelTasks.push(oc.callActivity("ExecuteAndRecordJob", job));
-      }
-    }
-
-    // Heartbeat flush runs alongside job execution, not after it.
-    parallelTasks.push(oc.callActivity("ProcessHeartbeatQueue", { shardId }));
-
-    if (parallelTasks.length > 0) {
-      yield oc.Task.all(parallelTasks);
+      // Ignore recovery failures.
     }
   }
 
-  // 3. Compute next wake time
-  const nextWakeMs: number = yield oc.callActivity("ComputeNextWake", { shardId });
-
-  // 4. Sleep until next job is due, or wake on external signal
-  //    - If we have a scheduled job: sleep until its fire time
-  //    - If no jobs: sleep for FALLBACK_WAKE_INTERVAL_MS (5 min)
-  //    - Either way, a "jobsChanged" event will wake us early
-  //
-  // IMPORTANT: JS Durable timers are limited to 6 days.
-  // Cap the wake time to avoid exceeding the limit.
-  const nowMs = oc.currentUtcDateTime.getTime();
-  const desiredWakeMs =
-    nextWakeMs > 0 ? nextWakeMs : nowMs + FALLBACK_WAKE_INTERVAL_MS;
-  const cappedWakeMs = Math.min(desiredWakeMs, nowMs + MAX_DURABLE_TIMER_MS);
-  const wakeTime = new Date(cappedWakeMs);
-
-  const timerTask = oc.createTimer(wakeTime);
-  const eventTask = oc.waitForExternalEvent(JOBS_CHANGED_EVENT);
-  yield oc.Task.any([timerTask, eventTask]);
-
-  // Cancel the timer if the event won — required by Durable Functions:
-  // "All pending timers must be completed or canceled for an orchestration to complete."
-  if (!timerTask.isCompleted) {
-    timerTask.cancel();
-  }
-
-  // 5. Continue as new — prevents unbounded orchestration history.
-  // Preserve shard identity across iterations; otherwise non-zero shard
-  // instances would drift to shard 0 after the first cycle.
-  oc.continueAsNew({ shardId });
-});
-
-// ============================================================================
-// Health Check — Ensures Scheduler is Always Running
-// ============================================================================
+  return result;
+}
 
 /**
- * Timer trigger that fires every 5 minutes.
- * Ensures the CronScheduler orchestration is alive — restarts it if
- * it was terminated, completed, or never started.
+ * A claimed job, run once. Starts from the scheduler tick and from force-run.
  *
- * This handles:
- * - First deployment (no instance exists yet)
- * - Function App restarts / cold starts
- * - Unexpected orchestration termination
+ * Afterwards it wakes the job's shard: the tick that started this run
+ * computed its next wake while the job was still claimed (claimed jobs don't
+ * count), so without the wake a recurring job's next run would wait for
+ * another job's wake or the fallback interval.
  */
-app.timer("CronSchedulerHealthCheck", {
-  schedule: HEALTH_CHECK_SCHEDULE,
-  extraInputs: [df.input.durableClient()],
-  handler: async (_timer: Timer, ctx: InvocationContext) => {
-    const client = df.getClient(ctx);
+export const cronRunJob: JobDefinition<CronJob> = {
+  kind: CRON_RUN_KIND,
+  async run(job, context) {
+    const result = await executeAndRecordJob(job);
+    context.log(`[cron] run job=${job.id} status=${result.status} duration=${result.durationMs ?? 0}ms`);
     const shardCount = getSchedulerShardCount();
+    const instanceId = getSchedulerInstanceId(normalizeSchedulerShardId(job.shardId, shardCount), shardCount);
+    try {
+      await durable().wakeAlarm(instanceId);
+    } catch (err) {
+      context.warn(`[cron] could not wake ${instanceId} after job=${job.id}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  },
+};
 
+// ============================================================================
+// The scheduler alarm
+// ============================================================================
+
+/**
+ * One tick of a shard's scheduler: claim its due jobs (claims are what stop
+ * a job running twice), start a CronRun for each, drain its heartbeat queue,
+ * and return when the next job is due. With nothing scheduled, it checks
+ * again after FALLBACK_WAKE_INTERVAL_MS; a cron change wakes it sooner.
+ */
+export async function schedulerTick(input: SchedulerShardInput): Promise<number> {
+  const shardId = normalizeSchedulerShardId(input?.shardId);
+  const store = getCronStore();
+  // Runs are separate jobs, so the tick doesn't wait for them: cap how many
+  // a shard has going at once (one tick's worth, as when the tick waited).
+  const room = getMaxDueJobsPerTick() - (await store.countInFlightRuns(Date.now(), shardId));
+  const due = await store.getDueJobs(Date.now(), shardId, Math.max(0, room));
+  // Each run is its own job: one slow model call can't hold up the tick or
+  // the other runs. The id carries the claim, so a repeated tick can't start
+  // the same claimed run twice.
+  // A run that can't be started (e.g. throttled) doesn't stop the others;
+  // its claim is released, so the next tick can claim it again.
+  const starts = await Promise.allSettled(
+    due.map((job) => durable().startJob(CRON_RUN_KIND, job, `cron-run-${job.id}-${job.state.runningToken ?? "unclaimed"}`)),
+  );
+  await Promise.all(
+    starts.map(async (start, i) => {
+      if (start.status === "fulfilled") return;
+      const job = due[i];
+      console.warn(`[cron] could not start run for job=${job.id}: ${String(start.reason)}`);
+      if (job.state.runningToken) {
+        await store.releaseRunningClaim(job.id, job.userId, job.state.runningToken).catch(() => undefined);
+      }
+    }),
+  );
+  await processHeartbeatQueue(shardId);
+  const nextMs = await store.computeNextWakeMs(shardId);
+  const next = nextMs && nextMs > 0 ? nextMs : Date.now() + FALLBACK_WAKE_INTERVAL_MS;
+  // At capacity, more jobs may already be due: wait for a run to finish (each
+  // wakes its shard) instead of ticking again at once, with a recheck as backstop.
+  return room <= due.length ? Math.max(next, Date.now() + AT_CAPACITY_RECHECK_MS) : next;
+}
+
+export const cronSchedulerAlarm: AlarmDefinition<SchedulerShardInput> = {
+  kind: CRON_SCHEDULER_KIND,
+  tick: (input) => schedulerTick(input),
+};
+
+// ============================================================================
+// Health Check — Ensures Every Shard's Scheduler is Running
+// ============================================================================
+
+/**
+ * Tell a shard's scheduler its jobs changed: wake it to re-evaluate its next
+ * tick, or start it if it isn't running (a fresh deployment, or one that
+ * stopped), so a job due before the next health check still runs on time.
+ * A start that loses a race to another caller is fine.
+ */
+export async function wakeOrStartScheduler(
+  shardId: number,
+  shardCount = getSchedulerShardCount(),
+): Promise<"woken" | "started" | "running" | "suspended"> {
+  const instanceId = getSchedulerInstanceId(shardId, shardCount);
+  if (await durable().wakeAlarm(instanceId)) return "woken";
+  return durable().ensureAlarm(CRON_SCHEDULER_KIND, instanceId, { shardId });
+}
+
+/**
+ * Every 5 minutes, start any shard's scheduler that isn't running: on first
+ * deployment, after a restart, or after an unexpected stop.
+ */
+export const schedules: ScheduleDef[] = [];
+
+schedules.push({
+  name: "CronSchedulerHealthCheck",
+  schedule: HEALTH_CHECK_SCHEDULE,
+  durable: true,
+  handler: async (ctx: HandlerContext) => {
+    const shardCount = getSchedulerShardCount();
     for (let shardId = 0; shardId < shardCount; shardId += 1) {
       const instanceId = getSchedulerInstanceId(shardId, shardCount);
       try {
-        const status = await client.getStatus(instanceId);
-        const runtimeStatus = status?.runtimeStatus;
-
-        if (
-          !runtimeStatus ||
-          runtimeStatus === "Completed" ||
-          runtimeStatus === "Terminated" ||
-          runtimeStatus === "Failed"
-        ) {
-          ctx.log(
-            `CronScheduler shard=${shardId} status=${runtimeStatus ?? "not found"}; starting.`,
-          );
-          await client.startNew("CronScheduler", {
-            instanceId,
-            input: { shardId },
-          });
-        }
+        const result = await durable().ensureAlarm(CRON_SCHEDULER_KIND, instanceId, { shardId });
+        if (result === "started") ctx.log(`CronScheduler shard=${shardId} wasn't running; started.`);
       } catch (err) {
         ctx.error(`Health check failed for shard=${shardId}:`, err);
-        // Try to start anyway.
-        try {
-          await client.startNew("CronScheduler", {
-            instanceId,
-            input: { shardId },
-          });
-        } catch {
-          // Instance may already exist or be starting.
-        }
       }
     }
   },

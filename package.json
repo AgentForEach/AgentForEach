@@ -15,6 +15,12 @@
   "author": "Mohit Garg",
   "type": "module",
   "workspaces": [
+    "packages/storage",
+    "packages/storage-cosmos",
+    "packages/storage-postgres",
+    "packages/platform",
+    "packages/platform-azure",
+    "packages/platform-cloudflare",
     "gateway",
     "infra"
   ],
@@ -24,12 +30,19 @@
   "scripts": {
     "build": "npm run build --workspace @agentforeach/gateway",
     "build:infra": "npm run build --workspace agentforeach-infra",
+    "build:storage": "npm run build --workspace @agentforeach/storage-cosmos && npm run build --workspace @agentforeach/storage-postgres",
+    "build:platform": "npm run build --workspace @agentforeach/platform-azure && npm run build --workspace @agentforeach/platform-cloudflare",
     "test:cron-heartbeat:e2e": "node ./scripts/test-cron-heartbeat-e2e.mjs",
     "test:multi-user": "node ./scripts/test-multi-user-smoke.mjs",
-    "test": "npm test --workspace @agentforeach/gateway"
+    "test": "npm test --workspace @agentforeach/storage && npm test --workspace @agentforeach/storage-cosmos && npm test --workspace @agentforeach/storage-postgres && npm test --workspace @agentforeach/platform && npm test --workspace @agentforeach/platform-azure && npm test --workspace @agentforeach/platform-cloudflare && node --test 'scripts/lib/*.test.mjs' && npm test --workspace @agentforeach/gateway",
+    "test:storage": "npm test --workspace @agentforeach/storage && npm test --workspace @agentforeach/storage-cosmos && npm test --workspace @agentforeach/storage-postgres",
+    "check:bundle": "node scripts/check-bundle.mjs",
+    "typecheck:worker": "wrangler types --config deploy/cloudflare/wrangler.jsonc --include-env=false deploy/cloudflare/worker-runtime.d.ts && tsc --noEmit -p deploy/cloudflare"
   },
   "devDependencies": {
     "@types/node": "^22.20.4",
-    "typescript": "^5.7.0"
+    "esbuild": "^0.25.12",
+    "typescript": "^5.7.0",
+    "wrangler": "^4.147.0"
   }
 }

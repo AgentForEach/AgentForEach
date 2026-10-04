@@ -16,6 +16,7 @@ import type {
 } from "./types.js";
 import { randomUUID } from "node:crypto";
 import { redactId } from "../utils/redact.js";
+import { hostInfo } from "../runtime/host.js";
 import {
   DEFAULT_JOB_TIMEOUT_MS,
   DEFAULT_MODEL,
@@ -275,9 +276,7 @@ async function executeIsolatedJob(
     instructions = cronContext;
   }
 
-  const envLabel = process.env.WEBSITE_SITE_NAME
-    ? `azure:${process.env.WEBSITE_SITE_NAME}`
-    : "local";
+  const envLabel = hostInfo().label;
 
   // Call the LLM via the provider abstraction, metered like a chat turn:
   // credits reserved and settled, usage recorded.

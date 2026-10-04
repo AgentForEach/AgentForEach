@@ -25,6 +25,7 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
+import { background } from "@agentforeach/platform";
 import type {
   Provider,
   ProviderId,
@@ -155,6 +156,7 @@ import {
   loadHitlConfig,
   HITL_ORCHESTRATION_NAME,
   HITL_INPUT_EVENT,
+  type HitlWaitInput,
   isRequestUserInputTool,
   getRequestUserInputToolDefinitions,
   getChannelRequestUserInputToolDefinitions,
@@ -169,6 +171,7 @@ import type {
 } from "./types.js";
 import { isModelAllowed } from "../llms/model-policy.js";
 import { redactId } from "../utils/redact.js";
+import { durable, hasDurable } from "../runtime/durable.js";
 
 // ============================================================================
 // Runner Config (internal — set by AgentClient)
@@ -378,10 +381,16 @@ export const SIBLING_TOOL_GRACE_MS = 10_000;
  * one suspends for approval, the rest get `graceMs` more: the run holds the
  * session lease while it waits, and the user's answer can't resume the
  * session until it's released. Calls still running then are `undefined`.
+ *
+ * `deadline` stops the wait: when it aborts, this throws its reason, so a
+ * call that hangs (a sandbox that never starts) fails the run at its
+ * deadline instead of after it. The call keeps running; its result is
+ * dropped.
  */
 export async function settleToolCalls(
   calls: Array<Promise<ToolCallResult>>,
   graceMs = SIBLING_TOOL_GRACE_MS,
+  deadline?: AbortSignal,
 ): Promise<Array<PromiseSettledResult<ToolCallResult> | undefined>> {
   const results: Array<PromiseSettledResult<ToolCallResult> | undefined> = new Array(calls.length);
   let onSuspend!: () => void;
@@ -403,8 +412,19 @@ export async function settleToolCalls(
   const grace = suspended.then(
     () => new Promise<void>((resolve) => (timer = setTimeout(resolve, graceMs))),
   );
-  await Promise.race([all, grace]);
-  clearTimeout(timer);
+  let onDeadline: (() => void) | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    if (!deadline) return;
+    if (deadline.aborted) return reject(deadline.reason);
+    onDeadline = () => reject(deadline.reason);
+    deadline.addEventListener("abort", onDeadline, { once: true });
+  });
+  try {
+    await Promise.race([all, grace, expired]);
+  } finally {
+    clearTimeout(timer);
+    if (onDeadline) deadline?.removeEventListener("abort", onDeadline);
+  }
   return results;
 }
 
@@ -514,7 +534,7 @@ export async function runAgentTurn(
   // knows whether it still has to save it).
   let userMessagePersisted = false;
   // Unique to this execution (runId repeats across retries of one request).
-  const leaseId = randomUUID();
+  const leaseId = request.executionId ? `${request.executionId}:${randomUUID()}` : randomUUID();
   let modelSoFar: string | undefined;
   let providerSoFar: ProviderId | undefined;
   const runId = request.runId ?? randomUUID();
@@ -694,6 +714,10 @@ export async function runAgentTurn(
           runState.conversationState.previousResponseId
         ) {
           directHitlRunState = runState;
+          // The user answered a browser handoff (Done or Cancel, from any
+          // client): close the live view now. The driver ends it on the
+          // viewer's own Done, but an answer through the API doesn't reach it.
+          if (isBrowserHandoffCall(runState.pendingToolCall)) stopBrowserLiveView(deps, request.userId, session.sessionId);
         } else if (runState) {
           console.warn(
             `[runner] hitl_input_response_ignored requestId=${request.hitlInputResponse.requestId} ` +
@@ -741,11 +765,8 @@ export async function runAgentTurn(
           }
 
           // A browser handoff the user never finished: close its live view now, not at the deadline.
-          if (pendingInputRequests.some((state) => isBrowserHandoffCall(state.pendingToolCall)) && deps.sandboxClient) {
-            const sandbox = deps.sandboxClient;
-            void sandbox
-              .exec({ command: "afe-browser handoff_stop", timeout: 30 }, sandbox.resolveIdentifier(request.userId, session.sessionId))
-              .catch(() => {});
+          if (pendingInputRequests.some((state) => isBrowserHandoffCall(state.pendingToolCall))) {
+            stopBrowserLiveView(deps, request.userId, session.sessionId);
           }
 
           await Promise.allSettled(
@@ -2192,13 +2213,13 @@ export async function runAgentTurn(
 
             const gateAction = hitlGateAction(
               Boolean(hitlPolicy && shouldGate(hitlPolicy, args, toolSchema)),
-              Boolean(deps.hitlStore && request._invocationContext),
+              Boolean(deps.hitlStore && request.canSuspendForInput && hasDurable()),
             );
 
             if (gateAction === "suspend" && hitlPolicy && deps.hitlStore) {
-              // Save run state, start Durable orchestrator, and suspend.
-              // The Azure Function exits; the orchestrator waits (zero cost)
-              // for the user to respond, then resumes in a new invocation.
+              // Save run state, start the durable wait, and suspend.
+              // This invocation exits; the wait sleeps (zero cost) until the
+              // user responds, then resumes the run in a new invocation.
               const hitlRequestId = randomUUID();
               const hitlTimeoutSeconds = hitlPolicy.timeoutSeconds ?? loadHitlConfig().defaultTimeoutSeconds;
               const inputRequest: InputRequest = {
@@ -2247,18 +2268,13 @@ export async function runAgentTurn(
 
               await deps.hitlStore.create(runState);
 
-              // Start the Durable Functions orchestrator (fire-and-forget)
-              const dfModule = await import("durable-functions");
-              const durableClient = dfModule.getClient(request._invocationContext!);
-              await durableClient.startNew(HITL_ORCHESTRATION_NAME, {
-                instanceId: runState.orchestrationId,
-                input: {
-                  inputRequest,
-                  requestId: hitlRequestId,
-                  userId: request.userId,
-                  timeoutSeconds: hitlTimeoutSeconds,
-                },
-              });
+              // Start the durable wait for the answer (it pushes the form).
+              await durable().startWait<HitlWaitInput>(
+                HITL_ORCHESTRATION_NAME,
+                runState.orchestrationId,
+                { inputRequest, requestId: hitlRequestId, userId: request.userId, timeoutSeconds: hitlTimeoutSeconds },
+                hitlTimeoutSeconds * 1000,
+              );
 
               // Notify the stream listener
               onStream?.({
@@ -2379,6 +2395,8 @@ export async function runAgentTurn(
 
           return { callId: call.callId, output: result, ...(images?.length ? { images } : {}) };
         })),
+        SIBLING_TOOL_GRACE_MS,
+        deadline.signal,
       );
 
       // A gated call suspends the run for approval. Keep the results of the
@@ -2499,10 +2517,19 @@ export async function runAgentTurn(
     // ----------------------------------------------------------------
     // If the user clicked stop, do not persist the partial response,
     // auto-capture memories, or emit a final event. The client already
-    // receives an explicit "aborted" realtime event and may have kept any
-    // partial text locally.
+    // received the abort handler's "aborted" event and may have kept any
+    // partial text locally. That event can't name the run (a stop is per
+    // user) and, when the run is on another instance, comes before the run
+    // notices the stop and its last deltas; this one, after them, names it.
     if (request.abortSignal?.aborted) {
       await stopUnfinishedHandoff?.().catch(() => {});
+      if (deps.realtimeEnabled) {
+        await sendEventToUser(request.userId, EVENTS.CHAT, {
+          state: "aborted" as const,
+          runId,
+          sessionId: session.sessionId,
+        }).catch(() => {});
+      }
       const abortedResponse: SendResponse = {
         runId,
         text: responseText,
@@ -2671,14 +2698,16 @@ export async function runAgentTurn(
     }
 
     // ----------------------------------------------------------------
-    // Step 8b: Trigger compaction if threshold exceeded (fire-and-forget)
+    // Step 8b: Trigger compaction if threshold exceeded. The turn doesn't
+    // wait for it: it is the invocation's background work, which runs
+    // detached on Azure and is kept alive (with its database) on a Worker.
     // ----------------------------------------------------------------
     const sessionConfig = deps.sessionStore.getConfig();
     if (shouldCompact(updatedSession, sessionConfig)) {
       deps.hooks.emit("before_compaction", { session: updatedSession });
       const compactionFromSeq = updatedSession.lastCompactedSeq ?? 0;
       const compactionRetainBoundary = updatedSession.messageSeq - sessionConfig.compactionRetainCount;
-      runCompaction({
+      background(runCompaction({
         session: updatedSession,
           provider: deps.provider,
         model: sessionConfig.compactionModel,
@@ -2692,7 +2721,7 @@ export async function runAgentTurn(
           summary: "(auto-compacted)",
           compactedCount: Math.max(0, compactionRetainBoundary - compactionFromSeq),
         });
-      }).catch(() => {}); // Non-fatal — don't block the response
+      }), () => {}); // Non-fatal
 
       // Note: Episode generation removed — episodes are now managed by the
       // LLM via tools (episode_create, episode_update), not by background processes.
@@ -3018,6 +3047,15 @@ export async function runAgentTurn(
 /** A paused call the user answers through a form, resuming this exact response (request_user_input, a browser handoff). */
 function isDirectInputCall(call: { name: string; arguments?: Record<string, unknown> }): boolean {
   return call.name === REQUEST_USER_INPUT_TOOL_NAME || isBrowserHandoffCall(call);
+}
+
+/** Close a browser handoff's live view in the user's sandbox, in the background (nothing if there's none). */
+function stopBrowserLiveView(deps: { sandboxClient?: SandboxBackend }, userId: string, sessionId: string): void {
+  const sandbox = deps.sandboxClient;
+  if (!sandbox) return;
+  void sandbox
+    .exec({ command: "afe-browser handoff_stop", timeout: 30 }, sandbox.resolveIdentifier(userId, sessionId))
+    .catch(() => {});
 }
 
 /** Whether a buffered form is a browser handoff's. */

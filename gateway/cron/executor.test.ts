@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { InMemoryCosmosDatabase } from "../database/testing/in-memory-cosmos.js";
+import { InMemoryStorage } from "@agentforeach/storage";
 import { IdentityStore } from "../identity/index.js";
 import type { IdentityConfig } from "../identity/config.js";
 import { resetIdentityStore, setIdentityStore } from "../channels/router.js";
@@ -54,7 +54,7 @@ const identityConfig: IdentityConfig = {
   fallbackMode: "config-default",
 };
 
-const identity = new IdentityStore(new InMemoryCosmosDatabase(), identityConfig);
+const identity = new IdentityStore(new InMemoryStorage(), identityConfig);
 await identity.initialize();
 await identity.upsertLink({
   id: IdentityStore.buildLinkId("telegram", "111"),
@@ -92,7 +92,7 @@ const config = { defaultTimeoutMs: 5_000 };
 // ============================================================================
 
 test("a job delivering to someone else's chat is refused before it runs, and its owner is told", async () => {
-  const store = new CronStore(new InMemoryCosmosDatabase());
+  const store = new CronStore(new InMemoryStorage());
   const job = await createJob(store, { mode: "channel", channelId: "telegram", recipientId: "999" });
 
   const result = await executeJob(job, config);
@@ -111,7 +111,7 @@ test("a job delivering to someone else's chat is refused before it runs, and its
 });
 
 test("the refused result disables the job through the store", async () => {
-  const store = new CronStore(new InMemoryCosmosDatabase());
+  const store = new CronStore(new InMemoryStorage());
   const job = await createJob(store, { mode: "channel", channelId: "telegram", recipientId: "999" });
   const now = job.state.nextRunAtMs!;
   const [claimed] = await store.getDueJobs(now, getSchedulerShardForUser("alice"));
@@ -128,7 +128,7 @@ test("the refused result disables the job through the store", async () => {
 });
 
 test("a job delivering to its owner's linked account passes the pre-flight check", async () => {
-  const store = new CronStore(new InMemoryCosmosDatabase());
+  const store = new CronStore(new InMemoryStorage());
   const job = await createJob(store, { mode: "channel", channelId: "telegram", recipientId: "111" });
 
   const result = await executeJob(job, config);
@@ -143,7 +143,7 @@ test("a job delivering to its owner's linked account passes the pre-flight check
 });
 
 test("the chat a job was created from passes the pre-flight check through its binding", async () => {
-  const store = new CronStore(new InMemoryCosmosDatabase());
+  const store = new CronStore(new InMemoryStorage());
   const job = await createJob(store, {
     mode: "channel",
     channelId: "telegram",
@@ -157,7 +157,7 @@ test("the chat a job was created from passes the pre-flight check through its bi
 });
 
 test("a delivery that can't be resolved (no adapter) isn't treated as a refusal", async () => {
-  const store = new CronStore(new InMemoryCosmosDatabase());
+  const store = new CronStore(new InMemoryStorage());
   const job = await createJob(store, { mode: "channel", channelId: "carrier-pigeon", recipientId: "1" });
 
   const result = await executeJob(job, config);

@@ -7,8 +7,9 @@
  * This is the primary auth provider for production Azure deployments.
  */
 
-import type { HttpRequest } from "@azure/functions";
+import type { HttpRequestLike } from "@agentforeach/platform";
 import { isCloudRuntime, parseEnvBool } from "../../utils/index.js";
+import { hostInfo } from "../../runtime/host.js";
 import type {
   AuthProvider,
   AuthContext,
@@ -99,16 +100,20 @@ function pickClaim(
  * Azure sets WEBSITE_AUTH_ENABLED=True in that case. Anywhere else (local
  * dev, Docker, AKS) they are ordinary client headers, so they are trusted
  * only with an explicit AUTH_TRUST_EASY_AUTH_HEADERS=true, e.g. behind a
- * proxy that sets them, or to emulate Easy Auth locally.
+ * proxy that sets them, or to emulate Easy Auth locally. On a production
+ * host that isn't Azure they are never trusted.
  */
 function easyAuthHeadersTrusted(): boolean {
   if (isCloudRuntime()) {
+    // Only App Service strips client-sent copies; on any other production
+    // host these headers are whatever the client sent.
+    if (hostInfo().platform !== "azure") return false;
     return parseEnvBool("WEBSITE_AUTH_ENABLED", false);
   }
   return parseEnvBool("AUTH_TRUST_EASY_AUTH_HEADERS", false);
 }
 
-function decodeClientPrincipal(request: HttpRequest): ClientPrincipal | null {
+function decodeClientPrincipal(request: HttpRequestLike): ClientPrincipal | null {
   const encoded = request.headers.get("x-ms-client-principal");
   if (!encoded) return null;
   try {
@@ -132,7 +137,7 @@ export function createEasyAuthProvider(
     id: "easy-auth",
     label: "Azure Easy Auth",
 
-    resolve(request: HttpRequest): AuthContext | null {
+    resolve(request: HttpRequestLike): AuthContext | null {
       if (!easyAuthHeadersTrusted()) return null;
 
       const principal = decodeClientPrincipal(request);

@@ -1,15 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import type {
-  BaseDocument,
-  ContainerHandle,
-  ContainerOptions,
-  DatabaseProvider,
-  PatchOperation,
-  QueryOptions,
-  QueryParameter,
-} from "../database/index.js";
+import { InMemoryStorage, type Collection } from "@agentforeach/storage";
 import { PromptDocumentStore } from "./store.js";
 import { DEFAULT_TEMPLATES } from "./templates.js";
 import {
@@ -18,167 +10,8 @@ import {
 } from "./prompt-config.js";
 import type { OnboardingState, PromptDocument } from "./types.js";
 
-class InMemoryContainer<T extends BaseDocument> implements ContainerHandle<T> {
-  private docs = new Map<string, T>();
-
-  async create(document: T): Promise<T> {
-    this.docs.set(document.id, structuredClone(document));
-    return structuredClone(document);
-  }
-
-  async upsert(document: T): Promise<T> {
-    this.docs.set(document.id, structuredClone(document));
-    return structuredClone(document);
-  }
-
-  async read(id: string, partitionKey: string): Promise<T | null> {
-    const doc = this.docs.get(id);
-    if (!doc) return null;
-    if ((doc as Record<string, unknown>).userId !== partitionKey) return null;
-    return structuredClone(doc);
-  }
-
-  async replace(id: string, partitionKey: string, document: T): Promise<T> {
-    const existing = await this.read(id, partitionKey);
-    if (!existing) throw new Error("not found");
-    this.docs.set(id, structuredClone(document));
-    return structuredClone(document);
-  }
-
-  async patch(
-    id: string,
-    partitionKey: string,
-    operations: PatchOperation[],
-  ): Promise<T> {
-    const existing = await this.read(id, partitionKey);
-    if (!existing) throw new Error("not found");
-    const target = existing as unknown as Record<string, unknown>;
-
-    for (const op of operations) {
-      const path = op.path.replace(/^\//, "").split("/");
-      if (path.length === 0) continue;
-
-      if (op.op === "remove") {
-        const key = path[path.length - 1];
-        let ptr = target;
-        for (let i = 0; i < path.length - 1; i += 1) {
-          ptr = ptr[path[i]] as Record<string, unknown>;
-        }
-        delete ptr[key];
-        continue;
-      }
-
-      if (op.op === "incr") {
-        const key = path[path.length - 1];
-        let ptr = target;
-        for (let i = 0; i < path.length - 1; i += 1) {
-          ptr = ptr[path[i]] as Record<string, unknown>;
-        }
-        ptr[key] = Number(ptr[key] ?? 0) + Number(op.value ?? 0);
-        continue;
-      }
-
-      if (op.op === "set") {
-        const key = path[path.length - 1];
-        let ptr = target;
-        for (let i = 0; i < path.length - 1; i += 1) {
-          const current = ptr[path[i]];
-          if (!current || typeof current !== "object") {
-            ptr[path[i]] = {};
-          }
-          ptr = ptr[path[i]] as Record<string, unknown>;
-        }
-        ptr[key] = op.value;
-      }
-    }
-
-    this.docs.set(id, structuredClone(existing));
-    return structuredClone(existing);
-  }
-
-  async delete(id: string, partitionKey: string): Promise<boolean> {
-    const existing = await this.read(id, partitionKey);
-    if (!existing) return false;
-    this.docs.delete(id);
-    return true;
-  }
-
-  async query<R = T>(_querySpec: unknown, options: QueryOptions = {}): Promise<R[]> {
-    const partitionKey = options.partitionKey;
-    const out: unknown[] = [];
-    for (const doc of this.docs.values()) {
-      if (
-        partitionKey !== undefined &&
-        (doc as Record<string, unknown>).userId !== partitionKey
-      ) {
-        continue;
-      }
-      out.push(structuredClone(doc));
-    }
-    return out as R[];
-  }
-
-  async queryWithParams<R = T>(
-    sql: string,
-    parameters: QueryParameter[] = [],
-    options: QueryOptions = {},
-  ): Promise<R[]> {
-    const userId = parameters.find((p) => p.name === "@userId")?.value;
-    const agentId = parameters.find((p) => p.name === "@agentId")?.value;
-
-    if (typeof userId === "string" && typeof agentId === "string") {
-      const out: unknown[] = [];
-      for (const doc of this.docs.values()) {
-        const obj = doc as Record<string, unknown>;
-        if (obj.userId === userId && obj.agentId === agentId) {
-          out.push(structuredClone(doc));
-        }
-      }
-      return out as R[];
-    }
-
-    return this.query<R>(sql, options);
-  }
-
-  async count(): Promise<number> {
-    return this.docs.size;
-  }
-
-  getRawContainer(): unknown {
-    return this.docs;
-  }
-}
-
-class InMemoryDatabaseProvider implements DatabaseProvider {
-  readonly name = "memory";
-  private containers = new Map<string, InMemoryContainer<BaseDocument>>();
-
-  async initialize(): Promise<void> {
-    return;
-  }
-
-  async getOrCreateContainer<T extends BaseDocument = BaseDocument>(
-    options: ContainerOptions,
-  ): Promise<ContainerHandle<T>> {
-    const id = options.id;
-    if (!id) throw new Error("container id required");
-
-    const existing = this.containers.get(id);
-    if (existing) return existing as unknown as ContainerHandle<T>;
-
-    const container = new InMemoryContainer<BaseDocument>();
-    this.containers.set(id, container);
-    return container as unknown as ContainerHandle<T>;
-  }
-
-  getDatabaseId(): string {
-    return "memory";
-  }
-}
-
 async function setupStore(): Promise<PromptDocumentStore> {
-  const db = new InMemoryDatabaseProvider();
-  const store = new PromptDocumentStore(db);
+  const store = new PromptDocumentStore(new InMemoryStorage());
   await store.initialize();
   return store;
 }
@@ -223,7 +56,7 @@ test("seedDefaults removes stale BOOTSTRAP when onboarding already completed", a
     createdAt: new Date().toISOString(),
   };
 
-  const promptContainer = (store as unknown as { promptContainer: ContainerHandle<PromptDocument> }).promptContainer;
+  const promptContainer = (store as unknown as { promptContainer: Collection<PromptDocument> }).promptContainer;
   await promptContainer.upsert(staleBootstrap);
 
   await store.seedDefaults("u3", "default");

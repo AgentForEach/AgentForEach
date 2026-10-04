@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 
-import { createAzureTokenCredential } from "./azure-token.js";
-import { CosmosDatabase } from "../database/client.js";
+import { createAzureTokenCredential } from "@agentforeach/platform-azure/identity";
+import { createStorage } from "../database/storage.js";
 
 test("the Cosmos credential asks the managed identity endpoint for the right identity, and caches", async () => {
   const seen: URL[] = [];
@@ -38,5 +38,7 @@ test("the Cosmos credential asks the managed identity endpoint for the right ide
 });
 
 test("a Cosmos database without a key is built for Entra auth instead of failing", () => {
-  assert.doesNotThrow(() => new CosmosDatabase({ endpoint: "https://acct.documents.azure.com:443/", key: "" }));
+  assert.doesNotThrow(() =>
+    createStorage({ provider: "cosmosdb", endpoint: "https://acct.documents.azure.com:443/", key: "", databaseId: "x" }),
+  );
 });

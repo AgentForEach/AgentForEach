@@ -17,7 +17,7 @@ export {
 } from "./env.js";
 
 // Config file loader
-export { loadConfigSection, resetConfigCache } from "./config.js";
+export { installConfig, loadConfigSection, resetConfigCache } from "./config.js";
 
 // External content security
 export { wrapExternalContent, sanitizeForPrompt } from "./external-content.js";

@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
+import { openScope } from "@agentforeach/platform";
+import { installHost, resetHostForTests } from "../runtime/host.js";
 import { McpManager, serializeMcpToolResultContent } from "./client.js";
 import type { McpServerConfig } from "./types.js";
 
@@ -334,5 +336,121 @@ test("mcp manager — namespace:false with two enabled servers is forced back on
     await manager.shutdown();
     await a.close();
     await b.close();
+  }
+});
+
+// ============================================================================
+// Hosts whose connections can't outlive an invocation (Cloudflare Workers)
+// ============================================================================
+
+const workersHost = {
+  platform: "cloudflare",
+  isProductionHost: false,
+  publicBaseUrl: undefined,
+  label: "test",
+  persistent: false,
+  subprocesses: false,
+};
+
+test("mcp manager (scoped) — each invocation connects for itself, and closes when it ends", async () => {
+  const srv = await startToolServer("create_note");
+  const manager = new McpManager([liveServer("example", srv.port, true)], { scoped: true });
+  try {
+    const first = openScope({ invocationId: "turn-1", kind: "job" });
+    await first.run(async () => {
+      await manager.initialize();
+      assert.deepEqual(manager.getConnectedServers(), ["example"]);
+      assert.deepEqual(manager.getAllTools().map((t) => t.name), ["example_create_note"]);
+      const result = await manager.callTool("example_create_note", { title: "x" });
+      assert.equal(result.isError, false);
+    });
+    await first.settle();
+
+    const second = openScope({ invocationId: "turn-2", kind: "job" });
+    await second.run(async () => {
+      assert.deepEqual(manager.getConnectedServers(), [], "nothing carried over from the first invocation");
+      await manager.ensureConnected(); // what the runner does each turn
+      assert.deepEqual(manager.getConnectedServers(), ["example"]);
+    });
+    await second.settle();
+
+    assert.deepEqual(manager.getConnectedServers(), [], "outside an invocation there are no connections");
+    await manager.ensureConnected();
+    assert.deepEqual(manager.getConnectedServers(), [], "and none are made: nowhere to close them");
+  } finally {
+    await srv.close();
+  }
+});
+
+test("mcp manager (scoped) — a tool call that comes first in an invocation connects for it", async () => {
+  const srv = await startToolServer("create_note");
+  const manager = new McpManager([liveServer("example", srv.port, true)], { scoped: true });
+  try {
+    // A HITL resume: the approved tool runs in the wait's own invocation, before any turn connected.
+    const resume = openScope({ invocationId: "resume", kind: "job" });
+    await resume.run(async () => {
+      assert.deepEqual(manager.getConnectedServers(), []);
+      const result = await manager.callTool("example_create_note", { title: "x" });
+      assert.equal(result.isError, false, result.content);
+      assert.equal((await manager.callTool("example_nope", {})).content, "Unknown MCP tool: example_nope");
+    });
+    await resume.settle();
+    assert.deepEqual(manager.getConnectedServers(), []);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("mcp manager — the host decides: scoped where it isn't persistent, process-wide otherwise", async () => {
+  const srv = await startToolServer("create_note");
+  try {
+    const processWide = new McpManager([liveServer("example", srv.port, true)]);
+    await processWide.initialize();
+    assert.deepEqual(processWide.getConnectedServers(), ["example"], "a persistent host (Azure) keeps its connections");
+    await processWide.shutdown();
+
+    installHost(workersHost);
+    const scoped = new McpManager([liveServer("example", srv.port, true)]);
+    await scoped.initialize();
+    assert.deepEqual(scoped.getConnectedServers(), [], "on Workers, nothing connects outside an invocation");
+  } finally {
+    resetHostForTests();
+    await srv.close();
+  }
+});
+
+test("mcp manager — a stdio server is refused where the host can't start processes", async () => {
+  installHost(workersHost);
+  try {
+    const manager = new McpManager(
+      [
+        {
+          name: "local",
+          enabled: true,
+          transport: "stdio",
+          command: "node",
+          args: ["-e", "process.exit(0)"],
+          namespace: true,
+          forwardAuth: false,
+          connectTimeoutMs: 1_000,
+          callTimeoutMs: 1_000,
+        },
+      ],
+      { scoped: true },
+    );
+    const opened = openScope({ invocationId: "x", kind: "http" });
+    const logged: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => void logged.push(args.map(String).join(" "));
+    try {
+      await opened.run(() => manager.initialize());
+    } finally {
+      console.error = original;
+    }
+    await opened.settle();
+    assert.deepEqual(manager.getDisconnectedServers(), ["local"]);
+    assert.ok(logged.some((l) => /stdio transport.*can't start processes/.test(l)), logged.join("\n"));
+  } finally {
+    resetHostForTests();
   }
 });

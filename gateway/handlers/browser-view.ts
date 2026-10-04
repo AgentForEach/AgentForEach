@@ -3,26 +3,28 @@
  *
  * GET /api/browser/view serves the page a user opens to take over the agent's
  * browser (docs/Browser.md, "Handing the browser to the user"). It carries no secret:
- * the handoff's Web PubSub token travels in the URL fragment, which browsers
+ * the handoff's relay token travels in the URL fragment, which browsers
  * never send to a server. 404 while the browser or its handoff is off.
  */
 
-import { app, type HttpResponseInit } from "@azure/functions";
+import type { HttpResult, RouteDef } from "@agentforeach/platform";
 import { loadSkillsConfig } from "../skills/config.js";
 import { viewerHeaders, viewerHtml } from "../skills/browser/viewer.js";
-import { resolveWebPubSubHost } from "../websocket/config.js";
+import { relayHost as resolveRelayHost } from "../websocket/providers/index.js";
 
-async function browserView(): Promise<HttpResponseInit> {
+async function browserView(): Promise<HttpResult> {
   const browser = loadSkillsConfig().sandbox?.browser;
-  // The page only ever connects to this deployment's Web PubSub; without one there's nothing to show.
-  const relayHost = resolveWebPubSubHost();
+  // The page only ever connects to this deployment's realtime relay; without one there's nothing to show.
+  const relayHost = resolveRelayHost();
   if (!browser?.enabled || !browser.handoff.enabled || !relayHost) return { status: 404 };
   return { status: 200, headers: viewerHeaders(relayHost), body: viewerHtml(relayHost) };
 }
 
-app.http("browserView", {
+export const routes: RouteDef[] = [];
+
+routes.push({
+  name: "browserView",
   methods: ["GET"],
-  authLevel: "anonymous",
-  route: "browser/view",
+  route: "api/browser/view",
   handler: browserView,
 });

@@ -21,7 +21,7 @@
  *  10. Channel/group context & inbound meta
  */
 
-import type { BaseDocument } from "../database/index.js";
+import type { Doc } from "@agentforeach/storage";
 
 // ============================================================================
 // Prompt Mode
@@ -281,11 +281,11 @@ export interface PromptDataMap {
  * use `getTypedData<T>(doc)` which narrows `data` to `PromptDataMap[T]`.
  *
  * TypeScript limitation: Making this a true discriminated union (one variant
- * per documentType) would break `ContainerHandle<PromptDocument>` generics
+ * per documentType) would break `Collection<PromptDocument>` generics
  * and construction from dynamic `documentType` values. The `getTypedData<T>()`
  * helper provides equivalent safety with better ergonomics.
  */
-export interface PromptDocument extends BaseDocument {
+export interface PromptDocument extends Doc {
   id: string;
   /** User who owns this document. Partition key. */
   userId: string;
@@ -532,7 +532,7 @@ export const DEFAULT_PROMPT_OPTIONS: Required<PromptBuilderOptions> = {
 /**
  * Tracks onboarding progress per user + agent.
  */
-export interface OnboardingState extends BaseDocument {
+export interface OnboardingState extends Doc {
   id: string;
   /** User being onboarded. Partition key. */
   userId: string;

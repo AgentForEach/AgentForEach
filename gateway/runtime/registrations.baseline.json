@@ -1,0 +1,350 @@
+{
+  "http": [
+    {
+      "name": "accountEraseSelf",
+      "route": "api/me/data",
+      "methods": [
+        "DELETE",
+        "OPTIONS"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": []
+    },
+    {
+      "name": "accountEraseUser",
+      "route": "api/admin/users/{userId}/data",
+      "methods": [
+        "DELETE",
+        "OPTIONS"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": []
+    },
+    {
+      "name": "apiChat",
+      "route": "api/chat",
+      "methods": [
+        "POST",
+        "OPTIONS"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": [
+        "durableClient"
+      ]
+    },
+    {
+      "name": "apiChatAbort",
+      "route": "api/chat/abort",
+      "methods": [
+        "POST",
+        "OPTIONS"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": []
+    },
+    {
+      "name": "apiHealth",
+      "route": "api/health",
+      "methods": [
+        "GET"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": []
+    },
+    {
+      "name": "apiIdentityBackfillIndex",
+      "route": "api/identity/backfill-index",
+      "methods": [
+        "POST",
+        "OPTIONS"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": []
+    },
+    {
+      "name": "apiIdentityDeleteLink",
+      "route": "api/identity/links/{linkId}",
+      "methods": [
+        "DELETE",
+        "OPTIONS"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": []
+    },
+    {
+      "name": "apiIdentityLinks",
+      "route": "api/identity/links",
+      "methods": [
+        "GET",
+        "POST",
+        "OPTIONS"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": []
+    },
+    {
+      "name": "apiIdentityPair",
+      "route": "api/identity/pair",
+      "methods": [
+        "POST",
+        "OPTIONS"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": []
+    },
+    {
+      "name": "apiSessionById",
+      "route": "api/sessions/{id}",
+      "methods": [
+        "GET",
+        "DELETE",
+        "OPTIONS"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": []
+    },
+    {
+      "name": "apiSessions",
+      "route": "api/sessions",
+      "methods": [
+        "GET",
+        "OPTIONS"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": []
+    },
+    {
+      "name": "apiToken",
+      "route": "api/token",
+      "methods": [
+        "POST",
+        "OPTIONS"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": []
+    },
+    {
+      "name": "apiUsage",
+      "route": "api/usage",
+      "methods": [
+        "GET",
+        "OPTIONS"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": []
+    },
+    {
+      "name": "apiUsageRecords",
+      "route": "api/usage/records",
+      "methods": [
+        "GET",
+        "OPTIONS"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": []
+    },
+    {
+      "name": "browserView",
+      "route": "api/browser/view",
+      "methods": [
+        "GET"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": []
+    },
+    {
+      "name": "channelWebhook",
+      "route": "api/channels/{channelId}/webhook",
+      "methods": [
+        "POST"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": [
+        "durableClient"
+      ]
+    },
+    {
+      "name": "channelWebhookVerify",
+      "route": "api/channels/{channelId}/webhook",
+      "methods": [
+        "GET"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": []
+    },
+    {
+      "name": "cronBackfillDueIndex",
+      "route": "cron/admin/backfill-due-index",
+      "methods": [
+        "POST"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": []
+    },
+    {
+      "name": "cronCreateJob",
+      "route": "cron/jobs",
+      "methods": [
+        "POST"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": [
+        "durableClient"
+      ]
+    },
+    {
+      "name": "cronDeleteJob",
+      "route": "cron/jobs/{id}",
+      "methods": [
+        "DELETE"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": [
+        "durableClient"
+      ]
+    },
+    {
+      "name": "cronForceRun",
+      "route": "cron/jobs/{id}/run",
+      "methods": [
+        "POST"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": [
+        "durableClient"
+      ]
+    },
+    {
+      "name": "cronGetJob",
+      "route": "cron/jobs/{id}",
+      "methods": [
+        "GET"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": []
+    },
+    {
+      "name": "cronGetRuns",
+      "route": "cron/runs/{id}",
+      "methods": [
+        "GET"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": []
+    },
+    {
+      "name": "cronListJobs",
+      "route": "cron/jobs",
+      "methods": [
+        "GET"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": []
+    },
+    {
+      "name": "cronStartScheduler",
+      "route": "cron/start",
+      "methods": [
+        "POST"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": [
+        "durableClient"
+      ]
+    },
+    {
+      "name": "cronStatus",
+      "route": "cron/status",
+      "methods": [
+        "GET"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": [
+        "durableClient"
+      ]
+    },
+    {
+      "name": "cronUpdateJob",
+      "route": "cron/jobs/{id}",
+      "methods": [
+        "PATCH"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": [
+        "durableClient"
+      ]
+    },
+    {
+      "name": "negotiate",
+      "route": "negotiate",
+      "methods": [
+        "GET",
+        "OPTIONS"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": []
+    },
+    {
+      "name": "wsCatchAll",
+      "route": "ws/{*catchAllEvent}",
+      "methods": [
+        "OPTIONS"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": []
+    },
+    {
+      "name": "wsConnect",
+      "route": "ws/connect",
+      "methods": [
+        "GET",
+        "OPTIONS",
+        "POST"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": []
+    },
+    {
+      "name": "wsDisconnect",
+      "route": "ws/disconnected",
+      "methods": [
+        "GET",
+        "OPTIONS",
+        "POST"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": []
+    },
+    {
+      "name": "wsMessage",
+      "route": "ws/message",
+      "methods": [
+        "GET",
+        "OPTIONS",
+        "POST"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": [
+        "durableClient"
+      ]
+    }
+  ],
+  "timer": [
+    {
+      "name": "CronSchedulerHealthCheck",
+      "schedule": "0 */5 * * * *",
+      "runOnStartup": false,
+      "extraInputs": [
+        "durableClient"
+      ]
+    },
+    {
+      "name": "DurableHistoryPurge",
+      "schedule": "0 */15 * * * *",
+      "runOnStartup": false,
+      "extraInputs": [
+        "durableClient"
+      ]
+    }
+  ]
+}

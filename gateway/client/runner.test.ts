@@ -10,6 +10,8 @@ import { findSuspension, HitlSuspendSignal, runAgentTurn, settleToolCalls, type 
 import { siblingResultMessages } from "../hitl/orchestrator.js";
 import { makeDeps, scriptedProvider, textResponse, toolCallResponse } from "./runner.test-harness.js";
 import type { Provider } from "../llms/types.js";
+import { openScope } from "@agentforeach/platform";
+import { loadSessionConfig } from "../sessions/config.js";
 
 function send(deps: RunnerDeps, message = "hello", extra: Record<string, unknown> = {}) {
   return runAgentTurn({ userId: "u1", sessionId: "s1", message, ...extra } as never, deps);
@@ -196,6 +198,40 @@ test("a tool that throws returns an error to the model and the run completes", a
   const outputs = provider.requests[1]!.input as Array<{ callId: string; output: string }>;
   assert.equal(outputs[0]!.callId, "call_boom");
   assert.match(outputs[0]!.output, /Tool memory_search failed: cosmos unavailable/);
+});
+
+test("a tool call that hangs fails the run at its deadline, not when the call returns", async () => {
+  const provider = scriptedProvider([
+    () => toolCallResponse([{ name: "memory_search", args: { query: "x" }, callId: "call_stuck" }]),
+    () => textResponse("never reached"),
+  ]);
+  let release!: () => void;
+  const stuck = new Promise<void>((r) => (release = r));
+  const { deps } = makeDeps(provider, {
+    memoryToolHandler: async () => {
+      await stuck; // a sandbox that never starts
+      return "late";
+    },
+  });
+  const started = Date.now();
+  try {
+    const res = await send(deps, "hello", { deadlineAt: Date.now() + 150 });
+    assert.equal(res.status, "failed");
+    assert.match(`${res.error ?? ""} ${res.text ?? ""}`, /time/i, `error=${res.error}`);
+    assert.ok(Date.now() - started < 2000, `ended at the deadline (${Date.now() - started} ms)`);
+    assert.equal(provider.requests.length, 1, "the late result never reached the model");
+  } finally {
+    release();
+  }
+});
+
+test("settleToolCalls throws the deadline's reason while a call still runs", async () => {
+  const deadline = new AbortController();
+  setTimeout(() => deadline.abort(new Error("run deadline")), 20);
+  await assert.rejects(
+    settleToolCalls([new Promise(() => {}), Promise.resolve({ callId: "c2", output: "done" })], 10_000, deadline.signal),
+    /run deadline/,
+  );
 });
 
 test("a run that fails after completed rounds reports their usage for billing", async () => {
@@ -386,6 +422,19 @@ test("a run whose lease was taken mid-turn writes nothing and reports an interru
   assert.deepEqual(sessionStore.messages, [], "no second answer, no failure note");
 });
 
+test("a turn run by a durable handler leases the session under its execution id", async () => {
+  let leaseId: string | undefined;
+  const provider = scriptedProvider([
+    async () => {
+      leaseId = sessionStore.leases.get("s1")?.leaseId;
+      return textResponse("ok");
+    },
+  ]);
+  const { deps, sessionStore } = makeDeps(provider);
+  await send(deps, "hello", { executionId: "chat-x#1" });
+  assert.match(leaseId ?? "", /^chat-x#1:/, "a re-run of chat-x finds it by this prefix (sessions/interrupted.ts)");
+});
+
 test("without an idempotency key, a second delivery of a finished run replays it instead of answering again", async () => {
   let release!: () => void;
   const gate = new Promise<void>((r) => (release = r));
@@ -479,4 +528,106 @@ test("pressing Stop before the first token bills and records nothing", async () 
   assert.equal(res.status, "aborted");
   assert.equal(res.usage, undefined);
   assert.equal(usageStore.records.length, 0);
+});
+
+test("a stopped run ends with an aborted event naming it, after its last delta", async () => {
+  const stop = new AbortController();
+  const provider = {
+    id: "openai",
+    requests: [] as unknown[],
+    async createResponse() {
+      throw new Error("streaming only");
+    },
+    async *streamResponse() {
+      yield { type: "text_delta", delta: "Rivers " };
+      stop.abort(); // the stop arrives mid-reply
+      yield { type: "text_delta", delta: "run" };
+    },
+  } as unknown as Provider;
+  const { registerWebSocketProvider } = await import("../websocket/providers/index.js");
+  const pushed: Array<{ payload?: Record<string, unknown> }> = [];
+  registerWebSocketProvider("capture-abort", () => ({
+    id: "capture-abort",
+    async sendToUser(_u: string, frame: unknown) {
+      pushed.push(frame as { payload?: Record<string, unknown> });
+    },
+  }) as never);
+  const saved = process.env.WEBSOCKET_PROVIDER;
+  process.env.WEBSOCKET_PROVIDER = "capture-abort";
+  try {
+    const { deps } = makeDeps(provider, { realtimeEnabled: true, streamToClient: true });
+    const res = await runAgentTurn(
+      { userId: "u1", sessionId: "s1", message: "hello", runId: "run-stopped", abortSignal: stop.signal } as never,
+      deps,
+      () => {},
+    );
+    assert.equal(res.status, "aborted", `${res.error}: ${res.text}`);
+    const states = pushed.map((f) => f.payload?.state);
+    const last = pushed.at(-1)?.payload;
+    assert.equal(last?.state, "aborted", `last event (${states.join(",")})`);
+    assert.equal(last?.runId, "run-stopped");
+    assert.equal(last?.sessionId, "s1");
+    assert.ok(!states.includes("final"), "no final for a stopped run");
+  } finally {
+    if (saved === undefined) delete process.env.WEBSOCKET_PROVIDER;
+    else process.env.WEBSOCKET_PROVIDER = saved;
+  }
+});
+
+test("compaction after a turn is background work of the invocation, so a host can keep it alive", async () => {
+  const provider = scriptedProvider([() => textResponse("hi")]);
+  const { deps, sessionStore } = makeDeps(provider);
+  sessionStore.getConfig = () => ({ ...loadSessionConfig(), compactionThreshold: 1, compactionRetainCount: 0 });
+  let compactionStarted = false;
+  deps.hooks.on("before_compaction", () => void (compactionStarted = true));
+  // What the Worker host does with ctx.waitUntil: here, collect it.
+  const kept: Promise<unknown>[] = [];
+  const opened = openScope({ invocationId: "turn", kind: "job", keepAlive: (work) => kept.push(work) });
+  await opened.run(() => send(deps));
+  assert.ok(compactionStarted, "the turn compacts");
+  assert.equal(kept.length, 1, "the compaction was handed to the host, not left detached");
+  await opened.settle();
+});
+
+// ============================================================================
+// A browser handoff answered through the API closes the live view
+// ============================================================================
+
+test("answering a browser handoff's form, from any client, closes the live view in the sandbox (live run)", async () => {
+  const provider = scriptedProvider([() => textResponse("Thanks, carrying on.")]);
+  const hitlStore = memoryHitlStore();
+  const commands: string[] = [];
+  // A sandbox that records commands; anything else it's asked does nothing.
+  const sandboxClient = new Proxy(
+    {
+      capabilities: { browser: true, egressCredentials: true, persistence: "disk" },
+      isReady: () => true,
+      resolveIdentifier: (userId: string, sessionId?: string) => `${userId}/${sessionId}`,
+      exec: async (args: { command: string }) => {
+        commands.push(args.command);
+        return { stdout: "", stderr: "", exitCode: 0, timedOut: false, truncated: false, sessionId: "u1/s1" };
+      },
+    } as Record<string, unknown>,
+    { get: (target, key) => (key in target ? target[key as string] : async () => undefined) },
+  );
+  const { deps } = makeDeps(provider, {
+    hitlStore: hitlStore as unknown as RunnerDeps["hitlStore"],
+    sandboxClient: sandboxClient as unknown as RunnerDeps["sandboxClient"],
+  });
+  await hitlStore.create({
+    requestId: "req-handoff",
+    userId: "u1",
+    sessionId: "s1",
+    status: "pending",
+    pendingToolCall: { name: "browser", callId: "call_handoff", arguments: { action: "handoff", reason: "Log in" } },
+    conversationState: { previousResponseId: "resp_before_pause" },
+    createdAt: Date.now(),
+    timeoutSeconds: 600,
+  } as never);
+
+  await send(deps, "", { hitlInputResponse: { requestId: "req-handoff", data: { done: true } } });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(commands.filter((c) => c.includes("handoff_stop")), ["afe-browser handoff_stop"]);
+  const outputs = provider.requests.at(-1)!.input as Array<{ type: string; callId: string; output: string }>;
+  assert.equal(outputs[0]?.callId, "call_handoff", "the run resumed the handoff's call");
 });

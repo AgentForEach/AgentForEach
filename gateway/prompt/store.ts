@@ -20,13 +20,14 @@
  *   - Template seeding for new users (skips if onboarding completed)
  */
 
-import { PartitionKeyKind } from "@azure/cosmos";
-import type {
-  DatabaseProvider,
-  ContainerHandle,
-  BaseDocument,
-  PatchOperation,
-} from "../database/index.js";
+import {
+  and,
+  eq,
+  type Collection,
+  type CollectionSpec,
+  type PatchOperation,
+  type StorageAdapter,
+} from "@agentforeach/storage";
 import type {
   PromptDocument,
   PromptDocumentType,
@@ -48,6 +49,9 @@ import { redactId } from "../utils/redact.js";
 
 const PROMPT_CONTAINER_ID = "prompt-documents";
 const ONBOARDING_CONTAINER_ID = "onboarding-state";
+
+export const PROMPT_COLLECTION: CollectionSpec = { name: PROMPT_CONTAINER_ID, partitionKey: "userId" };
+export const ONBOARDING_COLLECTION: CollectionSpec = { name: ONBOARDING_CONTAINER_ID, partitionKey: "userId" };
 
 /** Default agent ID when the user has a single agent. */
 export const DEFAULT_AGENT_ID = "default";
@@ -124,7 +128,7 @@ function isLockedTemplateStale(
  *
  * Usage:
  * ```ts
- * const store = new PromptDocumentStore(cosmosDb);
+ * const store = new PromptDocumentStore(getSharedStorage());
  * await store.initialize();
  *
  * // Seed default templates for a new user
@@ -144,9 +148,9 @@ function isLockedTemplateStale(
  * ```
  */
 export class PromptDocumentStore {
-  private db: DatabaseProvider;
-  private promptContainer!: ContainerHandle<PromptDocument>;
-  private onboardingContainer!: ContainerHandle<OnboardingState>;
+  private storage: StorageAdapter;
+  private promptContainer!: Collection<PromptDocument>;
+  private onboardingContainer!: Collection<OnboardingState>;
   private initialized = false;
 
   /**
@@ -163,8 +167,8 @@ export class PromptDocumentStore {
     { docs: Map<PromptDocumentType, PromptDocument>; expiresAt: number }
   >();
 
-  constructor(db: DatabaseProvider) {
-    this.db = db;
+  constructor(storage: StorageAdapter) {
+    this.storage = storage;
   }
 
   // --------------------------------------------------------------------------
@@ -172,42 +176,14 @@ export class PromptDocumentStore {
   // --------------------------------------------------------------------------
 
   /**
-   * Initialize Cosmos DB containers for prompt documents and onboarding state.
+   * Initialize the prompt-document and onboarding-state collections.
    * Safe to call multiple times.
    */
   async initialize(): Promise<void> {
     if (this.initialized) return;
 
-    this.promptContainer = await this.db.getOrCreateContainer<PromptDocument>({
-      id: PROMPT_CONTAINER_ID,
-      partitionKey: {
-        paths: ["/userId"],
-        kind: PartitionKeyKind.Hash,
-        version: 2,
-      },
-      indexingPolicy: {
-        automatic: true,
-        indexingMode: "consistent",
-        includedPaths: [{ path: "/*" }],
-        excludedPaths: [{ path: '/"_etag"/?' }],
-      },
-    });
-
-    this.onboardingContainer =
-      await this.db.getOrCreateContainer<OnboardingState>({
-        id: ONBOARDING_CONTAINER_ID,
-        partitionKey: {
-          paths: ["/userId"],
-          kind: PartitionKeyKind.Hash,
-          version: 2,
-        },
-        indexingPolicy: {
-          automatic: true,
-          indexingMode: "consistent",
-          includedPaths: [{ path: "/*" }],
-          excludedPaths: [{ path: '/"_etag"/?' }],
-        },
-      });
+    this.promptContainer = await this.storage.collection<PromptDocument>(PROMPT_COLLECTION);
+    this.onboardingContainer = await this.storage.collection<OnboardingState>(ONBOARDING_COLLECTION);
 
     this.initialized = true;
   }
@@ -228,9 +204,12 @@ export class PromptDocumentStore {
     return `${userId}:${agentId}:${documentType}`;
   }
 
-  /** Build the cache key for a user+agent pair. */
+  /**
+   * Build the cache key for a user+agent pair. JSON, not "user:agent": the
+   * cache is shared by every user in the process, and ids may contain ":".
+   */
   private buildCacheKey(userId: string, agentId: string): string {
-    return `${userId}:${agentId}`;
+    return JSON.stringify([userId, agentId]);
   }
 
   // --------------------------------------------------------------------------
@@ -296,14 +275,10 @@ export class PromptDocumentStore {
     }
 
     // Query all documents for this user+agent
-    const docs = await this.promptContainer.queryWithParams<PromptDocument>(
-      "SELECT * FROM c WHERE c.userId = @userId AND c.agentId = @agentId",
-      [
-        { name: "@userId", value: userId },
-        { name: "@agentId", value: agentId },
-      ],
-      { partitionKey: userId },
-    );
+    const docs = await this.promptContainer.find<PromptDocument>({
+      partitionKey: userId,
+      where: and(eq("userId", userId), eq("agentId", agentId)),
+    });
 
     const docsMap = new Map<PromptDocumentType, PromptDocument>();
     for (const doc of docs) {

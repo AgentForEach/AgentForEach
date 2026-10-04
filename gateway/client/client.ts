@@ -34,12 +34,8 @@
  */
 
 import { randomUUID } from "node:crypto";
-import {
-  resolveDatabaseProvider,
-  getSharedDatabase,
-  loadDatabaseConfig,
-  type DatabaseProvider,
-} from "../database/index.js";
+import { loadDatabaseConfig, createStorage, getSharedStorage } from "../database/index.js";
+import type { StorageAdapter } from "@agentforeach/storage";
 import {
   createMemoryLayer,
   loadMemoryConfig,
@@ -64,7 +60,7 @@ import { EpisodeStore, loadEpisodeConfig } from "../episodes/index.js";
 import { DigestStore, loadDigestConfig } from "../digests/index.js";
 import { loadWebConfig } from "../web/index.js";
 import { loadSkillsConfig, UserSkillStore, createSandboxBackend, ExportBlobStore, SkillBlobStore } from "../skills/index.js";
-import { resolveRuntimeStorage } from "../skills/sandbox/export-store.js";
+import { resolveObjectStorage } from "../objects/index.js";
 import { EmbeddingsClient, resolveEmbeddingApiKey, resolveEmbeddingModel, resolveEmbeddingBaseUrl } from "../memory/index.js";
 import {
   createKnowledgeLayer,
@@ -80,7 +76,7 @@ import { AbortStore } from "./abort-store.js";
 // The named import above already triggers that registration.
 
 import {
-  resolveConnectionString,
+  realtimeCapabilities,
   resolveHub,
 } from "../websocket/index.js";
 import { RateLimiter, rateLimitMessage } from "../ratelimit/index.js";
@@ -123,7 +119,7 @@ import type {
  * usage).
  *
  * Subsystems wired:
- *   - Cosmos DB (shared database connection)  — database/config
+ *   - Storage (shared adapter, Cosmos DB by default) — database/config
  *   - Memory layer (auto-recall, auto-capture) — memory/config
  *   - Prompt store (system prompt documents)  — prompt/
  *   - Session store (conversation history)    — sessions/config
@@ -135,52 +131,54 @@ import type {
 export function createAgentClient(config: AgentClientConfig = {}): AgentClient {
   // -- Shared database (auto-resolved from agentforeach.json "database" section) --
   // The process-wide instance, unless the caller overrides the connection.
-  let db: DatabaseProvider;
-  if (config.cosmos?.endpoint || config.cosmos?.key || config.cosmos?.databaseId) {
+  let storage: StorageAdapter;
+  if (config.storage) {
+    storage = config.storage;
+  } else if (config.cosmos?.endpoint || config.cosmos?.key || config.cosmos?.databaseId) {
     const dbConfig = loadDatabaseConfig();
     if (config.cosmos.endpoint) dbConfig.endpoint = config.cosmos.endpoint;
     if (config.cosmos.key) dbConfig.key = config.cosmos.key;
     if (config.cosmos.databaseId) dbConfig.databaseId = config.cosmos.databaseId;
-    db = resolveDatabaseProvider(dbConfig);
+    storage = createStorage(dbConfig);
   } else {
-    db = getSharedDatabase();
+    storage = getSharedStorage();
   }
 
   // -- Memory layer (auto-resolved from agentforeach.json "memory" section) --
-  const memory: MemoryLayer = createMemoryLayer(db);
+  const memory: MemoryLayer = createMemoryLayer(storage);
 
   // -- Prompt store --
-  const promptStore = new PromptDocumentStore(db);
+  const promptStore = new PromptDocumentStore(storage);
 
   // -- Session store (auto-resolved from agentforeach.json "session" section) --
-  const sessionStore = new SessionStore(db, {
+  const sessionStore = new SessionStore(storage, {
     maxHistoryMessages: config.session?.maxHistoryMessages,
     ttlSeconds: config.session?.ttlSeconds,
   });
 
   // -- Cron store --
-  const cronStore = new CronStore(db);
+  const cronStore = new CronStore(storage);
 
   // -- Usage store (auto-resolved from agentforeach.json "usage" section) --
-  const usageStore = new UsageStore(db);
+  const usageStore = new UsageStore(storage);
 
   // -- Episode store (auto-resolved from agentforeach.json "episodes" section) --
   const episodeConfig = loadEpisodeConfig();
-  const episodeStore = episodeConfig.enabled ? new EpisodeStore(db, episodeConfig.containerId) : undefined;
+  const episodeStore = episodeConfig.enabled ? new EpisodeStore(storage, episodeConfig.containerId) : undefined;
 
   // -- Digest store (auto-resolved from agentforeach.json "digests" section) --
   const digestConfig = loadDigestConfig();
   const digestStore = digestConfig.enabled
-    ? new DigestStore(db, digestConfig.containerId)
+    ? new DigestStore(storage, digestConfig.containerId)
     : undefined;
 
   // -- Identity store (auto-resolved from agentforeach.json "identity" section) --
   const identityConfig = loadIdentityConfig();
-  const identityStore = identityConfig.enabled ? new IdentityStore(db, identityConfig) : undefined;
+  const identityStore = identityConfig.enabled ? new IdentityStore(storage, identityConfig) : undefined;
 
   // -- Skills store (auto-resolved from agentforeach.json "skills" section) --
   const skillsConfig = loadSkillsConfig();
-  const skillStore = skillsConfig.enabled ? new UserSkillStore(db, skillsConfig.containerId) : undefined;
+  const skillStore = skillsConfig.enabled ? new UserSkillStore(storage, skillsConfig.containerId) : undefined;
 
   // -- Sandbox backend (ACA Sandboxes, falling back to Dynamic Sessions) --
   const sandboxClient = skillsConfig.sandbox
@@ -191,7 +189,7 @@ export function createAgentClient(config: AgentClientConfig = {}): AgentClient {
   //    → user downloads), both on the runtime storage account. Skill and
   //    sandbox tools are offered only when the skill store exists. --
   const exportStorage = skillsConfig.enabled
-    ? resolveRuntimeStorage(skillsConfig.storageConnectionString)
+    ? resolveObjectStorage(skillsConfig.storageConnectionString)
     : undefined;
   let skillBlobStore: SkillBlobStore | undefined;
   if (exportStorage) {
@@ -227,15 +225,15 @@ export function createAgentClient(config: AgentClientConfig = {}): AgentClient {
   // -- HITL store (Cosmos DB persistence for human-in-the-loop requests) --
   // Config-driven gated tools and the LLM-initiated request_user_input tool
   // both use this store so a picker response can resume the provider chain.
-  const hitlStore = new HitlStore(db);
+  const hitlStore = new HitlStore(storage);
 
   // -- Abort store (cross-instance stop button) --
   // The in-memory active-request registry only reaches runs on the same
   // function instance; this store lets an abort landing anywhere stop them.
-  const abortStore = new AbortStore(db);
+  const abortStore = new AbortStore(storage);
 
   // -- Per-user message rate limit (shared across instances) --
-  const rateLimiter = new RateLimiter(db);
+  const rateLimiter = new RateLimiter(storage);
 
   // -- Shared embeddings client (reusable by memory + episodes) --
   let sharedEmbeddings: EmbeddingsClient | undefined;
@@ -350,9 +348,9 @@ export function createAgentClient(config: AgentClientConfig = {}): AgentClient {
   const provider = resolveProvider(providerId);
 
   // -- Realtime config (auto-resolved from agentforeach.json "websocket" section) --
-  const effectiveConnectionString =
-    config.realtime?.connectionString ?? resolveConnectionString() ?? "";
-  const realtimeEnabled = !!effectiveConnectionString;
+  // An explicit connection string decides; otherwise the provider says whether pushes reach clients.
+  const realtimeEnabled =
+    config.realtime?.connectionString !== undefined ? !!config.realtime.connectionString : realtimeCapabilities().push;
   const streamToClient = config.realtime?.streamToClient ?? true;
 
   // -- Hook emitter (lifecycle events for the pipeline) --
@@ -487,7 +485,7 @@ export function createAgentClient(config: AgentClientConfig = {}): AgentClient {
 
       // Initialize all core subsystems in parallel
       await Promise.all([
-        db.initialize(),
+        storage.initialize(),
         memory.initialize(),
         promptStore.initialize(),
         sessionStore.initialize(),
@@ -612,6 +610,11 @@ export function createAgentClient(config: AgentClientConfig = {}): AgentClient {
     ): Promise<SessionSummary[]> {
       ensureInitialized();
       return sessionStore.list(userId, agentId, opts);
+    },
+
+    async findLastChannel(userId: string) {
+      ensureInitialized();
+      return sessionStore.findLastChannel(userId);
     },
 
     async getSession(

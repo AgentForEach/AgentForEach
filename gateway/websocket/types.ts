@@ -19,6 +19,8 @@
  * @see docs/Architecture.md#real-time-protocol
  */
 
+import type { ClientAccess, ClientAccessOptions, RealtimeCapabilities, RealtimeProvider } from "@agentforeach/platform";
+
 // ============================================================================
 // Protocol Version
 // ============================================================================
@@ -38,76 +40,40 @@ export type WebSocketProviderId = "azure-webpubsub" | "noop" | (string & {});
 // ============================================================================
 
 /**
- * Provider-agnostic interface for real-time communication.
+ * The gateway's real-time provider: the platform's realtime port
+ * (`RealtimeProvider`: push, presence, client access, optional relay), plus
+ * group and broadcast pushes that some providers offer. Nothing in the
+ * gateway calls those today; the emitter refuses them on providers without.
  *
- * Each WebSocket provider (Azure Web PubSub, Socket.IO, Ably, etc.)
- * implements this interface. The rest of the codebase interacts only
- * through this contract — never with provider-specific SDKs directly.
+ * The rest of the codebase interacts only through this contract — never
+ * with provider-specific SDKs directly.
  */
-export interface WebSocketProvider {
+export interface WebSocketProvider extends Omit<RealtimeProvider, "id" | "capabilities"> {
   /** Unique identifier for this provider. */
   readonly id: WebSocketProviderId;
-
+  readonly capabilities?: RealtimeCapabilities;
   /** Human-readable label. */
-  readonly label: string;
-
-  // -- Push Operations --
-
-  /** Send an event frame to a specific user (all connected devices). */
-  sendToUser(userId: string, frame: Frame): Promise<void>;
-
+  readonly label?: string;
   /** Send an event frame to all clients in a group. */
-  sendToGroup(group: string, frame: Frame): Promise<void>;
-
+  sendToGroup?(group: string, frame: Frame): Promise<void>;
   /** Broadcast an event frame to ALL connected clients. */
-  sendToAll(frame: Frame): Promise<void>;
-
-  // -- Group Management --
-
+  sendToAll?(frame: Frame): Promise<void>;
   /** Add a user to a group. */
-  addUserToGroup(userId: string, group: string): Promise<void>;
-
+  addUserToGroup?(userId: string, group: string): Promise<void>;
   /** Remove a user from a group. */
-  removeUserFromGroup(userId: string, group: string): Promise<void>;
-
-  // -- Connection Management --
-
-  /** Check if a user has any active connections. */
-  isUserOnline(userId: string): Promise<boolean>;
-
-  /** Close all connections for a user. */
-  disconnectUser(userId: string, reason?: string): Promise<void>;
-
-  // -- Token Generation --
-
-  /**
-   * Generate a client access token for WebSocket connection.
-   * Returns the connection URL, token, and expiration.
-   */
-  generateToken(
-    userId: string,
-    options: TokenGenerationOptions,
-  ): Promise<ClientAccessToken>;
+  removeUserFromGroup?(userId: string, group: string): Promise<void>;
 }
 
-/**
- * Options passed to the provider's generateToken method.
- */
-export type TokenGenerationOptions = {
-  /** Token TTL in minutes. */
-  ttlMinutes: number;
-  /** Groups to auto-join on connect. */
-  groups: string[];
-  /** Web PubSub roles (provider-specific permissions). */
-  roles: string[];
-};
+/** Options for a client's access token. */
+export type TokenGenerationOptions = ClientAccessOptions;
 
 /**
- * Factory function that creates a WebSocketProvider from config.
+ * Creates a provider from config. Factories may load their SDK lazily
+ * (`await import(...)`), so a host that never uses a provider never bundles it.
  */
 export type WebSocketProviderFactory = (
   config: WebSocketProviderConfig,
-) => WebSocketProvider;
+) => WebSocketProvider | Promise<WebSocketProvider>;
 
 /**
  * Provider-agnostic configuration passed to the factory.
@@ -560,14 +526,5 @@ export type PresencePayload = {
 // Client Access Token
 // ============================================================================
 
-/**
- * Result of token generation — returned by WebSocketProvider.generateToken().
- */
-export type ClientAccessToken = {
-  /** Full WebSocket URL with embedded token — ready to connect. */
-  url: string;
-  /** The access token (also embedded in the URL). */
-  token: string;
-  /** Token expiration timestamp (epoch ms). */
-  expiresAtMs: number;
-};
+/** A client's WebSocket URL with its token (see `RealtimeProvider.clientAccess`). */
+export type ClientAccessToken = ClientAccess;

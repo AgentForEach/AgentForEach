@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 import { resetConfigCache } from "../utils/index.js";
 import { authorizeHitlResponse } from "./authorize.js";
 import { HitlStore } from "./store.js";
-import { InMemoryCosmosDatabase } from "../database/testing/in-memory-cosmos.js";
+import { InMemoryStorage } from "@agentforeach/storage";
 import type { HitlRunState } from "./types.js";
 
 import {
@@ -890,7 +890,7 @@ test("authorizeHitlResponse refuses a request that was already answered", async 
 
 test("a pending request outlives its own timeout, even past an hour", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.UTC(2026, 0, 5) });
-  const store = new HitlStore(new InMemoryCosmosDatabase());
+  const store = new HitlStore(new InMemoryStorage());
   await store.initialize();
   const state = {
     requestId: "req-1",
@@ -913,7 +913,7 @@ test("a pending request outlives its own timeout, even past an hour", async (t) 
 });
 
 test("saving sibling results never reopens a request the user already answered", async () => {
-  const store = new HitlStore(new InMemoryCosmosDatabase());
+  const store = new HitlStore(new InMemoryStorage());
   await store.initialize();
   const state = {
     requestId: "req-2",

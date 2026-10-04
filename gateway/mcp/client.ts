@@ -15,7 +15,8 @@
  */
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { currentScope, scopeKey, type ScopeKey } from "@agentforeach/platform";
+import { hostInfo } from "../runtime/host.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type {
@@ -131,11 +132,12 @@ class McpServerConnection {
       { capabilities: {} },
     );
 
-    const transport = this.createTransport();
-
     try {
       await withTimeout(
         (async () => {
+          // Inside the try, so a transport that can't be made (stdio on a host
+          // without processes, a bad URL) is logged like any failed connection.
+          const transport = await this.createTransport();
           await this.client!.connect(transport);
           this.connected = true;
           await this.discoverTools();
@@ -424,11 +426,20 @@ class McpServerConnection {
   }
 
   /**
-   * Create the appropriate transport based on config.
+   * Create the appropriate transport based on config. `stdio` (a child
+   * process) is loaded only when a server uses it, and refused on a host
+   * that can't spawn processes (a Cloudflare Worker).
    */
-  private createTransport() {
+  private async createTransport() {
     switch (this.config.transport) {
-      case "stdio":
+      case "stdio": {
+        if (hostInfo().subprocesses === false) {
+          throw new Error(
+            `MCP server "${this.name}" uses the stdio transport, which runs a local process, and this host can't start ` +
+              "processes. Use a streamable-http (or sse) server instead.",
+          );
+        }
+        const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
         return new StdioClientTransport({
           command: this.config.command!,
           args: this.config.args,
@@ -438,6 +449,7 @@ class McpServerConnection {
           } as Record<string, string>,
           cwd: this.config.cwd,
         });
+      }
 
       case "sse":
         return new SSEClientTransport(
@@ -487,17 +499,42 @@ interface ReconnectState {
   nextAttemptAt: number;
   /** Delay applied after the next failure. */
   delayMs: number;
-  /** In-flight attempt, so concurrent turns do not stampede. */
-  attempt?: Promise<void>;
 }
+
+/**
+ * Open connections and in-flight reconnect attempts. On a persistent host
+ * (Azure, Node) the manager holds one for the life of the process. On a
+ * host whose connections can't outlive an invocation (Cloudflare Workers)
+ * each invocation has its own, closed when it ends, so a turn connects
+ * and disconnects. Reconnect backoff is plain data and stays shared, so a
+ * server that is down isn't retried on every turn.
+ */
+interface ConnectionState {
+  connections: Map<string, McpServerConnection>;
+  /** In-flight attempts, so concurrent callers do not stampede. */
+  attempts: Map<string, Promise<void>>;
+  /** False in scoped mode with no invocation open: nothing may connect. */
+  canConnect: boolean;
+}
+
+const newState = (canConnect = true): ConnectionState => ({ connections: new Map(), attempts: new Map(), canConnect });
 
 export class McpManager {
   private readonly configs: McpServerConfig[];
-  private readonly connections = new Map<string, McpServerConnection>();
   private readonly reconnects = new Map<string, ReconnectState>();
   private initialized = false;
+  /** The process-wide state; unused in scoped mode. */
+  private readonly processState = newState();
+  /** Set in scoped mode: each invocation's state lives in its scope under this key. */
+  private readonly scopedKey: ScopeKey<ConnectionState> | undefined;
 
-  constructor(configs: McpServerConfig[]) {
+  /**
+   * @param options.scoped Connections per invocation (see ConnectionState).
+   *   Default: when the host isn't persistent.
+   */
+  constructor(configs: McpServerConfig[], options: { scoped?: boolean } = {}) {
+    const scoped = options.scoped ?? hostInfo().persistent === false;
+    this.scopedKey = scoped ? scopeKey<ConnectionState>("mcp.connections") : undefined;
     // Bare (un-namespaced) tool names cannot arbitrate collisions between
     // servers, so the opt-out only holds when at most one enabled server
     // uses it alongside no other enabled servers.
@@ -516,6 +553,22 @@ export class McpManager {
     }
   }
 
+  /** This invocation's connections in scoped mode; the process's otherwise. */
+  private state(): ConnectionState {
+    if (!this.scopedKey) return this.processState;
+    const scope = currentScope();
+    // No invocation, nowhere to close a connection: connect nothing.
+    if (!scope) return newState(false);
+    return scope.resource(this.scopedKey, () => {
+      const state = newState();
+      scope.onEnd(async () => {
+        await Promise.allSettled([...state.connections.values()].map((conn) => conn.disconnect()));
+        state.connections.clear();
+      });
+      return state;
+    });
+  }
+
   /**
    * Connect to all configured MCP servers.
    *
@@ -525,13 +578,15 @@ export class McpManager {
    */
   async initialize(): Promise<void> {
     if (this.initialized) return;
+    const state = this.state();
+    if (!state.canConnect) return;
 
     await Promise.allSettled(
       this.configs.map(async (config) => {
         const conn = new McpServerConnection(config);
         try {
           await conn.connect();
-          this.connections.set(config.name, conn);
+          state.connections.set(config.name, conn);
         } catch {
           // Logged inside connect(). Schedule a retry instead of dropping the
           // server for the life of the process — see ensureConnected.
@@ -540,7 +595,7 @@ export class McpManager {
       }),
     );
 
-    const connected = this.connections.size;
+    const connected = state.connections.size;
     const total = this.configs.length;
     if (connected > 0) {
       console.log(`[mcp] Initialized ${connected}/${total} server(s)`);
@@ -587,37 +642,41 @@ export class McpManager {
    */
   async ensureConnected(): Promise<void> {
     const now = Date.now();
+    const state = this.state();
+    if (!state.canConnect) return;
 
     const due = this.configs.filter((config) => {
-      if (this.connections.has(config.name)) return false;
-      const state = this.reconnects.get(config.name);
-      return !state || now >= state.nextAttemptAt;
+      if (state.connections.has(config.name)) return false;
+      const backoff = this.reconnects.get(config.name);
+      return !backoff || now >= backoff.nextAttemptAt;
     });
     if (due.length === 0) return;
 
     await Promise.allSettled(
       due.map((config) => {
-        const inFlight = this.reconnects.get(config.name)?.attempt;
+        const inFlight = state.attempts.get(config.name);
         if (inFlight) return inFlight;
 
         const attempt = (async () => {
           const conn = new McpServerConnection(config);
           try {
             await conn.connect();
-            this.connections.set(config.name, conn);
+            state.connections.set(config.name, conn);
             this.reconnects.delete(config.name);
             console.log(`[mcp] Reconnected to "${config.name}"`);
           } catch {
             // connect() logs the reason.
             this.scheduleReconnect(config.name);
+          } finally {
+            state.attempts.delete(config.name);
           }
         })();
-
-        const state = this.reconnects.get(config.name) ?? {
-          nextAttemptAt: 0,
-          delayMs: RECONNECT_MIN_DELAY_MS,
-        };
-        this.reconnects.set(config.name, { ...state, attempt });
+        state.attempts.set(config.name, attempt);
+        // As before: an attempt with no backoff yet starts one, so its first
+        // failure doubles from the minimum.
+        if (!this.reconnects.has(config.name)) {
+          this.reconnects.set(config.name, { nextAttemptAt: 0, delayMs: RECONNECT_MIN_DELAY_MS });
+        }
         return attempt;
       }),
     );
@@ -626,7 +685,7 @@ export class McpManager {
   /** Configured servers that are not currently connected. */
   getDisconnectedServers(): string[] {
     return this.configs
-      .filter((config) => !this.connections.has(config.name))
+      .filter((config) => !this.state().connections.has(config.name))
       .map((config) => config.name);
   }
 
@@ -635,7 +694,7 @@ export class McpManager {
    */
   getAllTools(): McpToolInfo[] {
     const tools: McpToolInfo[] = [];
-    for (const conn of this.connections.values()) {
+    for (const conn of this.state().connections.values()) {
       tools.push(...conn.getTools());
     }
     return tools;
@@ -647,12 +706,21 @@ export class McpManager {
    * @param toolName - The namespaced tool name (e.g. "github_create_issue")
    */
   isMcpTool(toolName: string): boolean {
-    for (const conn of this.connections.values()) {
+    for (const conn of this.state().connections.values()) {
       if (conn.getTools().some((t) => t.name === toolName)) {
         return true;
       }
     }
     return false;
+  }
+
+  /** The connected server that has this tool, and the tool's name on it. */
+  private ownerOf(toolName: string): { conn: McpServerConnection; originalName: string } | undefined {
+    for (const conn of this.state().connections.values()) {
+      const tool = conn.getTools().find((t) => t.name === toolName);
+      if (tool) return { conn, originalName: tool.originalName };
+    }
+    return undefined;
   }
 
   /**
@@ -671,13 +739,12 @@ export class McpManager {
     userId?: string,
     context?: { channelName?: string; channelChatId?: string },
   ): Promise<McpToolCallResult> {
-    // Find which server owns this tool
-    for (const conn of this.connections.values()) {
-      const tool = conn.getTools().find((t) => t.name === toolName);
-      if (tool) {
-        return conn.callTool(tool.originalName, args, userId, context);
-      }
-    }
+    // In scoped mode a call can come before anything in this invocation has
+    // connected (a HITL resume runs the approved tool in the wait's own
+    // invocation), so connect first.
+    if (this.scopedKey && !this.ownerOf(toolName)) await this.ensureConnected();
+    const owner = this.ownerOf(toolName);
+    if (owner) return owner.conn.callTool(owner.originalName, args, userId, context);
 
     return {
       isError: true,
@@ -689,10 +756,9 @@ export class McpManager {
    * Disconnect all MCP servers.
    */
   async shutdown(): Promise<void> {
-    await Promise.allSettled(
-      Array.from(this.connections.values()).map((conn) => conn.disconnect()),
-    );
-    this.connections.clear();
+    const { connections } = this.state();
+    await Promise.allSettled(Array.from(connections.values()).map((conn) => conn.disconnect()));
+    connections.clear();
     this.initialized = false;
   }
 
@@ -700,7 +766,7 @@ export class McpManager {
    * Get names of all connected servers.
    */
   getConnectedServers(): string[] {
-    return Array.from(this.connections.keys());
+    return Array.from(this.state().connections.keys());
   }
 
   /**
@@ -711,7 +777,7 @@ export class McpManager {
    */
   getServerInfos(): McpServerInfo[] {
     const infos: McpServerInfo[] = [];
-    for (const conn of this.connections.values()) {
+    for (const conn of this.state().connections.values()) {
       infos.push(conn.getServerInfo());
     }
     return infos;
@@ -721,6 +787,6 @@ export class McpManager {
    * Check if the manager is initialized and has at least one connection.
    */
   isReady(): boolean {
-    return this.initialized && this.connections.size > 0;
+    return this.initialized && this.state().connections.size > 0;
   }
 }

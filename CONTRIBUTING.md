@@ -13,6 +13,7 @@ For anything larger, open an issue first so we can agree on the approach.
 
 ```bash
 npm ci
+npm run build:storage        # the gateway imports the storage packages' compiled output
 npx tsc --noEmit -p gateway
 npx tsc --noEmit -p infra
 npm test --workspace @agentforeach/gateway
@@ -23,7 +24,7 @@ To run the Functions app locally, see [Run locally](docs/getting-started.md#run-
 ## Conventions
 
 - **Tests with every fix.** Tests use `node:test`; add a test that fails without your change. New test files must be added to the `test` script in `gateway/package.json`.
-- **Cosmos containers are defined in code.** If you change a store's container (partition key, TTL, indexing), run `npm run db:catalog --workspace @agentforeach/gateway` and commit the regenerated `infra/cosmos-containers.json`; CI fails when it is out of date.
+- **Collections are defined in code.** If you change a store's collection (partition key, TTL, indexing, vector or full-text policy), run `npm run db:catalog --workspace @agentforeach/gateway` and commit the regenerated `infra/cosmos-containers.json` and `infra/postgres-schema.sql`; CI fails when either is out of date.
 - **Behaviour changes** that affect operators go in [docs/UPGRADING.md](docs/UPGRADING.md).
 - **No personal data in logs.** Use `redactId()` for user, session and chat ids and `describeText()` instead of message text.
 - **Untrusted URLs** go through `safeFetch()` (`utils/safe-fetch.ts`), never `fetch()`.

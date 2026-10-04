@@ -3,7 +3,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { blockedAddress, challengeFrame, checkUrl, checkUrlResolved, explainError, hostMatches, isCardNumber, isTransientNetError, looksBlocked, maskCardNumbers, parseViewerInput, truncate, wallKind } from "./guard.mjs";
+import { blockedAddress, challengeFrame, checkUrl, checkUrlResolved, egressPlaceholders, explainError, guardPageSockets, hostMatches, isCardNumber, isTransientNetError, looksBlocked, maskCardNumbers, pageRequestBlocked, pageSocketBlocked, parseViewerInput, truncate, wallKind } from "./guard.mjs";
 
 test("checkUrl allows public http and https URLs", () => {
   for (const url of ["https://example.com/a?b=c", "http://en.wikipedia.org/wiki/Azure", "https://93.184.215.14/"]) {
@@ -212,4 +212,67 @@ test("card numbers are recognised by Luhn and hidden from text", () => {
   assert.equal(maskCardNumbers("Order 1234567890123 and card 5555555555554444."), "Order 1234567890123 and card ••••.",
     "an order number that fails Luhn stays");
   assert.equal(maskCardNumbers("Call +91 98765 43210"), "Call +91 98765 43210");
+});
+
+test("pageRequestBlocked stops a page's requests to local and private hosts, nothing else", () => {
+  for (const url of [
+    "http://127.0.0.1:8080/exec",
+    "http://localhost:8080/files",
+    "http://[::1]:8080/",
+    "http://0x7f.1:8080/",
+    "ws://127.0.0.1:9222/devtools",
+    "http://10.0.0.5/",
+    "http://169.254.169.254/latest/meta-data",
+    "http://metadata.google.internal/",
+  ]) {
+    assert.ok(pageRequestBlocked(url), url);
+  }
+  for (const url of ["https://example.com/app.js", "wss://relay.example.com/x", "data:text/plain,hi", "blob:https://example.com/1", "not a url"]) {
+    assert.equal(pageRequestBlocked(url), null, url);
+  }
+});
+
+test("a page's WebSocket to a credential host or a local host is closed; others are left alone (independent review)", async () => {
+  assert.match(pageSocketBlocked("wss://api.github.com/socket", ["api.github.com"]), /credentials/);
+  assert.match(pageSocketBlocked("ws://127.0.0.1:8080/", []), /local or private/);
+  assert.equal(pageSocketBlocked("wss://stream.example.com/", ["api.github.com"]), null);
+
+  // Against a fake context: the route is registered, and its handler closes.
+  let matcher;
+  let handler;
+  const context = { routeWebSocket: async (m, h) => ((matcher = m), (handler = h)) };
+  let hosts = [];
+  const blocked = [];
+  await guardPageSockets(context, { protectedHosts: () => hosts, onBlocked: (url) => blocked.push(url) });
+  assert.equal(matcher(new URL("wss://api.github.com/x")), false, "nothing protected yet");
+  hosts = ["api.github.com"];
+  assert.equal(matcher(new URL("wss://api.github.com/x")), true, "the list is read on every connection");
+  assert.equal(matcher(new URL("wss://stream.example.com/")), false);
+  let closed;
+  await handler({ url: () => "wss://api.github.com/x", close: async (opts) => (closed = opts) });
+  assert.equal(closed.code, 1008);
+  assert.deepEqual(blocked, ["wss://api.github.com/x"]);
+});
+
+test("on an intercepting backend, a name resolving to its egress placeholder may be opened; others stay refused (live run)", async () => {
+  // Cloudflare Containers: every name resolves to the interceptor, fd00::119:1 in the live run.
+  const intercepted = async (host) => {
+    if (host === "sneaky.example") return [{ address: "10.0.0.5", family: 4 }];
+    return [{ address: "fd00::119:1", family: 6 }];
+  };
+  const learned = await egressPlaceholders("probe", intercepted);
+  assert.deepEqual([...learned], ["fd00::119:1"]);
+  assert.equal((await checkUrlResolved("https://example.com/", intercepted, learned)).ok, true);
+  assert.equal((await checkUrlResolved("https://en.wikipedia.org/wiki/X", intercepted, learned)).ok, true);
+  assert.match((await checkUrlResolved("https://sneaky.example/", intercepted, learned)).reason, /10\.0\.0\.5, a local or private address/);
+  assert.equal((await checkUrlResolved("http://127.0.0.1:8080/", intercepted, learned)).ok, false, "literals are still checked");
+  assert.equal((await checkUrlResolved("http://localhost/", intercepted, learned)).ok, false);
+
+  // Without the setting there are no placeholders: the old rule.
+  assert.equal((await egressPlaceholders(undefined, intercepted)).size, 0);
+  assert.match((await checkUrlResolved("https://example.com/", intercepted, new Set())).reason, /fd00::119:1/);
+  // Loopback is never a placeholder; a fixed list works too; a failed probe gives none.
+  assert.equal((await egressPlaceholders("probe", async () => [{ address: "127.0.0.1", family: 4 }])).size, 0);
+  assert.deepEqual([...(await egressPlaceholders(" FD00::119:1 , ::1 "))], ["fd00::119:1"]);
+  assert.equal((await egressPlaceholders("probe", async () => { throw new Error("ENOTFOUND"); })).size, 0);
 });

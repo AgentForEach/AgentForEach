@@ -114,7 +114,9 @@
     "partitionKey": {
       "paths": [
         "/userId"
-      ]
+      ],
+      "kind": "Hash",
+      "version": 2
     },
     "indexingPolicy": {
       "automatic": true,
@@ -245,7 +247,9 @@
     "partitionKey": {
       "paths": [
         "/userId"
-      ]
+      ],
+      "kind": "Hash",
+      "version": 2
     },
     "indexingPolicy": {
       "automatic": true,
@@ -359,7 +363,9 @@
     "partitionKey": {
       "paths": [
         "/userId"
-      ]
+      ],
+      "kind": "Hash",
+      "version": 2
     },
     "defaultTtl": -1,
     "indexingPolicy": {
@@ -463,7 +469,9 @@
     "partitionKey": {
       "paths": [
         "/userId"
-      ]
+      ],
+      "kind": "Hash",
+      "version": 2
     },
     "indexingPolicy": {
       "automatic": true,

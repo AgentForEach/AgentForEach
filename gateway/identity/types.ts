@@ -54,7 +54,7 @@ export interface IdentityLink {
   /** Cosmos DB TTL (undefined = never expire). */
   ttl?: number;
 
-  /** Index signature for Cosmos DB BaseDocument compatibility. */
+  /** Index signature for storage `Doc` compatibility. */
   [key: string]: unknown;
 }
 
@@ -93,7 +93,7 @@ export interface PairingCode {
   /** Cosmos DB TTL in seconds (auto-delete after expiry). */
   ttl: number;
 
-  /** Index signature for Cosmos DB BaseDocument compatibility. */
+  /** Index signature for storage `Doc` compatibility. */
   [key: string]: unknown;
 }
 

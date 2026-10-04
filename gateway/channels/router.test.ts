@@ -1,15 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import type {
-  BaseDocument,
-  ContainerHandle,
-  ContainerOptions,
-  DatabaseProvider,
-  PatchOperation,
-  QueryOptions,
-  QueryParameter,
-} from "../database/index.js";
+import { InMemoryStorage } from "@agentforeach/storage";
 import type { ChannelPlugin, InboundMessage, OutboundContext, OutboundResult } from "./types.js";
 import type { SendRequest } from "../client/types.js";
 import type { IdentityLink, PairingCode } from "../identity/types.js";
@@ -24,194 +16,6 @@ import {
   processInbound,
 } from "./router.js";
 import { registerChannel } from "./registry.js";
-
-// ============================================================================
-// In-Memory Database Mock (simplified for identity containers)
-// ============================================================================
-
-class InMemoryContainer<T extends BaseDocument> implements ContainerHandle<T> {
-  private docs = new Map<string, T>();
-  private partitionKeyPath: string;
-
-  constructor(partitionKeyPath = "/userId") {
-    this.partitionKeyPath = partitionKeyPath.replace(/^\//, "");
-  }
-
-  async create(document: T): Promise<T> {
-    if (this.docs.has(document.id)) {
-      const err: Record<string, unknown> = new Error(
-        "Conflict",
-      ) as unknown as Record<string, unknown>;
-      err.code = 409;
-      throw err;
-    }
-    this.docs.set(document.id, structuredClone(document));
-    return structuredClone(document);
-  }
-
-  async upsert(document: T): Promise<T> {
-    this.docs.set(document.id, structuredClone(document));
-    return structuredClone(document);
-  }
-
-  async read(id: string, partitionKey: string): Promise<T | null> {
-    const doc = this.docs.get(id);
-    if (!doc) return null;
-    if (
-      (doc as Record<string, unknown>)[this.partitionKeyPath] !== partitionKey
-    )
-      return null;
-    return structuredClone(doc);
-  }
-
-  async replace(id: string, partitionKey: string, document: T): Promise<T> {
-    const existing = await this.read(id, partitionKey);
-    if (!existing) throw new Error("not found");
-    this.docs.set(id, structuredClone(document));
-    return structuredClone(document);
-  }
-
-  async patch(
-    id: string,
-    partitionKey: string,
-    operations: PatchOperation[],
-  ): Promise<T> {
-    const existing = await this.read(id, partitionKey);
-    if (!existing) throw new Error("not found");
-    const target = existing as unknown as Record<string, unknown>;
-
-    for (const op of operations) {
-      const path = op.path.replace(/^\//, "").split("/");
-      if (path.length === 0) continue;
-      if (op.op === "set") {
-        const key = path[path.length - 1]!;
-        let ptr = target;
-        for (let i = 0; i < path.length - 1; i += 1) {
-          if (!ptr[path[i]!] || typeof ptr[path[i]!] !== "object") {
-            ptr[path[i]!] = {};
-          }
-          ptr = ptr[path[i]!] as Record<string, unknown>;
-        }
-        ptr[key] = op.value;
-      }
-    }
-
-    this.docs.set(id, structuredClone(existing));
-    return structuredClone(existing);
-  }
-
-  async delete(id: string, partitionKey: string): Promise<boolean> {
-    const existing = await this.read(id, partitionKey);
-    if (!existing) return false;
-    this.docs.delete(id);
-    return true;
-  }
-
-  async query<R = T>(
-    _querySpec: unknown,
-    options: QueryOptions = {},
-  ): Promise<R[]> {
-    const partitionKey = options.partitionKey;
-    const out: unknown[] = [];
-    for (const doc of this.docs.values()) {
-      if (
-        partitionKey !== undefined &&
-        (doc as Record<string, unknown>)[this.partitionKeyPath] !== partitionKey
-      ) {
-        continue;
-      }
-      out.push(structuredClone(doc));
-    }
-    return out as R[];
-  }
-
-  async queryWithParams<R = T>(
-    sql: string,
-    parameters: QueryParameter[] = [],
-    options: QueryOptions = {},
-  ): Promise<R[]> {
-    const paramMap = new Map<string, unknown>();
-    for (const p of parameters) {
-      paramMap.set(p.name, p.value);
-    }
-
-    let candidates: T[] = [];
-    for (const doc of this.docs.values()) {
-      if (
-        options.partitionKey !== undefined &&
-        (doc as Record<string, unknown>)[this.partitionKeyPath] !==
-          options.partitionKey
-      ) {
-        continue;
-      }
-      candidates.push(structuredClone(doc));
-    }
-
-    candidates = candidates.filter((doc) => {
-      const obj = doc as Record<string, unknown>;
-      const whereMatch = sql.match(/WHERE\s+(.+?)(?:\s+ORDER\s+BY|\s*$)/i);
-      if (!whereMatch) return true;
-
-      const whereClause = whereMatch[1]!;
-      const conditions = whereClause.split(/\s+AND\s+/i);
-
-      for (const cond of conditions) {
-        const trimmed = cond.trim();
-        const eqMatch = trimmed.match(/c\.(\w+)\s*=\s*(@\w+)/);
-        if (eqMatch) {
-          const val = obj[eqMatch[1]!];
-          const paramVal = paramMap.get(eqMatch[2]!);
-          if (val !== paramVal) return false;
-          continue;
-        }
-      }
-
-      return true;
-    });
-
-    if (options.maxResults !== undefined) {
-      candidates = candidates.slice(0, options.maxResults);
-    }
-
-    return candidates as unknown as R[];
-  }
-
-  async count(): Promise<number> {
-    return this.docs.size;
-  }
-
-  getRawContainer(): unknown {
-    return {};
-  }
-}
-
-class InMemoryDatabaseProvider implements DatabaseProvider {
-  readonly name = "memory";
-  private containers = new Map<string, InMemoryContainer<BaseDocument>>();
-
-  async initialize(): Promise<void> {
-    return;
-  }
-
-  async getOrCreateContainer<T extends BaseDocument = BaseDocument>(
-    options: ContainerOptions,
-  ): Promise<ContainerHandle<T>> {
-    const id = options.id;
-    if (!id) throw new Error("container id required");
-
-    const existing = this.containers.get(id);
-    if (existing) return existing as unknown as ContainerHandle<T>;
-
-    const pkPath = options.partitionKey?.paths?.[0] ?? "/id";
-    const container = new InMemoryContainer<BaseDocument>(pkPath);
-    this.containers.set(id, container);
-    return container as unknown as ContainerHandle<T>;
-  }
-
-  getDatabaseId(): string {
-    return "memory";
-  }
-}
 
 // ============================================================================
 // Helpers
@@ -238,7 +42,7 @@ async function setupIdentityStore(
   configOverrides?: Partial<IdentityConfig>,
 ): Promise<IdentityStore> {
   resetIdentityConfigCache();
-  const db = new InMemoryDatabaseProvider();
+  const db = new InMemoryStorage();
   const config = makeConfig(configOverrides);
   const store = new IdentityStore(db, config);
   await store.initialize();

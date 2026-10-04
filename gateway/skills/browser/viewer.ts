@@ -15,6 +15,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { hostInfo } from "../../runtime/host.js";
 
 const SCRIPT = String.raw`
 (function () {
@@ -294,12 +295,10 @@ export function viewerHeaders(relayHost: string): Record<string, string> {
   };
 }
 
-/** Where a handoff's viewer lives: `browser.handoff.viewerBaseUrl`, or this Function App's own address. */
+/** Where a handoff's viewer lives: `browser.handoff.viewerBaseUrl`, or the gateway's own public address. */
 export function viewerBaseUrl(configured: string | undefined): string | undefined {
   if (configured) return configured.replace(/\/$/, "");
-  const host = process.env.WEBSITE_HOSTNAME;
-  if (!host) return undefined;
-  return `${host.startsWith("localhost") ? "http" : "https"}://${host}`;
+  return hostInfo().publicBaseUrl;
 }
 
 /** The link for one handoff; everything sensitive rides in the fragment. */

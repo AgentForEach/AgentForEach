@@ -12,11 +12,11 @@
  * some steps failed and the call can be repeated.
  */
 
-import { app, type HttpRequest, type HttpResponseInit, type InvocationContext } from "@azure/functions";
+import type { HandlerContext, HttpRequestLike, HttpResult, RouteDef } from "@agentforeach/platform";
 import { isAdmin, resolveAuthContext } from "../auth/index.js";
-import { getSharedDatabase } from "../database/index.js";
+import { getSharedStorage } from "../database/index.js";
 import { loadSkillsConfig, createSandboxBackend, ExportBlobStore } from "../skills/index.js";
-import { resolveRuntimeStorage } from "../skills/sandbox/export-store.js";
+import { resolveObjectStorage } from "../objects/index.js";
 import { handleCorsHeaders } from "../utils/request-http.js";
 import { eraseUserData, type ErasureReport } from "./erase.js";
 import { AbortStore } from "../client/abort-store.js";
@@ -29,7 +29,7 @@ const ABORT_PROPAGATION_MS = 3_000;
 /** Pause before the second pass, for writes of turns that were stopping. */
 const SECOND_PASS_DELAY_MS = 10_000;
 
-function cors(request: HttpRequest): Record<string, string> {
+function cors(request: HttpRequestLike): Record<string, string> {
   return {
     ...handleCorsHeaders(request),
     "Access-Control-Allow-Methods": "DELETE,OPTIONS",
@@ -37,23 +37,22 @@ function cors(request: HttpRequest): Record<string, string> {
   };
 }
 
-function json(request: HttpRequest, status: number, body: unknown): HttpResponseInit {
+function json(request: HttpRequestLike, status: number, body: unknown): HttpResult {
   return { status, headers: { ...cors(request), "Content-Type": "application/json" }, body: JSON.stringify(body) };
 }
 
-async function erase(request: HttpRequest, context: InvocationContext, userId: string): Promise<HttpResponseInit> {
+async function erase(request: HttpRequestLike, context: HandlerContext, userId: string): Promise<HttpResult> {
   if (request.headers.get("x-confirm-erase") !== "yes") {
     return json(request, 400, { error: "Send the header x-confirm-erase: yes to erase all data for this account" });
   }
-  const db = getSharedDatabase();
-  const limit = await new RateLimiter(db, ERASE_LIMIT).check(userId);
+  const limit = await new RateLimiter(getSharedStorage(), ERASE_LIMIT).check(userId);
   if (!limit.allowed) {
     return json(request, 429, { error: "Erasure was requested too recently", retryAfterSeconds: limit.retryAfterSeconds });
   }
   // Stop the user's running turns (on any instance) so they don't write
   // after the first pass. Runs poll the marker every 2.5 s, and the first
   // pass deletes it with the rest of the user's data, so let them see it.
-  const aborts = new AbortStore(db);
+  const aborts = new AbortStore(getSharedStorage());
   await aborts
     .initialize()
     .then(() => aborts.requestAbort(userId))
@@ -61,22 +60,26 @@ async function erase(request: HttpRequest, context: InvocationContext, userId: s
     .catch(() => undefined);
   const skills = loadSkillsConfig();
   const sandbox = skills.sandbox ? createSandboxBackend(skills.sandbox) : undefined;
-  const storage = skills.enabled ? resolveRuntimeStorage(skills.storageConnectionString) : undefined;
+  const storage = skills.enabled ? resolveObjectStorage(skills.storageConnectionString) : undefined;
   const targets = {
-    sandbox: sandbox as { deleteUserSandboxes?(userId: string): Promise<number> } | undefined,
+    sandbox,
     exports: storage ? new ExportBlobStore(storage) : undefined,
   };
-  const first = await eraseUserData(db, userId, targets);
+  const first = await eraseUserData(getSharedStorage(), userId, targets);
   await new Promise((r) => setTimeout(r, SECOND_PASS_DELAY_MS));
-  const second = await eraseUserData(db, userId, { ...targets, sandbox: undefined, exports: undefined });
+  // The sandboxes again too: a turn still running during the first pass
+  // could have started one (deleting none is a cheap list).
+  const second = await eraseUserData(getSharedStorage(), userId, { ...targets, exports: undefined });
   const report = mergeReports(first, second);
   if (report.errors.length > 0) context.warn(`[account] erasure incomplete: ${report.errors.join("; ")}`);
   return json(request, report.errors.length > 0 ? 500 : 200, report);
 }
 
-app.http("accountEraseSelf", {
+export const routes: RouteDef[] = [];
+
+routes.push({
+  name: "accountEraseSelf",
   methods: ["DELETE", "OPTIONS"],
-  authLevel: "anonymous",
   route: "api/me/data",
   handler: async (request, context) => {
     if (request.method === "OPTIONS") return { status: 204, headers: cors(request) };
@@ -86,9 +89,9 @@ app.http("accountEraseSelf", {
   },
 });
 
-app.http("accountEraseUser", {
+routes.push({
+  name: "accountEraseUser",
   methods: ["DELETE", "OPTIONS"],
-  authLevel: "anonymous",
   route: "api/admin/users/{userId}/data",
   handler: async (request, context) => {
     if (request.method === "OPTIONS") return { status: 204, headers: cors(request) };

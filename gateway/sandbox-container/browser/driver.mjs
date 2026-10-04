@@ -12,9 +12,7 @@
 import { createRequire } from "node:module";
 import { createServer } from "node:http";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import {
   challengeFrame,
@@ -24,11 +22,14 @@ import {
   hostMatches,
   isTransientNetError,
   maskCardNumbers,
+  pageRequestBlocked,
+  guardPageSockets,
   parseViewerInput,
   truncate,
   wallKind,
 } from "./guard.mjs";
 import { cardFieldFilledInPage, labelsInPage, snapshotInPage, textInPage } from "./snapshot.mjs";
+import { trustEgressCa } from "./egress-ca.mjs";
 
 const require = createRequire(import.meta.url);
 const { chromium } = require("playwright-core");
@@ -37,7 +38,6 @@ const DATA = process.env.AFE_BROWSER_DATA_DIR ?? "/mnt/data";
 const RUN_DIR = process.env.AFE_BROWSER_RUN_DIR ?? "/tmp/afe-browser";
 const PROFILE = join(DATA, ".browser", "profile");
 const OUTPUT = "browser"; // under DATA, so sandbox_file_export can hand files to the user
-const PROXY_CA = "/etc/ssl/certs/adc-egress-proxy-ca.crt";
 const [VIEW_W, VIEW_H] = (process.env.AFE_BROWSER_VIEWPORT ?? "1280x800").split("x").map(Number);
 const IDLE_MS = Number(process.env.AFE_BROWSER_IDLE_SEC ?? 120) * 1000;
 const HEADLESS = process.env.AFE_BROWSER_HEADLESS === "1" || !process.env.DISPLAY;
@@ -51,31 +51,6 @@ const DOWNLOAD_WAIT_MS = 15_000;
 // ============================================================================
 // Launch
 // ============================================================================
-
-/**
- * The sandbox's egress proxy re-signs TLS with its own CA, which the platform
- * writes at boot (so it can rotate). Chromium on Linux trusts its NSS store,
- * not the system bundle, so import the CA on every start.
- */
-function trustEgressProxyCa() {
-  if (!existsSync(PROXY_CA)) return;
-  const dir = join(homedir(), ".pki", "nssdb");
-  const db = `sql:${dir}`;
-  mkdirSync(dir, { recursive: true });
-  if (!existsSync(join(dir, "cert9.db"))) execFileSync("certutil", ["-d", db, "-N", "--empty-password"]);
-  const pems = readFileSync(PROXY_CA, "utf8").match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g) ?? [];
-  pems.forEach((pem, i) => {
-    const nick = `adc-egress-proxy-${i}`;
-    const file = join(RUN_DIR, `${nick}.pem`);
-    writeFileSync(file, `${pem}\n`);
-    try {
-      execFileSync("certutil", ["-d", db, "-D", "-n", nick], { stdio: "ignore" });
-    } catch {
-      // not there yet
-    }
-    execFileSync("certutil", ["-d", db, "-A", "-t", "C,,", "-n", nick, "-i", file]);
-  });
-}
 
 /** Save PDFs and other files instead of opening them in Chromium's viewer (headed Chromium opens PDFs). */
 function preferDownloads() {
@@ -107,8 +82,13 @@ mkdirSync(PROFILE, { recursive: true });
 for (const lock of ["SingletonLock", "SingletonSocket", "SingletonCookie"]) {
   rmSync(join(PROFILE, lock), { force: true }); // left behind when a suspend killed the last browser
 }
-trustEgressProxyCa();
+// The egress proxy's CA, wherever the backend says it is (SANDBOX_EGRESS_CA).
+trustEgressCa({ workDir: RUN_DIR });
 preferDownloads();
+
+/** URLs on hosts that may be local or private (loopback, private ranges, local names). */
+const LOCAL_HOST_URL =
+  /^(https?|wss?):\/\/(\[[^\]]*\]|localhost|[^/:]*\.(localhost|local|internal|localdomain)|metadata|127\.\d+\.\d+\.\d+|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|169\.254\.\d+\.\d+|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d+\.\d+|0\.0\.0\.0)(:\d+)?([/?#]|$)/i;
 
 const context = await chromium.launchPersistentContext(PROFILE, {
   headless: HEADLESS,
@@ -130,6 +110,13 @@ let resetting = false;
 context.on("close", () => {
   if (!resetting) process.exit(0);
 });
+// A page may not reach the sandbox's own servers on 127.0.0.1 (the sandbox
+// server, this driver) or any private address: refuse its requests there.
+// The pattern is matched in the browser (normalised URLs), so other requests
+// aren't held up; pageRequestBlocked makes the exact call.
+await context.route(LOCAL_HOST_URL, (route) =>
+  pageRequestBlocked(route.request().url()) ? route.abort("blockedbyclient") : route.fallback(),
+);
 
 // ============================================================================
 // Credential hosts
@@ -177,6 +164,29 @@ async function setProtectedHosts(hosts) {
   if (next.length && !had) await context.route(matchesProtected, guardCredentialRequest);
   if (!next.length && had) await context.unroute(matchesProtected, guardCredentialRequest);
 }
+
+// WebSockets bypass context.route, so the local-host and credential-host
+// blocks above don't see them: close a page's socket to either. This covers
+// sockets a page (or its frames) opens, not those from a Web Worker it starts:
+// Playwright's WebSocket route isn't injected into workers. On Cloudflare the
+// egress handler never adds credentials to a WebSocket, so that gap is closed
+// there; on ACA Sandboxes it isn't (docs/Browser.md, Security).
+await guardPageSockets(context, {
+  protectedHosts: () => protectedHosts,
+  onBlocked: (raw) => {
+    let host = "";
+    try {
+      host = new URL(raw).hostname;
+    } catch {
+      return;
+    }
+    if (warnedHosts.has(host) || !protectedHosts.some((pattern) => hostMatches(host, pattern))) return;
+    warnedHosts.add(host);
+    pendingNotes.push(
+      `Blocked a WebSocket the page opened to ${host}: the user's credentials are attached to requests to that host, so pages may not connect to it.`,
+    );
+  },
+});
 
 // ============================================================================
 // Tabs, downloads, dialogs
@@ -944,20 +954,10 @@ async function startHandoff({ relayUrl, group, viewerUserId, expiresAt, reason, 
   }
   const until = Number(expiresAt) || Date.now() + 10 * 60_000;
   if (until <= Date.now() + 5_000) throw new ActionError("The handoff's deadline has already passed.");
-  const ws = new WebSocket(relayUrl, "json.webpubsub.azure.v1");
-  await new Promise((ok, fail) => {
-    const timer = setTimeout(() => fail(new ActionError("The live view could not connect (timed out).")), 15_000);
-    ws.onopen = () => {
-      clearTimeout(timer);
-      ok();
-    };
-    ws.onerror = () => {
-      clearTimeout(timer);
-      fail(new ActionError("The live view could not connect. If sandbox egress is restricted, allow the Web PubSub host."));
-    };
-  });
+  const ws = await openRelay(relayUrl);
   handoff = {
     ws,
+    relayUrl,
     group,
     viewerUserId,
     expiresAt: until,
@@ -975,16 +975,73 @@ async function startHandoff({ relayUrl, group, viewerUserId, expiresAt, reason, 
       // not on a web page yet
     }
   }
-  ws.send(JSON.stringify({ type: "joinGroup", group, ackId: 1 }));
-  ws.onmessage = (m) => onRelayMessage(m.data);
-  ws.onclose = () => {
-    if (handoff === h) stopHandoff("disconnected").catch(() => {});
-  };
+  attachRelay(h, ws);
   h.timer = setTimeout(() => stopHandoff("expired").catch(() => {}), Math.max(until - Date.now(), 1000));
   // A heartbeat, so the viewer can tell the browser is still there.
   h.heartbeat = setInterval(sendStatus, 10_000);
   await streamPage(await page());
   return { handoff: "started", expiresAt: until };
+}
+
+/** Open the relay socket (the live view's connection), or fail with a message for the agent. */
+async function openRelay(relayUrl) {
+  const ws = new WebSocket(relayUrl, "json.webpubsub.azure.v1");
+  await new Promise((ok, fail) => {
+    const timer = setTimeout(() => fail(new ActionError("The live view could not connect (timed out).")), 15_000);
+    ws.onopen = () => {
+      clearTimeout(timer);
+      ok();
+    };
+    ws.onerror = () => {
+      clearTimeout(timer);
+      fail(new ActionError("The live view could not connect. If sandbox egress is restricted, allow the Web PubSub host."));
+    };
+  });
+  return ws;
+}
+
+/** Join the handoff's group on `ws` and handle its messages; a socket that drops is opened again. */
+function attachRelay(h, ws) {
+  h.ws = ws;
+  ws.send(JSON.stringify({ type: "joinGroup", group: h.group, ackId: 1 }));
+  ws.onmessage = (m) => onRelayMessage(m.data);
+  ws.onclose = () => {
+    if (handoff === h && h.ws === ws) reconnectRelay(h).catch(() => {});
+  };
+}
+
+/** Relay reconnects in a row before the handoff ends as disconnected. */
+const RELAY_RECONNECTS = 5;
+
+/**
+ * The relay socket dropped mid-handoff (a network blip, or a platform that
+ * ends long outbound connections): open it again while the handoff lasts,
+ * with a short backoff, so the user's live view carries on. The backoff
+ * totals about 12 s, inside the 30 s a relay URL may reconnect after its
+ * connection closed (RELAY_RESUME_MS on self-hosted realtime providers).
+ */
+async function reconnectRelay(h) {
+  for (let attempt = 1; attempt <= RELAY_RECONNECTS && handoff === h && Date.now() < h.expiresAt - 2_000; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, Math.min(500 * 2 ** (attempt - 1), 5_000)));
+    if (handoff !== h) return;
+    try {
+      const ws = await openRelay(h.relayUrl);
+      if (handoff !== h) {
+        ws.close();
+        return;
+      }
+      attachRelay(h, ws);
+      h.reconnects = (h.reconnects ?? 0) + 1;
+      console.error(`[driver] relay reconnected (attempt ${attempt}, ${h.reconnects} so far)`);
+      // The screencast carries on into the new socket; send a whole frame now.
+      sendStatus();
+      await sendFullFrame().catch(() => {});
+      return;
+    } catch {
+      // try again
+    }
+  }
+  if (handoff === h) await stopHandoff("disconnected");
 }
 
 async function stopHandoff(reason) {

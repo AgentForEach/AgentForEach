@@ -4,7 +4,7 @@ This document is the implementation reference for AgentForEach's Human-in-the-Lo
 
 It explains:
 
-- Architecture (Durable Functions orchestration + Cosmos DB persistence)
+- Architecture (a durable wait + Cosmos DB persistence)
 - Config-driven tool gating (agentforeach.json `hitl` section)
 - Wire protocol (WebSocket events between server and client)
 - Session integration (shared SessionStore, conversation state, Responses API chain handling)
@@ -18,15 +18,16 @@ AgentForEach HITL is a **config-driven, fire-and-leave** system:
 
 - The LLM generates a tool call that needs human input (e.g., "create a contact")
 - The runner **pauses mid-tool-loop**, saves its state to Cosmos DB, and **exits**
-- An Azure Durable Functions orchestrator **hibernates** waiting for the user's response (zero compute cost)
-- The user fills a form in the client app → WebSocket message → orchestrator wakes
-- The orchestrator executes the tool with merged args, saves the result to the session, and resumes the LLM
+- A durable wait (`HitlAwaitInput`, see [Platforms](Platforms.md); on Azure a `DurableWait` orchestration) **hibernates** waiting for the user's response (zero compute cost)
+- The user fills a form in the client app → WebSocket message → the wait wakes
+- The wait's event handler executes the tool with merged args, saves the result to the session, and resumes the LLM
 
 Important:
 
-- The Azure Function **is not held open** while waiting for the user
-- Zero compute cost during hibernation: state lives in Azure Storage
-- The orchestration survives function app restarts
+- The function invocation **is not held open** while waiting for the user
+- Zero compute cost during hibernation: on Azure the wait's state lives in the Durable Functions task hub (Azure Storage)
+- The wait survives function app restarts
+- Only web and app chat turns can pause for a form (`executeChatTurn` sets `request.canSuspendForInput`), and only when a Durable is installed. Channel, cron and resumed turns refuse a gated tool instead (§10)
 - Config in `agentforeach.json` controls which tools need HITL, so new MCP servers need **no code changes**
 - Uses the shared `SessionStore` for all persistence, with no separate conversation tracking
 
@@ -40,16 +41,18 @@ Core modules:
 | `hitl/config.ts` | Loads the `hitl` section from `agentforeach.json` |
 | `hitl/policy.ts` | Decides whether a tool call should be gated |
 | `hitl/store.ts` | Cosmos DB persistence for `HitlRunState` |
-| `hitl/orchestrator.ts` | Durable Functions orchestrator + 3 activities |
-| `hitl/index.ts` | Re-exports + side-effect import for activity registration |
+| `hitl/orchestrator.ts` | The `HitlAwaitInput` durable wait (`hitlWait`): start, event and timeout handlers |
+| `hitl/index.ts` | Re-exports |
 
 Integration points:
 
 | File | Role |
 |------|------|
-| `client/runner.ts` | HITL gate inside the tool loop (lines ~985–1110) |
+| `workflows.ts` | Registers `hitlWait` with the gateway's other durable kinds |
+| `client/runner.ts` | HITL gate inside the tool loop (around the `hitlGateAction` call) |
+| `handlers/chat-turn.ts` | `executeChatTurn` sets `canSuspendForInput`, so only its turns can pause for a form |
 | `client/client.ts` | Exposes `_hitlStore`, `_sessionStore`, `_mcpManager` |
-| `handlers/ws-message.ts` | Receives `input_response` from client, raises Durable event |
+| `handlers/client-events.ts` | Receives `input_response` from the client (via `ws-message.ts`), delivers it with `durable().signal(...)` |
 | `websocket/types.ts` | `ChatInputRequestPayload`, `ChatInputExpiredPayload` |
 | `sessions/store.ts` | Shared session persistence (`appendMessages`) |
 | `config/agentforeach.json` | The `hitl` configuration section |
@@ -76,26 +79,26 @@ When an LLM generates a tool call like `example_create_contact`, some tools need
 │       │                                          ┌──────────────┐   │
 │       │  1. Save HitlRunState to Cosmos          │  hitlStore   │   │
 │       │  2. Save user message to session         │  .create()   │   │
-│       │  3. Start Durable orchestrator           └──────────────┘   │
+│       │  3. Start HitlAwaitInput wait            └──────────────┘   │
 │       │  4. Throw HitlSuspendSignal                     │           │
 │       ▼                                                  │           │
 │  Return "awaiting_input" ◀───────────────────────────────┘          │
-│  (Azure Function exits — resources freed)                           │
+│  (invocation exits — resources freed)                               │
 └─────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────┐
-│                      DURABLE ORCHESTRATOR                           │
+│                         DURABLE WAIT                                │
 │                                                                     │
-│  HitlAwaitInput orchestration:                                      │
+│  HitlAwaitInput wait:                                               │
 │       │                                                             │
-│       ├── Activity: Push input_request to client (Web PubSub)       │
+│       ├── start: Push input_request to client (Web PubSub)          │
 │       │                                                             │
-│       ├── Race: waitForExternalEvent("hitl_input_response")         │
-│       │         vs. createTimer(timeoutSeconds)                     │
+│       ├── Race: event "hitl_input_response"                         │
+│       │         vs. timeout (timeoutSeconds)                        │
 │       │                                                             │
 │       │   ┌── EVENT wins ──────────────────────────┐                │
 │       │   │                                        │                │
-│       │   │  Activity: HitlResumeRun               │                │
+│       │   │  onEvent: resumeAfterInput             │                │
 │       │   │    1. Load HitlRunState                │                │
 │       │   │    2. Merge user data with LLM args    │                │
 │       │   │    3. Execute MCP tool                 │                │
@@ -103,17 +106,17 @@ When an LLM generates a tool call like `example_create_contact`, some tools need
 │       │   │    5. Clear previousResponseId         │                │
 │       │   │    6. client.send() → full pipeline    │                │
 │       │   │                                        │                │
-│       │   └── Orchestration completes ─────────────┘                │
+│       │   └── Wait completes ──────────────────────┘                │
 │       │                                                             │
-│       │   ┌── TIMER wins ──────────────────────────┐                │
+│       │   ┌── TIMEOUT first ───────────────────────┐                │
 │       │   │                                        │                │
-│       │   │  Activity: HitlTimeout                 │                │
+│       │   │  onTimeout: expireInputRequest         │                │
 │       │   │    1. Mark request as timed_out        │                │
 │       │   │    2. Save timeout note to session     │                │
 │       │   │    3. Send input_expired to client     │                │
 │       │   │    4. NO LLM call — zero loops         │                │
 │       │   │                                        │                │
-│       │   └── Orchestration completes ─────────────┘                │
+│       │   └── Wait completes ──────────────────────┘                │
 │       │                                                             │
 │       └── ★ HIBERNATED while waiting (zero compute cost) ★          │
 │                                                                     │
@@ -128,13 +131,13 @@ When an LLM generates a tool call like `example_create_contact`, some tools need
 │  WebSocket message: type="input_response"                           │
 │       │                                                             │
 │       ▼                                                             │
-│  ws-message.ts → handleInputResponse()                              │
+│  client-events.ts → handleInputResponse()                           │
 │       │  1. Validate requestId                                      │
 │       │  1b. Caller must own the request and it must be pending     │
-│       │  2. Check orchestration is Running/Pending                  │
-│       │  3. durableClient.raiseEvent("hitl_input_response")         │
+│       │  2. durable().signal("hitl-{id}", "hitl_input_response")    │
+│       │  3. Not delivered (wait not running) → 404                  │
 │       ▼                                                             │
-│  Orchestrator WAKES → calls HitlResumeRun activity                  │
+│  Wait WAKES → runs onEvent (resumeAfterInput)                       │
 │       │  1. Load saved state from hitlStore                         │
 │       │  2. Merge user input: { ...llmArgs, ...userData }           │
 │       │  3. Execute MCP tool via handleMcpToolCall()                │
@@ -149,13 +152,13 @@ When an LLM generates a tool call like `example_create_contact`, some tools need
 
 ### 3.3 Key design decisions
 
-1. **One-shot orchestration**: unlike the CronScheduler (which loops with `continueAsNew`), HITL orchestrations complete after the user responds or the request times out. No eternal loops.
+1. **One-shot wait**: unlike the CronScheduler (a durable alarm that ticks forever), a HITL wait completes after the user responds or the request times out. No eternal loops.
 
 2. **Shared session infrastructure**: the HITL module does not track conversation history separately. It uses the same `SessionStore.appendMessages()` that the runner uses in Step 8. The tool result is saved as a session message, and the runner loads full history on resume.
 
 3. **Response chain clearing**: when the runner saves `previousResponseId` from the OpenAI Responses API, it enables "chain mode" where only the new message is sent to the LLM (the rest is in the chain). HITL breaks this chain because the last chained response has unresolved tool calls. The resume path clears `previousResponseId` by passing `null` to `appendMessages`, forcing the runner to send full conversation history.
 
-4. **No LLM call on timeout**: when the timer wins the race, the `HitlTimeout` activity saves a friendly note to the session and sends `input_expired` to the client. Zero LLM calls, zero loops. The user can continue in their next message.
+4. **No LLM call on timeout**: when the timeout passes first, the timeout handler (`expireInputRequest`) saves a friendly note to the session and sends `input_expired` to the client. Zero LLM calls, zero loops. The user can continue in their next message.
 
 ## 4. Configuration (agentforeach.json)
 
@@ -409,12 +412,12 @@ When the runner hits a HITL gate:
 1. **Saves HitlRunState** to the `hitl-requests` container (via `HitlStore.create()`)
 2. **Saves the user's message** to the session via `sessionStore.appendMessages()`, so the user's original message is in the session history regardless of what happens next
 3. **Does not save `conversationState`**: the session retains its existing `conversationState` from the last fully-completed run. The current run's LLM response has pending unresolved tool calls; saving its `previousResponseId` would leave a broken Responses API chain.
-4. **Starts the Durable orchestrator** (fire-and-forget)
+4. **Starts the `HitlAwaitInput` durable wait** (id `hitl-{requestId}`, timing out after `timeoutSeconds`); its start handler pushes the form
 5. **Throws `HitlSuspendSignal`**, which the outer error handler catches to return `status: "awaiting_input"`
 
 ### 6.2 Resume path (orchestrator.ts)
 
-When the user responds and the orchestrator wakes:
+When the user responds and the wait wakes:
 
 1. **Loads HitlRunState** from `hitl-requests`
 2. **Merges user data** with LLM-proposed args: `{ ...llmArgs, ...userData }`
@@ -449,7 +452,7 @@ The LLM gets complete context through the existing session history pipeline.
 
 ### 6.4 Timeout path (orchestrator.ts)
 
-When the timer wins the race (no user response within `timeoutSeconds`):
+When the timeout passes first (no user response within `timeoutSeconds`):
 
 1. **Marks the request** as `timed_out` in the HITL store
 2. **Saves a timeout note** to the session as an assistant message, which gives context when the user returns
@@ -560,13 +563,15 @@ When the runner encounters an MCP tool call, the policy resolution pipeline runs
    └── Priority: named form options > LLM's proposedArgs.options > undefined
 ```
 
-## 9. Activity details
+## 9. Handler details
 
-### 9.1 HitlPushInputRequest
+The wait's three handlers are in `hitl/orchestrator.ts`. On Azure they run as the `DurableWaitStart`, `DurableWaitEvent` and `DurableWaitTimeout` activities of a `DurableWait` orchestration. Waits started before the durable port finish on the old `HitlAwaitInput` orchestration (activities `HitlPushInputRequest`, `HitlResumeRun`, `HitlTimeout`), kept registered for one release (`packages/platform-azure/src/durable/legacy.ts`).
 
-Pushes the `input_request` event to the user's connected clients via Web PubSub. Separated into an activity because orchestrator functions must be deterministic (no I/O).
+### 9.1 start: `pushInputRequest`
 
-### 9.2 HitlResumeRun
+Pushes the `input_request` event to the user's connected clients via Web PubSub. Runs once when the wait begins, before it sleeps.
+
+### 9.2 onEvent: `resumeAfterInput`
 
 Resumes the agent runner after the user provides input:
 
@@ -581,7 +586,7 @@ The `resumeRunWithResult` function:
 - Clears `conversationState` (breaks the stale response chain)
 - Calls `client.send()` which runs the full runner pipeline
 
-### 9.3 HitlTimeout
+### 9.3 onTimeout: `expireInputRequest`
 
 Handles a timed-out request without calling the LLM:
 
@@ -597,15 +602,15 @@ Handles a timed-out request without calling the LLM:
 | Tool execution fails during resume | Result includes error text → LLM sees it → can retry or inform user |
 | Session persistence fails during suspend | Non-fatal warning; everything else still works |
 | Session persistence fails during resume | Non-fatal: the continuation message also carries the tool result |
-| Durable event raise fails | Returns HTTP 500 to the client, which can retry |
-| Orchestration not found (e.g. timed out) | Returns HTTP 404; the client shows "request expired" |
-| HITL store unavailable | HITL gate skipped; the tool executes immediately (graceful degradation) |
+| Delivering the answer fails (`durable().signal` throws) | Returns HTTP 500 to the client, which can retry |
+| Wait not running (e.g. timed out) | Returns HTTP 404; the client shows "request expired" |
+| Turn can't suspend (channel, cron or resumed turn; no HITL store; no Durable installed) | The gated tool is refused: the model is told the action needs the user's approval in the app |
 | `client.send()` fails during resume | Error logged, best-effort `input_expired` pushed to client |
 
 ## 11. Sequence diagram: full happy path
 
 ```
-User          Client App         Azure Function      Durable Orchestrator     Cosmos DB
+User          Client App         Gateway             Durable Wait             Cosmos DB
   │               │                    │                     │                    │
   ├─ "New contact"┼────── WS ────────▶│                     │                    │
   │               │                    │                     │                    │
@@ -619,7 +624,7 @@ User          Client App         Azure Function      Durable Orchestrator     Co
   │               │                    │                     │                    │
   │               │                    ├─ Save HitlRunState ─┼────────────────────▶│
   │               │                    ├─ Save user message ─┼────────────────────▶│
-  │               │                    ├─ Start orchestration ┼──────────────────▶│
+  │               │                    ├─ Start durable wait ─┼──────────────────▶│
   │               │                    │                     │                    │
   │               │                    ├─ Throw HitlSuspend  │                    │
   │               │◁── "awaiting_input"┤                     │                    │
@@ -633,7 +638,7 @@ User          Client App         Azure Function      Durable Orchestrator     Co
   │─ Fill form ──▶│                    │                     │                    │
   │               │                    │                     │                    │
   │               ├─── input_response ─▶│                     │                    │
-  │               │                    ├─ raiseEvent() ──────▶│  WAKE ★           │
+  │               │                    ├─ signal() ──────────▶│  WAKE ★           │
   │               │                    │                     │                    │
   │               │                    │                     ├─ Load HitlRunState◁┤
   │               │                    │                     ├─ Merge args        │

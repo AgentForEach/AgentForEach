@@ -103,7 +103,7 @@ Everything in this table is from Microsoft's [overview](https://learn.microsoft.
 - **Fallback:** the IaC sets `SANDBOX_PROVIDER`, which overrides `agentforeach.json`. If the provider is `aca-sandboxes` but no sandbox group is configured while a session pool is, AgentForEach logs a warning and uses Dynamic Sessions with *its* own timeouts.
 - **Account deletion:** `AcaSandboxesClient.deleteUserSandboxes(userId)` removes all of a user's sandboxes, and with them their snapshots and files, across every conversation. Erasing a user's data (`DELETE /api/me/data` or the admin route, `account/erase.ts`) calls it.
 
-Code: `gateway/skills/sandbox/aca-sandboxes-client.ts`, `factory.ts`, `token.ts`, `shared.ts`. Tests: `aca-sandboxes-client.test.ts`, `factory.test.ts`.
+Code: `packages/platform-azure/src/sandbox/aca-sandboxes-client.ts` (tokens from `packages/platform-azure/src/identity.ts`), `gateway/skills/sandbox/factory.ts`, shared helpers in `packages/platform/src/sandbox/shared.ts`. Tests: `aca-sandboxes-client.test.ts` beside the client, `gateway/skills/sandbox/factory.test.ts`.
 
 ## Verified on a real sandbox group
 

@@ -44,7 +44,7 @@ export interface BrowserJsonConfig {
     enabled?: boolean;
     /** How long the user has to finish, in minutes. Default: 10 (at most 30). */
     maxMinutes?: number;
-    /** Where the gateway's viewer page is served; default: this Function App (WEBSITE_HOSTNAME). */
+    /** Where the gateway's viewer page is served; default: the gateway's own public address (on Azure, WEBSITE_HOSTNAME). */
     viewerBaseUrl?: string;
     /**
      * The Web PubSub hub for live views. Default: the chat hub's name + "_browser" (hub names

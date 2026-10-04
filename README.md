@@ -12,7 +12,7 @@
   <a href="https://github.com/agentforeach/agentforeach/releases"><img alt="Release" src="https://img.shields.io/github/v/release/agentforeach/agentforeach?include_prereleases&label=release&color=F29A1F"></a>
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-151827"></a>
   <img alt="1,200+ tests" src="https://img.shields.io/badge/tests-1%2C200%2B-151827">
-  <img alt="Azure today; AWS and Google Cloud next" src="https://img.shields.io/badge/cloud-Azure%20%C2%B7%20AWS%20and%20GCP%20next-151827">
+  <img alt="Azure and Cloudflare today; AWS and Google Cloud next" src="https://img.shields.io/badge/cloud-Azure%20%C2%B7%20Cloudflare%20%C2%B7%20AWS%20and%20GCP%20next-151827">
 </p>
 
 <p align="center">
@@ -31,13 +31,15 @@
 
 ## What's new
 
-- **Oct 1, 2026 · A real browser for every agent.** The agent opens pages, clicks, types, fills in forms, downloads files and looks at screenshots, in a Chromium that runs inside the user's own sandbox, so it keeps their logins and costs only storage while idle. When a step is the user's to take (a password, a CAPTCHA, a payment), the agent hands them the live browser in the chat and carries on when they press Done. Off by default. [Browser](docs/Browser.md)
+- **Oct 2, 2026 · Cloudflare as well as Azure.** The gateway now talks to six small cloud-neutral contracts (host, background work, database, files, real-time and sandboxes) instead of Azure's services, and each cloud is a pack checked against shared conformance suites. Azure works as before. Cloudflare runs the same agents on Workers, Durable Objects, PostgreSQL through Hyperdrive, R2 and Containers, with one command to deploy (`./scripts/quickstart-cloudflare.sh`). New and in preview: tested end to end on Cloudflare's local runtime, with sandboxes tested live. AWS and Google Cloud plug in the same way. [Cloudflare](docs/Cloudflare.md) · [Platforms](docs/Platforms.md)
+- **Oct 2, 2026 · PostgreSQL as well as Cosmos DB.** Every store now goes through one small storage contract, and two databases pass the same conformance suite. Cosmos DB stays the default; `DATABASE_PROVIDER=postgres` runs the same agents on any PostgreSQL with pgvector: Supabase, Neon, RDS, Azure, or Docker on your laptop. Other databases plug in as adapters. [Database](docs/Database.md)
+- **Oct 1 · A real browser for every agent.** The agent opens pages, clicks, types, fills in forms, downloads files and looks at screenshots, in a Chromium that runs inside the user's own sandbox, so it keeps their logins and costs only storage while idle. When a step is the user's to take (a password, a CAPTCHA, a payment), the agent hands them the live browser in the chat and carries on when they press Done. Off by default. [Browser](docs/Browser.md)
 - **Sep 30 · One-command quickstart.** Open the repo in Codespaces, run one command, and get a trial stack on Azure with a login for the web chat. [Quick start](#quick-start)
 - **Sep 30 · Web chat answers forms and shows reminders**, in the new Tungsten on Night look. [Web chat sample](examples/web-chat/)
 - **Sep 30 · A full backend review.** Fixes across the scheduler, billing, sessions, human in the loop and how credentials bind to skills. Every behaviour change is in [UPGRADING.md](docs/UPGRADING.md).
 - **Sep 29 · Open source**, Apache-2.0, in preview.
 
-**Next:** local development without an Azure account, a starter app you can rebrand, then AWS and Google Cloud. See the [roadmap](ROADMAP.md).
+**Next:** local development without an Azure account, a starter app you can rebrand, then AWS and Google Cloud as platform packs. See the [roadmap](ROADMAP.md).
 
 ## Hyperscale by design
 
@@ -214,10 +216,12 @@ Open the repo in GitHub Codespaces, which has every tool installed, and run one 
 
 The trial signs users in with tokens the script makes; `pulumi destroy` removes everything.
 
+On Cloudflare, `./scripts/quickstart-cloudflare.sh` does the same with Wrangler and a PostgreSQL database of your own; see [Cloudflare](docs/Cloudflare.md).
+
 <details>
 <summary><b>Deploy step by step, or with real sign-in</b></summary>
 
-You need Node 22, [Azure Functions Core Tools](https://learn.microsoft.com/azure/azure-functions/functions-run-local) 4, the Azure CLI, [Pulumi](https://www.pulumi.com/docs/install/), and an Azure subscription where you can assign roles (Owner, or Contributor plus User Access Administrator): the stack grants its own identities access to storage, Key Vault and Cosmos DB.
+You need Node 22, [Azure Functions Core Tools](https://learn.microsoft.com/azure/azure-functions/functions-run-local) 4 (4.15.2 or newer), the Azure CLI, [Pulumi](https://www.pulumi.com/docs/install/), and an Azure subscription where you can assign roles (Owner, or Contributor plus User Access Administrator): the stack grants its own identities access to storage, Key Vault and Cosmos DB.
 
 **1. Create the Azure resources**
 

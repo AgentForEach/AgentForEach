@@ -7,6 +7,7 @@
  *   - createSandboxBackend — picks the backend from config
  *   - AcaSandboxesClient   — ACA Sandboxes (primary): suspendable microVM per user
  *   - DynamicSessionsClient — ACA Dynamic Sessions (fallback): pooled, ephemeral
+ *     (both from @agentforeach/platform-azure/sandbox, re-exported here)
  *   - SandboxToolHandler  — routes sandbox_exec / file tools from LLM
  *   - getSandboxToolDefinitions — tool schemas registered with the model
  *   - isSandboxTool        — checks if a tool name belongs to sandbox
@@ -21,9 +22,15 @@
  *   ```
  */
 
-export { DynamicSessionsClient } from "./client.js";
-export { AcaSandboxesClient } from "./aca-sandboxes-client.js";
+export { AcaSandboxesClient, DynamicSessionsClient } from "@agentforeach/platform-azure/sandbox";
 export { createSandboxBackend } from "./factory.js";
+export {
+  canonicalSandboxProvider,
+  getSandboxProviders,
+  registerSandboxProvider,
+  type SandboxProviderFactory,
+} from "./registry.js";
+export { containersSandboxOptions, type ContainersSandboxOptions } from "./containers.js";
 export {
   SandboxToolHandler,
   getSandboxToolDefinitions,
@@ -43,6 +50,8 @@ export type {
   SandboxProvider,
   AcaSandboxesConfig,
   AcaSandboxesJsonConfig,
+  ContainersSandboxConfig,
+  ContainersSandboxJsonConfig,
   SandboxExecArgs,
   SandboxExecResult,
   SandboxFileWriteArgs,

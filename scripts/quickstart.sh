@@ -26,24 +26,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 STACK="${1:-trial}"
 CONFIG_NAME="agentforeach.quickstart.json"
-TRIAL_USER="quickstart-user"
-ISSUER="agentforeach-quickstart"
-AUDIENCE="agentforeach"
+TRIAL_USER="quickstart-user"   # as in scripts/lib/trial.mjs
 
 say() { printf '\n==> %s\n' "$*"; }
 die() { printf '\nError: %s\n' "$*" >&2; exit 1; }
 has_setting() { pulumi config get "$@" --stack "$STACK" >/dev/null 2>&1; }
 
 mint_token() {
-  QUICKSTART_JWT_SECRET="$1" node --input-type=module -e '
-    import { createHmac } from "node:crypto";
-    const b64 = (v) => Buffer.from(JSON.stringify(v)).toString("base64url");
-    const now = Math.floor(Date.now() / 1000);
-    const [sub, iss, aud] = process.argv.slice(1);
-    const body = `${b64({ alg: "HS256", typ: "JWT" })}.${b64({ sub, iss, aud, iat: now, exp: now + 30 * 86400 })}`;
-    const sig = createHmac("sha256", process.env.QUICKSTART_JWT_SECRET).update(body).digest("base64url");
-    console.log(`${body}.${sig}`);
-  ' "$TRIAL_USER" "$ISSUER" "$AUDIENCE"
+  QUICKSTART_JWT_SECRET="$1" node "$ROOT/scripts/lib/trial.mjs" token
 }
 
 print_login() {
@@ -152,29 +142,8 @@ if ! has_setting --path 'agentforeach:extraAppSettings.QUICKSTART_JWT_SECRET'; t
 fi
 pulumi config set --secret --path 'agentforeach:extraAppSettings.CONFIG_FILE_JSON' "$CONFIG_NAME" --stack "$STACK"
 
-node --input-type=module -e '
-  import { readFileSync, writeFileSync } from "node:fs";
-  const [dir, name, iss, aud] = process.argv.slice(1);
-  const config = JSON.parse(readFileSync(`${dir}/agentforeach.json`, "utf8"));
-  config.auth = {
-    ...config.auth,
-    providers: [{ type: "jwt", enabled: true, algorithm: "HS256", secret: "$QUICKSTART_JWT_SECRET", issuer: iss, audience: aud, userIdClaim: "sub" }],
-  };
-  // The trial stack has no AI Search index.
-  config.knowledge = { ...config.knowledge, enabled: false };
-  // Only one model key: failing over to Anthropic would only add errors.
-  config.llms.providers.anthropic = { ...config.llms.providers.anthropic, enabled: false };
-  config.llms.failover = { ...config.llms.failover, enabled: false };
-  const baseUrl = process.env.QUICKSTART_OPENAI_BASE_URL;
-  const model = process.env.QUICKSTART_MODEL;
-  if (baseUrl) {
-    // Chat and embeddings both go to the endpoint (same key).
-    config.llms.providers.openai = { ...config.llms.providers.openai, baseUrl };
-    config.llms.embedding = { ...config.llms.embedding, baseUrl };
-  }
-  if (model) config.llms.providers.openai = { ...config.llms.providers.openai, defaultModel: model };
-  writeFileSync(`${dir}/${name}`, JSON.stringify(config, null, 2) + "\n");
-' "$ROOT/gateway/config" "$CONFIG_NAME" "$ISSUER" "$AUDIENCE"
+# The trial config (scripts/lib/trial.mjs, shared with quickstart-cloudflare.sh).
+node "$ROOT/scripts/lib/trial.mjs" config "$ROOT/gateway/config" "$CONFIG_NAME"
 
 # ----------------------------------------------------------------------------
 # Deploy

@@ -120,8 +120,8 @@ async function _doIdentityBootstrap(): Promise<void> {
 
   try {
     // Dynamic import avoids circular dependency
-    const { getSharedDatabase } = await import("../database/index.js");
-    const db = getSharedDatabase();
+    const { getSharedStorage } = await import("../database/index.js");
+    const db = getSharedStorage();
     await db.initialize();
 
     const store = new IdentityStore(db, identityConfig);
@@ -152,25 +152,11 @@ setLastChannelResolver(
       const { getAgentClient } = await import("../shared.js");
       const client = await getAgentClient();
 
-      const sessions = await client.listSessions(userId, undefined, {
-        limit: 10,
-      });
-
-      for (const summary of sessions) {
-        const session = await client.getSession(userId, summary.sessionId);
-        if (
-          session?.metadata?.lastChannelName &&
-          session.metadata.lastChatId
-        ) {
-          return {
-            channelId: session.metadata.lastChannelName,
-            recipientId: session.metadata.lastChatId,
-            resolution: "last-session",
-          };
-        }
-      }
-
-      return undefined;
+      // The newest session with a channel and chat, across all sessions.
+      const last = await client.findLastChannel(userId);
+      return last
+        ? { channelId: last.channelName, recipientId: last.chatId, resolution: "last-session" }
+        : undefined;
     } catch {
       return undefined;
     }

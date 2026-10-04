@@ -27,8 +27,8 @@ import {
   AcaSandboxesClient,
   ACA_SANDBOXES_API_VERSION,
   labelHash,
-} from "../gateway/dist/gateway/skills/sandbox/aca-sandboxes-client.js";
-import { createDefaultTokenProvider } from "../gateway/dist/gateway/utils/azure-token.js";
+} from "../packages/platform-azure/dist/sandbox/aca-sandboxes-client.js";
+import { createDefaultTokenProvider } from "../packages/platform-azure/dist/identity.js";
 
 const env = (k) => {
   if (!process.env[k]) {

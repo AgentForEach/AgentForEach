@@ -8,7 +8,7 @@
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto";
-import type { HttpRequest, HttpResponseInit } from "@azure/functions";
+import type { HttpRequestLike, HttpResult } from "@agentforeach/platform";
 import { isCloudRuntime, parseEnvBool } from "../utils/index.js";
 import { resolveConnectionString } from "../websocket/config.js";
 
@@ -28,7 +28,7 @@ function safeEqual(left: string, right: string): boolean {
   return timingSafeEqual(a, b);
 }
 
-function resolveProvidedSecret(request: HttpRequest): string | undefined {
+function resolveProvidedSecret(request: HttpRequestLike): string | undefined {
   for (const key of UPSTREAM_SECRET_HEADER_KEYS) {
     const value = request.headers.get(key)?.trim();
     if (value) return value;
@@ -91,8 +91,8 @@ export function upstreamAccessKeys(): string[] {
  * (WEBPUBSUB_REQUIRE_UPSTREAM_SECRET=false opts out).
  */
 export function verifyUpstreamSecret(
-  request: HttpRequest,
-): HttpResponseInit | null {
+  request: HttpRequestLike,
+): HttpResult | null {
   const unauthorized = {
     status: 401,
     headers: { "Content-Type": "application/json" },
@@ -133,8 +133,8 @@ export function verifyUpstreamSecret(
  * Basic CloudEvent header validation to reject plain HTTP spoof traffic.
  */
 export function verifyCloudEventHeaders(
-  request: HttpRequest,
-): HttpResponseInit | null {
+  request: HttpRequestLike,
+): HttpResult | null {
   const specVersion = request.headers.get("ce-specversion");
   const eventType = request.headers.get("ce-type");
 

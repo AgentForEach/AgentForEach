@@ -6,29 +6,10 @@
  *
  */
 
-import {
-  app,
-  type HttpRequest,
-  type HttpResponseInit,
-  type InvocationContext,
-} from "@azure/functions";
+import type { HandlerContext, HttpRequestLike, HttpResult, RouteDef } from "@agentforeach/platform";
 import { verifyCloudEventHeaders, verifyUpstreamSecret } from "./ws-security.js";
 import { redactId } from "../utils/redact.js";
-
-// ============================================================================
-// Abuse Protection
-// ============================================================================
-
-function handleAbuseProtection(request: HttpRequest): HttpResponseInit | null {
-  if (request.method === "OPTIONS") {
-    const origin = request.headers.get("WebHook-Request-Origin");
-    return {
-      status: 200,
-      headers: { "WebHook-Allowed-Origin": origin ?? "*" },
-    };
-  }
-  return null;
-}
+import { handleAbuseProtection } from "../utils/request-http.js";
 
 // ============================================================================
 // WebSocket Disconnect
@@ -43,9 +24,9 @@ function handleAbuseProtection(request: HttpRequest): HttpResponseInit | null {
  * (userExists, sendToUser). No explicit cleanup needed.
  */
 async function wsDisconnect(
-  request: HttpRequest,
-  context: InvocationContext,
-): Promise<HttpResponseInit> {
+  request: HttpRequestLike,
+  context: HandlerContext,
+): Promise<HttpResult> {
   const abuse = handleAbuseProtection(request);
   if (abuse) return abuse;
   const upstream = verifyUpstreamSecret(request);
@@ -76,9 +57,11 @@ async function wsDisconnect(
 // Function Registration
 // ============================================================================
 
-app.http("wsDisconnect", {
+export const routes: RouteDef[] = [];
+
+routes.push({
+  name: "wsDisconnect",
   methods: ["GET", "OPTIONS", "POST"],
-  authLevel: "anonymous",
   route: "ws/disconnected",
   handler: wsDisconnect,
 });

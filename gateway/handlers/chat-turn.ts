@@ -4,19 +4,20 @@
  * One place that runs a chat turn for the web/app surfaces (/api/chat and
  * the WebSocket "chat" message), either:
  *
- *   - in the background (default in the cloud with Web PubSub): the handler
- *     starts a ChatTurn orchestration and returns at once; the reply streams
- *     over Web PubSub and lands in the session history. No HTTP request has
- *     to outlive Azure's 230 s front-end limit, a client retry doesn't start
- *     a second run (the orchestration id is derived from the idempotency
- *     key), and an instance recycle doesn't lose the turn.
+ *   - in the background (default in the cloud with a real-time provider):
+ *     the handler starts a ChatTurn durable job and returns at once; the
+ *     reply streams over the real-time connection and lands in the session
+ *     history. No HTTP request has to outlive a front-end limit (Azure's is
+ *     230 s), a client retry doesn't start a second run (the job id is
+ *     derived from the idempotency key), and an instance recycle doesn't
+ *     lose the turn.
  *   - in the request (local development, or `"wait": true`): the old
  *     behaviour, with the reply in the HTTP response.
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import type { InvocationContext } from "@azure/functions";
-import * as df from "durable-functions";
+import type { HandlerContext, JobDefinition } from "@agentforeach/platform";
+import { durable } from "../runtime/durable.js";
 
 import { getAgentClient } from "../shared.js";
 import { sendEventToUser, EVENTS } from "../websocket/index.js";
@@ -31,10 +32,11 @@ import {
 import type { SendRequest, SendResponse } from "../client/types.js";
 import { isCloudRuntime, parseEnvBool } from "../utils/index.js";
 import { redactId } from "../utils/redact.js";
+import { noteInterruptedTurn, turnExecutionId } from "../sessions/interrupted.js";
 import { getSharedRateLimiter, rateLimitMessage } from "../ratelimit/index.js";
 
-export const CHAT_TURN_ORCHESTRATION = "ChatTurn";
-const CHAT_TURN_ACTIVITY = "RunChatTurn";
+/** The durable job kind that runs a background chat turn. */
+export const CHAT_TURN_KIND = "ChatTurn";
 
 /**
  * Refusals from client.send (before the runner) whose `text` is for the
@@ -92,7 +94,10 @@ export function chatTurnIds(
     const runId = randomUUID();
     return { runId, instanceId: `chat-${runId}`, newSessionId: randomUUID() };
   }
-  const h = createHash("sha256").update(`${userId}\n${idempotencyKey}`).digest("hex");
+  // A user id with a newline in it would make "user\nkey" ambiguous; those
+  // (and only those) hash a JSON pair, which never contains a raw newline.
+  const material = userId.includes("\n") ? JSON.stringify([userId, idempotencyKey]) : `${userId}\n${idempotencyKey}`;
+  const h = createHash("sha256").update(material).digest("hex");
   const runId = `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20, 32)}`;
   return { runId, instanceId: `chat-${h.slice(0, 32)}`, newSessionId: `s-${h.slice(32, 56)}` };
 }
@@ -112,30 +117,14 @@ export async function refuseIfRateLimited(
 }
 
 /**
- * Start the turn in the background. `duplicate` means an orchestration for
- * the same idempotency key is already running: nothing new was started.
+ * Start the turn in the background. `duplicate` means a job for the same
+ * idempotency key is already pending or running: nothing new was started.
+ * A finished job with this id is replaced; the runner then replays the saved
+ * reply for the idempotency key instead of calling the model.
  */
-export async function startChatTurn(
-  context: InvocationContext,
-  instanceId: string,
-  request: ChatTurnRequest,
-): Promise<{ duplicate: boolean }> {
-  const client = df.getClient(context);
-  const existing = await client.getStatus(instanceId).catch(() => undefined);
-  const running =
-    existing?.runtimeStatus === df.OrchestrationRuntimeStatus.Running ||
-    existing?.runtimeStatus === df.OrchestrationRuntimeStatus.Pending;
-  if (running) return { duplicate: true };
-  // A completed instance with this id is replaced; the runner then replays
-  // the saved reply for the idempotency key instead of calling the model.
-  try {
-    await client.startNew(CHAT_TURN_ORCHESTRATION, { instanceId, input: request });
-  } catch (err) {
-    // Two identical requests racing: the other one started it.
-    if (/already exists/i.test(err instanceof Error ? err.message : String(err))) return { duplicate: true };
-    throw err;
-  }
-  return { duplicate: false };
+export async function startChatTurn(instanceId: string, request: ChatTurnRequest): Promise<{ duplicate: boolean }> {
+  const { started } = await durable().startJob(CHAT_TURN_KIND, request, instanceId);
+  return { duplicate: !started };
 }
 
 /**
@@ -145,9 +134,10 @@ export async function startChatTurn(
  * Returns undefined when the user stopped it.
  */
 export async function executeChatTurn(
-  context: InvocationContext,
+  context: HandlerContext,
   request: ChatTurnRequest,
   deadlineAt: number,
+  executionId?: string,
 ): Promise<SendResponse | undefined> {
   const { userId } = request;
   const client = await getAgentClient();
@@ -168,8 +158,10 @@ export async function executeChatTurn(
     const response = await client.send(
       {
         ...sendRequest,
+        executionId,
         onCronMutation: createCronMutationSignal(context, userId),
-        _invocationContext: context,
+        // A turn run here may pause for a HITL form (a durable wait).
+        canSuspendForInput: true,
         abortSignal: abortController.signal,
         deadlineAt,
       },
@@ -204,29 +196,36 @@ export async function executeChatTurn(
 }
 
 // ============================================================================
-// Background turn: one orchestration, one activity
+// Background turn: one durable job
 // ============================================================================
 
 /**
- * A single activity, not retried: a rerun would call the model again. If
- * the activity fails, the runner has already pushed an error event and the
- * user can resend.
+ * Not retried: a rerun would call the model again. If the turn fails, the
+ * runner has already pushed an error event and the user can resend.
+ *
+ * A host may still run the turn again when the first run was cut off (a
+ * restart or a deploy mid-turn). The model and the turn's tools have run
+ * part-way, and running them again could repeat their side effects, so a
+ * re-run tells the user to resend instead. The user is there to see it; a
+ * channel turn, whose user may not be, re-runs instead (channel-webhook.ts).
  */
-df.app.orchestration(CHAT_TURN_ORCHESTRATION, function* (ctx) {
-  const input = ctx.df.getInput() as ChatTurnRequest;
-  return yield ctx.df.callActivity(CHAT_TURN_ACTIVITY, input);
-});
-
-df.app.activity(CHAT_TURN_ACTIVITY, {
-  // HITL approvals start their own orchestration from inside the turn.
-  extraInputs: [df.input.durableClient()],
-  handler: async (input: unknown, context: InvocationContext) => {
-    const request = input as ChatTurnRequest;
-    const response = await executeChatTurn(context, request, Date.now() + BACKGROUND_TURN_DEADLINE_MS);
+export const chatTurnJob: JobDefinition<ChatTurnRequest> = {
+  kind: CHAT_TURN_KIND,
+  async run(request, context) {
+    if ((context.attempt ?? 1) > 1) {
+      context.warn(`chatTurn: run=${request.runId} was interrupted; asking the user to resend (attempt ${context.attempt})`);
+      await noteInterruptedTurn(request, context);
+      return;
+    }
+    const response = await executeChatTurn(
+      context,
+      request,
+      Date.now() + BACKGROUND_TURN_DEADLINE_MS,
+      turnExecutionId(context),
+    );
     context.log(
       `chatTurn: user=${redactId(request.userId)} run=${request.runId} ` +
         `status=${response?.status ?? "aborted"} duration=${response?.durationMs ?? 0}ms`,
     );
-    return { status: response?.status ?? "aborted", error: response?.error };
   },
-});
+};

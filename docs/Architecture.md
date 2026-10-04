@@ -12,7 +12,7 @@ AgentForEach is one stateless Function App in front of Cosmos DB. Every turn loa
 | Component | Azure service | Role |
 |---|---|---|
 | Handlers, runner, scheduler | Functions, Flex Consumption (Node 22) | HTTP and WebSocket entry points, the agent loop, timers |
-| Background work | Durable Functions (Azure Storage backend) | Chat turns, channel turns, approvals, the cron scheduler |
+| Background work | Durable Functions (Azure Storage backend) | Chat turns, channel turns, approvals, the cron scheduler, as durable jobs, waits and alarms ([Platforms](Platforms.md)) |
 | State | Cosmos DB for NoSQL | Sessions, messages, memories, jobs, identities, … (below) |
 | Real-time delivery | Web PubSub | Streams replies to every device a user has connected |
 | Code execution | Container Apps Sandboxes (Dynamic Sessions as fallback) | One sandbox per user, suspended when idle |
@@ -24,12 +24,12 @@ The Pulumi program in `infra` creates all of it.
 
 ## A chat turn
 
-1. **Accept.** `POST /api/chat` (or a WebSocket `chat` message) authenticates the caller, validates the message, counts it against the user's rate limit, and starts a `ChatTurn` orchestration whose id is derived from the user and the idempotency key. It returns `202 { runId, sessionId }`. A retry with the same key joins the running turn instead of starting a second one.
-2. **Run.** The `RunChatTurn` activity loads the session and takes its **run lease** (below), then builds the turn: history (or the provider's response chain), compaction summary, recalled memories, recent sessions, prompt documents, tools. The runner calls the model, executes tool calls (each isolated, so one failing tool doesn't fail the turn), and loops until the model answers or a limit is reached.
+1. **Accept.** `POST /api/chat` (or a WebSocket `chat` message) authenticates the caller, validates the message, counts it against the user's rate limit, and starts a `ChatTurn` durable job whose id (`chat-<hash>`) is derived from the user and the idempotency key. It returns `202 { runId, sessionId }`. A retry with the same key joins the running turn instead of starting a second one.
+2. **Run.** The job (on Azure, the `DurableJobRun` activity of a `DurableJob` orchestration) loads the session and takes its **run lease** (below), then builds the turn: history (or the provider's response chain), compaction summary, recalled memories, recent sessions, prompt documents, tools. The runner calls the model, executes tool calls (each isolated, so one failing tool doesn't fail the turn), and loops until the model answers or a limit is reached.
 3. **Stream.** Text deltas are coalesced every 400 ms and pushed over Web PubSub with their offset; the `final` event carries the whole reply.
 4. **Persist.** The user message and reply are appended to the session (etag-guarded), usage is recorded, memories may be captured, and the lease is released.
 
-Channels (Telegram, WhatsApp) take the same path from their webhooks: they acknowledge first, then run the turn in a `ChannelInboundTurn` orchestration.
+Channels (Telegram, WhatsApp) take the same path from their webhooks: they acknowledge first, then run the turn as a `ChannelInboundTurn` durable job.
 
 ### Real-time protocol
 
@@ -78,7 +78,7 @@ Almost everything is partitioned by user, so a turn's reads and writes are point
 
 ## Scheduled work
 
-Jobs are spread over scheduler shards (8 by default), each an eternal Durable orchestration that sleeps until its next due job. A job's due time lives in `cron-due-index`, partitioned by shard, so a shard finds its next work with a single-partition query. A timer restarts any shard that stopped.
+Jobs are spread over scheduler shards (8 by default), each a durable alarm that sleeps until its next due job and then starts a `CronRun` job for each job that is due. A job's due time lives in `cron-due-index`, partitioned by shard, so a shard finds its next work with a single-partition query. A timer restarts any shard that stopped.
 
 ## Scaling
 

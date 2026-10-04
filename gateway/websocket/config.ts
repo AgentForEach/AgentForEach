@@ -9,6 +9,7 @@
 
 import { loadConfigSection, resolveEnvValue } from "../utils/index.js";
 import type { WebSocketProviderId } from "./types.js";
+import { realtimeCapabilities } from "./providers/index.js";
 
 // ============================================================================
 // WebSocket Config Types
@@ -185,10 +186,11 @@ export function resolveDefaultGroups(role: string): string[] {
 }
 
 /**
- * Check whether WebSocket / Web PubSub is configured (connection string available).
+ * Check whether real-time pushes reach clients (the active provider's
+ * `push` capability; for Web PubSub, a connection string is configured).
  */
 export function isWebSocketEnabled(): boolean {
-  return resolveConnectionString() !== "";
+  return realtimeCapabilities().push;
 }
 
 /**

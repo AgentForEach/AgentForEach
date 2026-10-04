@@ -16,6 +16,7 @@ import type { LinkUnderstandingConfig } from "../link-understanding/types.js";
 import { fetchUrlContent } from "../link-understanding/fetch.js";
 import { extractContent } from "../link-understanding/extract.js";
 import { wrapExternalContent } from "../utils/external-content.js";
+import { sharedRateLimiter, type RateLimiter } from "../ratelimit/index.js";
 import type {
   WebConfig,
   SearchProvider,
@@ -164,14 +165,13 @@ class SimpleCache {
 // ============================================================================
 
 /**
- * Simple in-memory rate limiter for web search calls.
- *
- * Tracks per-session and per-user-daily counts, plus a per-handler
- * cooldown between calls. Resets daily counts at midnight UTC.
+ * The in-process part of web search's limits: per-session counts and a
+ * per-handler cooldown between calls. The per-user daily limit, which caps a
+ * paid search API's use, is counted in storage (see WebToolHandler), so it
+ * holds across instances and Worker isolates.
  */
 class SearchRateLimiter {
   private sessionCounts = new Map<string, number>();
-  private userDailyCounts = new Map<string, { count: number; date: string }>();
   private lastCallMs = 0;
   private limits: WebConfig["rateLimit"];
 
@@ -198,16 +198,6 @@ class SearchRateLimiter {
       }
     }
 
-    // Per-user daily check
-    if (this.limits.maxPerUserDaily > 0) {
-      const todayKey = new Date().toISOString().slice(0, 10); // YYYY-MM-DD UTC
-      const entry = this.userDailyCounts.get(userId);
-      const dailyCount = entry && entry.date === todayKey ? entry.count : 0;
-      if (dailyCount >= this.limits.maxPerUserDaily) {
-        return `Rate limit: maximum ${this.limits.maxPerUserDaily} searches per day reached.`;
-      }
-    }
-
     return null;
   }
 
@@ -219,14 +209,6 @@ class SearchRateLimiter {
 
     if (sessionId) {
       this.sessionCounts.set(sessionId, (this.sessionCounts.get(sessionId) ?? 0) + 1);
-    }
-
-    const todayKey = new Date().toISOString().slice(0, 10);
-    const entry = this.userDailyCounts.get(userId);
-    if (entry && entry.date === todayKey) {
-      entry.count++;
-    } else {
-      this.userDailyCounts.set(userId, { count: 1, date: todayKey });
     }
   }
 }
@@ -256,11 +238,18 @@ export class WebToolHandler {
   private config: WebConfig;
   private cache: SimpleCache;
   private rateLimiter: SearchRateLimiter;
+  /** web.rateLimit.maxPerUserDaily, counted in storage; undefined when 0 (no limit). */
+  private readonly dailyLimiter: (() => RateLimiter) | undefined;
 
-  constructor(config: WebConfig) {
+  /** @param options.dailyLimiter The per-user daily counter (default: the shared one, in storage). */
+  constructor(config: WebConfig, options: { dailyLimiter?: RateLimiter } = {}) {
     this.config = config;
     this.cache = new SimpleCache(config.cache);
     this.rateLimiter = new SearchRateLimiter(config.rateLimit);
+    const perDay = config.rateLimit.maxPerUserDaily;
+    if (perDay > 0) {
+      this.dailyLimiter = () => options.dailyLimiter ?? sharedRateLimiter("search", { perMinute: 0, perDay });
+    }
   }
 
   /**
@@ -283,6 +272,10 @@ export class WebToolHandler {
         // Rate limit web_search only (not web_fetch)
         const limitError = this.rateLimiter.check(userId, sessionId);
         if (limitError) return limitError;
+        // Counts the attempt: a search that then fails still used the API.
+        if (this.dailyLimiter && !(await this.dailyLimiter().check(userId)).allowed) {
+          return `Rate limit: maximum ${this.config.rateLimit.maxPerUserDaily} searches per day reached.`;
+        }
 
         const result = await this.handleSearch(args);
 

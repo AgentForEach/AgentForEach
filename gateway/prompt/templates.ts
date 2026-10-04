@@ -124,7 +124,7 @@ export function renderDocumentData(
 
   // Type assertions below are safe: the store ensures documentType ↔ data consistency.
   // A discriminated union on PromptDocument would eliminate the need for these casts,
-  // but breaks ContainerHandle<PromptDocument> generics (see types.ts for details).
+  // but breaks Collection<PromptDocument> generics (see types.ts for details).
   switch (documentType) {
     case "AGENTS":
       return renderAgents(asPlainObject<AgentsData>(data));

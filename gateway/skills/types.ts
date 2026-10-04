@@ -13,7 +13,7 @@
  * — never exposed to the LLM.
  */
 
-import type { BaseDocument } from "../database/index.js";
+import type { Doc } from "@agentforeach/storage";
 
 // ============================================================================
 // Skill Metadata (from SKILL.md frontmatter)
@@ -92,7 +92,7 @@ export interface SkillManifest extends SkillFrontmatter {
 // ============================================================================
 
 /** Per-user, per-skill configuration stored in Cosmos DB. */
-export interface UserSkillConfig extends BaseDocument {
+export interface UserSkillConfig extends Doc {
   /** Document ID: "{userId}:{skillId}". */
   id: string;
   /** User who owns this config (partition key). */

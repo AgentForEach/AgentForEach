@@ -1,0 +1,60 @@
+{
+  "name": "@agentforeach/platform",
+  "version": "0.1.0",
+  "description": "AgentForEach platform SDK: the cloud-neutral ports every platform pack implements (host, durable work, object store, realtime, sandbox) and their conformance suites.",
+  "type": "module",
+  "private": true,
+  "license": "Apache-2.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./objects/conformance": {
+      "types": "./dist/objects/conformance.d.ts",
+      "default": "./dist/objects/conformance.js"
+    },
+    "./sandbox/shared": {
+      "types": "./dist/sandbox/shared.d.ts",
+      "default": "./dist/sandbox/shared.js"
+    },
+    "./sandbox/conformance": {
+      "types": "./dist/sandbox/conformance.d.ts",
+      "default": "./dist/sandbox/conformance.js"
+    },
+    "./realtime/conformance": {
+      "types": "./dist/realtime/conformance.d.ts",
+      "default": "./dist/realtime/conformance.js"
+    },
+    "./durable/conformance": {
+      "types": "./dist/durable/conformance.d.ts",
+      "default": "./dist/durable/conformance.js"
+    },
+    "./durable/conformance-kinds": {
+      "types": "./dist/durable/conformance-kinds.d.ts",
+      "default": "./dist/durable/conformance-kinds.js"
+    },
+    "./host/conformance": {
+      "types": "./dist/host/conformance.d.ts",
+      "default": "./dist/host/conformance.js"
+    },
+    "./host/conformance-table": {
+      "types": "./dist/host/conformance-table.d.ts",
+      "default": "./dist/host/conformance-table.js"
+    }
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.test.*",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && node --test --test-reporter=spec \"dist/**/*.test.js\""
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.4"
+  }
+}

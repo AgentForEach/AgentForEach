@@ -11,7 +11,7 @@
  */
 
 import { createHmac, createVerify, timingSafeEqual } from "node:crypto";
-import type { HttpRequest } from "@azure/functions";
+import type { HttpRequestLike } from "@agentforeach/platform";
 import { resolveEnvValue } from "../../utils/index.js";
 import { loadAuthConfig } from "../config.js";
 import type { AuthProvider, AuthContext, JwtProviderConfig } from "../types.js";
@@ -313,6 +313,8 @@ export function createJwtProvider(config: JwtProviderConfig): AuthProvider {
   const emailClaim = config.emailClaim ?? "email";
   const secret = resolveEnvValue(config.secret) ?? "";
   const requireExp = config.requireExp ?? true;
+  // Cloudflare Access adds this header from the browser's CF_Authorization cookie.
+  const cookieBacked = config.cookieBacked ?? headerName === "cf-access-jwt-assertion";
 
   if (algorithm === "RS256" && !config.jwksUri) {
     throw new Error("JWT provider: jwksUri is required for RS256 algorithm");
@@ -330,7 +332,7 @@ export function createJwtProvider(config: JwtProviderConfig): AuthProvider {
     id: "jwt",
     label: "JWT Bearer Token",
 
-    async resolve(request: HttpRequest): Promise<AuthContext | null> {
+    async resolve(request: HttpRequestLike): Promise<AuthContext | null> {
       let rawToken = request.headers.get(headerName);
       if (!rawToken) return null;
 
@@ -398,6 +400,7 @@ export function createJwtProvider(config: JwtProviderConfig): AuthProvider {
         roles: extractRoles(payload, roleClaims),
         source: "jwt",
         provider: payload.iss ? String(payload.iss) : undefined,
+        ...(cookieBacked ? { cookieBacked: true } : {}),
       };
     },
   };

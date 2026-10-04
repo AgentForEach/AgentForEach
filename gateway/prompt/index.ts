@@ -15,7 +15,7 @@
  * } from "./prompt/index.js";
  *
  * // 1. Initialize the store
- * const store = new PromptDocumentStore(cosmosDb);
+ * const store = new PromptDocumentStore(getSharedStorage());
  * await store.initialize();
  *
  * // 2. Seed defaults for new users

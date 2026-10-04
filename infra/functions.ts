@@ -338,7 +338,9 @@ export function createFunctionApp(args: {
     // — Cosmos DB —
     { name: "COSMOS_ENDPOINT", value: args.cosmosEndpoint },
     { name: "COSMOS_DATABASE", value: args.cosmosDatabaseName },
-    // Containers come from the IaC (cosmos-containers.json); never created at runtime.
+    // Containers come from the IaC (cosmos-containers.json), and Postgres tables,
+    // with DATABASE_PROVIDER=postgres, from postgres-schema.sql: neither is
+    // created at runtime.
     { name: "COSMOS_PROVISION_CONTAINERS", value: "false" },
 
     // — OpenAI —

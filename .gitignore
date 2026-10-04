@@ -26,6 +26,7 @@ gateway/config/*.json
 !gateway/config/agentforeach.json
 deploy-*.sh
 !scripts/deploy-gateway.sh
+!scripts/deploy-cloudflare.sh
 
 # Flutter / Dart build output
 build/
@@ -51,3 +52,15 @@ infra/Pulumi.*.yaml
 
 # Local test installs of the sandbox browser driver (the image installs its own)
 gateway/sandbox-container/browser/package-lock.json
+
+# Local state from wrangler dev
+.wrangler/
+# Wrangler local secrets (wrangler dev)
+.dev.vars
+.dev.vars.*
+# A deployment's Wrangler config (scripts/cloudflare-config.mjs)
+deploy/cloudflare/wrangler.generated.jsonc
+deploy/cloudflare/worker-runtime.d.ts
+# A Cloudflare deployment's local state (scripts/deploy-cloudflare.sh, quickstart-cloudflare.sh)
+deploy/cloudflare/.deploy-state.json
+deploy/cloudflare/.quickstart.env

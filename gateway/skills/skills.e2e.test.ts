@@ -33,7 +33,6 @@ import {
   SKILL_READ_TOOL_NAME,
   HTTP_FETCH_TOOL_NAME,
 } from "./handler.js";
-import { ExecToolHandler } from "./exec/index.js";
 import { buildSkillsSection } from "../prompt/sections/skills.js";
 import type {
   SkillManifest,
@@ -185,8 +184,8 @@ async function deleteTestContainer(
 
 /** Create a real Cosmos-backed UserSkillStore. */
 async function createRealStore(): Promise<UserSkillStore> {
-  const { CosmosDatabase } = await import("../database/client.js");
-  const db = new CosmosDatabase({
+  const { CosmosStorage } = await import("@agentforeach/storage-cosmos");
+  const db = new CosmosStorage({
     endpoint: process.env.COSMOS_ENDPOINT!,
     key: process.env.COSMOS_KEY!,
     databaseId: "agentforeach-test",
@@ -970,25 +969,6 @@ test("E2E: Credential flow end-to-end", { skip: SKIP_COSMOS_AND_BLOB }, async (t
     assert.equal(resolved.userCredentials.GITHUB_TOKEN, "ghp_merge_test");
     assert.equal(resolved.userCredentials.NOTION_API_KEY, "ntn_merge_test");
     assert.equal(resolved.userCredentials.NOTION_DEFAULT_DB, "db_merge_test");
-
-    // Create exec handler with merged credentials
-    const exec = new ExecToolHandler(resolved.userCredentials);
-
-    // Verify all are accessible in child process
-    const r1 = JSON.parse(await exec.handle({
-      command: ["awk", 'BEGIN { print ENVIRON["GITHUB_TOKEN"] }'],
-    }));
-    assert.equal(r1.stdout.trim(), "ghp_merge_test");
-
-    const r2 = JSON.parse(await exec.handle({
-      command: ["awk", 'BEGIN { print ENVIRON["NOTION_API_KEY"] }'],
-    }));
-    assert.equal(r2.stdout.trim(), "ntn_merge_test");
-
-    const r3 = JSON.parse(await exec.handle({
-      command: ["awk", 'BEGIN { print ENVIRON["NOTION_DEFAULT_DB"] }'],
-    }));
-    assert.equal(r3.stdout.trim(), "db_merge_test");
   });
 
   await t.test("updating credentials in Cosmos reflects in next resolve", async () => {
@@ -997,12 +977,6 @@ test("E2E: Credential flow end-to-end", { skip: SKIP_COSMOS_AND_BLOB }, async (t
 
     const resolved = await resolveUserSkills(blobStore, store, userId);
     assert.equal(resolved.userCredentials.GITHUB_TOKEN, "ghp_updated_v2");
-
-    const exec = new ExecToolHandler(resolved.userCredentials);
-    const r = JSON.parse(await exec.handle({
-      command: ["awk", 'BEGIN { print ENVIRON["GITHUB_TOKEN"] }'],
-    }));
-    assert.equal(r.stdout.trim(), "ghp_updated_v2");
   });
 
   // Cleanup

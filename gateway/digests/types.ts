@@ -9,7 +9,7 @@
  * Partition key: /userId
  */
 
-import type { BaseDocument } from "../database/index.js";
+import type { Doc } from "@agentforeach/storage";
 
 /**
  * A digest is a compact summary of a session, stored with a TTL
@@ -19,7 +19,7 @@ import type { BaseDocument } from "../database/index.js";
  *   - After compaction (via the `after_compaction` hook)
  *   - Before session reset (via the `before_reset` hook)
  */
-export interface DigestDocument extends BaseDocument {
+export interface DigestDocument extends Doc {
   /** Document ID. Format: `dg_{sessionId}`. */
   id: string;
   /** Owner user. Partition key. */

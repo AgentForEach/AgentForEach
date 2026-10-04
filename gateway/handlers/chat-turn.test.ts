@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import { backgroundTurnsEnabled, chatTurnIds } from "./chat-turn.js";
 import { isValidSessionId } from "../sessions/ids.js";
+import { createHash } from "node:crypto";
 
 test("a retried request maps onto the same run, orchestration and session", () => {
   const a = chatTurnIds("u1", "key-123");
@@ -16,6 +17,14 @@ test("a retried request maps onto the same run, orchestration and session", () =
   assert.notEqual(x.runId, y.runId, "no key: a fresh run each time");
   assert.notEqual(x.newSessionId, y.newSessionId);
   assert.equal(isValidSessionId(x.newSessionId), true);
+});
+
+test("a user id with a newline can't share a run with another user's key", () => {
+  // "a\nb" + "c" and "a" + "b\nc" would hash the same text if joined with "\n".
+  assert.notDeepEqual(chatTurnIds("a\nb", "c"), chatTurnIds("a", "b\nc"));
+  // Ordinary ids keep the exact ids they had before (in-flight retries still match).
+  const h = createHash("sha256").update("u1\nkey-123").digest("hex");
+  assert.equal(chatTurnIds("u1", "key-123").instanceId, `chat-${h.slice(0, 32)}`);
 });
 
 test("background turns: on in the cloud with a real-time provider, overridable", () => {

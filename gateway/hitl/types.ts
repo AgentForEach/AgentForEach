@@ -397,24 +397,31 @@ export interface SerializableSendRequest {
   groupName?: string;
   userTimezone?: string;
   metadata?: Record<string, string>;
-  // Note: abortSignal, onCronMutation, attachments, _invocationContext are NOT serialized
+  // Note: abortSignal, onCronMutation, attachments, canSuspendForInput are NOT serialized
 }
 
 // ============================================================================
-// Durable Functions Event Names
+// Durable wait
 // ============================================================================
 
-/** External event name used by Durable Functions waitForExternalEvent(). */
+/** The HITL wait's input: what to push, and which saved run to resume. */
+export interface HitlWaitInput {
+  /** The input request to push to the client. Absent in waits resumed from older instances. */
+  inputRequest?: InputRequest;
+  /** Loads the saved run state on resume. */
+  requestId: string;
+  userId: string;
+  /** Timeout in seconds; the wait ends with the timeout handler after it. */
+  timeoutSeconds?: number;
+}
+
+/** The event the wait waits for: the user's answer. */
 export const HITL_INPUT_EVENT = "hitl_input_response";
 
-/** Durable Functions orchestration name. */
+/** The durable wait kind (also the pre-platform orchestration's name). */
 export const HITL_ORCHESTRATION_NAME = "HitlAwaitInput";
 
-/** Activity name for resuming the runner after user input. */
+/** Activity names of the pre-platform orchestration (kept registered for one release by the Azure pack). */
 export const HITL_RESUME_ACTIVITY = "HitlResumeRun";
-
-/** Activity name for pushing the input request to the client. */
 export const HITL_PUSH_REQUEST_ACTIVITY = "HitlPushInputRequest";
-
-/** Activity name for handling timeout (no LLM call — just cleanup + notify). */
 export const HITL_TIMEOUT_ACTIVITY = "HitlTimeout";

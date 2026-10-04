@@ -1,7 +1,8 @@
 /**
  * AgentForEach Skills Layer — Blob Storage Adapter
  *
- * Reads SKILL.md files from Azure Blob Storage. Skills are stored as:
+ * Reads SKILL.md files from object storage (Azure Blob Storage by default;
+ * see ../objects). Skills are stored as:
  *
  *   skills/               (blob container)
  *     weather/SKILL.md
@@ -16,12 +17,9 @@
  * Blob Storage on every request.
  */
 
-import {
-  BlobServiceClient,
-  type ContainerClient,
-} from "@azure/storage-blob";
+import { isObjectTooLarge, type ObjectStore } from "@agentforeach/platform";
 import { parseSkillFrontmatter } from "./loader.js";
-import type { StorageIdentity } from "./sandbox/export-store.js";
+import { openObjectStore, type ObjectStorage } from "../objects/index.js";
 import { loadSkillsConfig } from "./config.js";
 import type { SkillManifest, CredentialSpec } from "./types.js";
 
@@ -49,7 +47,7 @@ const SKILL_ZIP_NAME = "skill.zip";
 // ============================================================================
 
 export class SkillBlobStore {
-  private containerClient: ContainerClient;
+  private readonly objects: ObjectStore;
   private cachedManifests: SkillManifest[] | undefined;
   private cacheExpiresAt = 0;
   private readonly cacheTtlMs: number;
@@ -57,14 +55,12 @@ export class SkillBlobStore {
   private readonly maxZipFileBytes: number;
 
   /**
-   * @param storage - A connection string, or an account reached with a
-   *        managed identity (which needs blob read access).
+   * @param storage - A connection string, an account reached with a
+   *        managed identity (which needs blob read access), or another
+   *        object storage provider.
    */
-  constructor(storage: string | StorageIdentity, containerName = "skills") {
-    const blobServiceClient = typeof storage === "string"
-      ? BlobServiceClient.fromConnectionString(storage)
-      : new BlobServiceClient(`https://${storage.accountName}.blob.core.windows.net`, storage.credential);
-    this.containerClient = blobServiceClient.getContainerClient(containerName);
+  constructor(storage: ObjectStorage, containerName = "skills") {
+    this.objects = openObjectStore(storage, containerName);
 
     const cfg = loadSkillsConfig();
     this.cacheTtlMs = cfg.blobStore.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
@@ -89,12 +85,12 @@ export class SkillBlobStore {
 
     const manifests: SkillManifest[] = [];
 
-    for await (const blob of this.containerClient.listBlobsFlat()) {
-      if (!blob.name.endsWith(SKILL_MD_SUFFIX)) continue;
+    for await (const blob of this.objects.list()) {
+      if (!blob.key.endsWith(SKILL_MD_SUFFIX)) continue;
 
       try {
-        const content = await this.readBlobContent(blob.name);
-        const manifest = this.parseManifest(content, blob.name);
+        const content = await this.readBlobContent(blob.key);
+        const manifest = this.parseManifest(content, blob.key);
         manifests.push(manifest);
       } catch {
         // Skip malformed SKILL.md files — log in production
@@ -162,9 +158,7 @@ export class SkillBlobStore {
    */
   async hasSkillZip(skillId: string): Promise<boolean> {
     this.validatePath(skillId);
-    const blobName = `${skillId}/${SKILL_ZIP_NAME}`;
-    const blobClient = this.containerClient.getBlobClient(blobName);
-    return blobClient.exists();
+    return this.objects.exists(`${skillId}/${SKILL_ZIP_NAME}`);
   }
 
   // --------------------------------------------------------------------------
@@ -259,54 +253,28 @@ export class SkillBlobStore {
 
   /** Read blob content as UTF-8 string with size guard. */
   private async readBlobContent(blobName: string): Promise<string> {
-    const blobClient = this.containerClient.getBlobClient(blobName);
-    const response = await blobClient.download(0);
-
-    if (!response.readableStreamBody) {
-      throw new Error(`Empty blob: ${blobName}`);
-    }
-
-    const chunks: Buffer[] = [];
-    let totalSize = 0;
-
-    for await (const chunk of response.readableStreamBody) {
-      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      totalSize += buf.length;
-      if (totalSize > this.maxSkillFileBytes) {
-        throw new Error(
-          `Blob "${blobName}" exceeds maximum size (${this.maxSkillFileBytes} bytes)`,
-        );
+    try {
+      const bytes = await this.objects.get(blobName, { maxBytes: this.maxSkillFileBytes });
+      return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("utf-8");
+    } catch (err) {
+      if (isObjectTooLarge(err)) {
+        throw new Error(`Blob "${blobName}" exceeds maximum size (${this.maxSkillFileBytes} bytes)`);
       }
-      chunks.push(buf);
+      throw err;
     }
-
-    return Buffer.concat(chunks).toString("utf-8");
   }
 
   /** Download blob content as raw Buffer with size guard. */
   private async downloadBlobBuffer(blobName: string): Promise<Buffer> {
-    const blobClient = this.containerClient.getBlobClient(blobName);
-    const response = await blobClient.download(0);
-
-    if (!response.readableStreamBody) {
-      throw new Error(`Empty blob: ${blobName}`);
-    }
-
-    const chunks: Buffer[] = [];
-    let totalSize = 0;
-
-    for await (const chunk of response.readableStreamBody) {
-      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      totalSize += buf.length;
-      if (totalSize > this.maxZipFileBytes) {
-        throw new Error(
-          `Zip blob "${blobName}" exceeds maximum size (${this.maxZipFileBytes} bytes)`,
-        );
+    try {
+      const bytes = await this.objects.get(blobName, { maxBytes: this.maxZipFileBytes });
+      return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    } catch (err) {
+      if (isObjectTooLarge(err)) {
+        throw new Error(`Zip blob "${blobName}" exceeds maximum size (${this.maxZipFileBytes} bytes)`);
       }
-      chunks.push(buf);
+      throw err;
     }
-
-    return Buffer.concat(chunks);
   }
 
   /** Validate a blob path to prevent directory traversal. */

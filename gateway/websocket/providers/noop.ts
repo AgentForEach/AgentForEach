@@ -24,6 +24,7 @@ import type {
 export class NoopWebSocketProvider implements WebSocketProvider {
   readonly id = "noop" as const;
   readonly label = "No-Op (disabled)";
+  readonly capabilities = { push: false, relay: false };
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   constructor(_config?: WebSocketProviderConfig) {
@@ -51,7 +52,7 @@ export class NoopWebSocketProvider implements WebSocketProvider {
 
   // -- Token Generation (dummy token) --
 
-  async generateToken(
+  async clientAccess(
     userId: string,
     options: TokenGenerationOptions,
   ): Promise<ClientAccessToken> {

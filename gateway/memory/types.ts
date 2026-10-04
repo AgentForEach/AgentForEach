@@ -100,12 +100,12 @@ export type MemoryStoreOptions = {
  * Abstract store provider that memory components (auto-recall, auto-capture,
  * tools) depend on.  Implementations live under `providers/`.
  *
- * The interface matches the public surface of `CosmosMemoryStore` so existing
+ * The interface matches the public surface of `StorageMemoryStore` so existing
  * code works unchanged — but consumers now depend on the interface, not the
  * concrete class.
  */
 export interface MemoryStoreProvider {
-  /** Human-readable provider name (e.g. "cosmosdb", "noop"). */
+  /** Human-readable provider name (e.g. "storage", "noop"). */
   readonly name: string;
 
   /** Create/verify the backing store (container, table, etc.). */
