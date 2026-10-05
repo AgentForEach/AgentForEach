@@ -1,212 +1,64 @@
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.svg">
-  <img alt="AgentForEach: the open-source brain for personal AI agents. One agent for every user, on a hyperscale serverless architecture. Below, a crowd of agents, each with its own face: most dim and asleep in storage, a few lit amber and working." src="docs/assets/banner-light.svg">
-</picture>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.svg">
+    <img width="880" alt="AgentForEach. One agent for every user: a crowd of agents sleeping in storage, with a few awake and working." src="docs/assets/banner-light.svg">
+  </picture>
+</p>
 
 <p align="center"><code>users.forEach(user =&gt; agent(user))</code></p>
 
-<p align="center"><b>Give every user of your app their own AI agent.</b> It remembers them, works on a schedule while they're away, uses tools, asks before it acts and answers on web, Telegram or WhatsApp. Every agent runs on one serverless deployment: it sleeps in storage and wakes when its user needs it.</p>
+<h3 align="center">Personal agents, built into your product.</h3>
+
+<p align="center">Give every user an agent that remembers them, follows up while they're away and uses tools on their behalf.<br>You build the experience. AgentForEach supplies the memory, schedules, approvals and private workspaces.</p>
 
 <p align="center">
   <a href="https://github.com/agentforeach/agentforeach/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/agentforeach/agentforeach/actions/workflows/ci.yml/badge.svg"></a>
   <a href="https://github.com/agentforeach/agentforeach/releases"><img alt="Release" src="https://img.shields.io/github/v/release/agentforeach/agentforeach?include_prereleases&label=release&color=F29A1F"></a>
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-151827"></a>
-  <img alt="1,200+ tests" src="https://img.shields.io/badge/tests-1%2C200%2B-151827">
-  <img alt="Azure and Cloudflare today, AWS in preview; Google Cloud next" src="https://img.shields.io/badge/cloud-Azure%20%C2%B7%20Cloudflare%20%C2%B7%20AWS%20preview%20%C2%B7%20GCP%20next-151827">
+  <a href=".github/workflows/ci.yml"><img alt="2,100+ tests, checked on Node 22 and 24" src="https://img.shields.io/badge/tests-2%2C100%2B-151827"></a>
 </p>
 
 <p align="center">
-  <a href="#quick-start"><b>Quick start</b></a> ·
-  <a href="#hyperscale-by-design">Why it scales</a> ·
-  <a href="docs/Architecture.md">Architecture</a> ·
-  <a href="docs/Benchmarks.md">Benchmarks</a> ·
-  <a href="docs/costs.md">What it costs</a> ·
-  <a href="docs/README.md">Docs</a>
+  <a href="docs/getting-started.md"><img alt="Deploy on Azure" src="https://img.shields.io/badge/Azure-0078D4?style=flat-square"></a>
+  <a href="docs/Cloudflare.md"><img alt="Deploy on Cloudflare" src="https://img.shields.io/badge/Cloudflare-F38020?style=flat-square"></a>
+  <a href="docs/AWS.md"><img alt="Deploy on AWS, in preview" src="https://img.shields.io/badge/AWS-preview-FF9900?style=flat-square"></a>
 </p>
 
-<p align="center"><sub>Created by <a href="https://github.com/mohit67890">Mohit Garg</a> · <a href="https://x.com/mohitt_garg">@mohitt_garg</a></sub></p>
-
-<p align="center"><img src="docs/assets/demo.gif" width="760" alt="A web chat with an AgentForEach agent on Azure. Ann says she lives in London and is training for a half marathon, and the agent notes both. She asks for a reminder; a Create reminder card appears, she approves it, and the reminder arrives in the chat. Asked what she is training for, the agent answers from memory."></p>
-<p align="center"><sub>The <a href="examples/web-chat/">web chat sample</a> on a stack deployed with the quickstart: memory, an approval form and a reminder.</sub></p>
-
-## What's new
-
-- **Oct 2, 2026 · Cloudflare as well as Azure.** The gateway now talks to six small cloud-neutral contracts (host, background work, database, files, real-time and sandboxes) instead of Azure's services, and each cloud is a pack checked against shared conformance suites. Azure works as before. Cloudflare runs the same agents on Workers, Durable Objects, PostgreSQL through Hyperdrive, R2 and Containers, with one command to deploy (`./scripts/quickstart-cloudflare.sh`). New and in preview: tested end to end on Cloudflare's local runtime, with sandboxes tested live. AWS and Google Cloud plug in the same way. [Cloudflare](docs/Cloudflare.md) · [Platforms](docs/Platforms.md)
-- **Oct 2, 2026 · PostgreSQL as well as Cosmos DB.** Every store now goes through one small storage contract, and two databases pass the same conformance suite. Cosmos DB stays the default; `DATABASE_PROVIDER=postgres` runs the same agents on any PostgreSQL with pgvector: Supabase, Neon, RDS, Azure, or Docker on your laptop. Other databases plug in as adapters. [Database](docs/Database.md)
-- **Oct 1 · A real browser for every agent.** The agent opens pages, clicks, types, fills in forms, downloads files and looks at screenshots, in a Chromium that runs inside the user's own sandbox, so it keeps their logins and costs only storage while idle. When a step is the user's to take (a password, a CAPTCHA, a payment), the agent hands them the live browser in the chat and carries on when they press Done. Off by default. [Browser](docs/Browser.md)
-- **Sep 30 · One-command quickstart.** Open the repo in Codespaces, run one command, and get a trial stack on Azure with a login for the web chat. [Quick start](#quick-start)
-- **Sep 30 · Web chat answers forms and shows reminders**, in the new Tungsten on Night look. [Web chat sample](examples/web-chat/)
-- **Sep 30 · A full backend review.** Fixes across the scheduler, billing, sessions, human in the loop and how credentials bind to skills. Every behaviour change is in [UPGRADING.md](docs/UPGRADING.md).
-- **Sep 29 · Open source**, Apache-2.0, in preview.
-
-**Next:** local development without an Azure account, a starter app you can rebrand, AWS validated on a fresh deployment (its pack and deployment are in preview: [AWS](docs/AWS.md)), then Google Cloud. See the [roadmap](ROADMAP.md).
-
-## Hyperscale by design
-
-A personal-agent product, like Muse, Grok or Dots, needs an agent for every user: one that remembers them, works while they're away and runs tools on their behalf. The obvious way to build that is a machine per user. It's simple at a hundred users, a fleet at a million, and billed while every user sleeps.
-
-AgentForEach runs every agent on **one serverless deployment** instead. A turn loads what it needs from Cosmos DB, calls the model, streams the reply and forgets. Nothing in the design is per user or global, so it scales as far as the Azure services underneath it, and an agent that isn't working costs only storage.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/scale-design-dark.svg">
-  <img alt="Nothing per user, nothing global, so every limit is an Azure quota or a setting, not a bottleneck in the code. Every turn is stateless, so any instance can serve any user: Functions scale to up to 1,000 instances. Every user's data is kept in that user's own partition, so no partition runs hot: Cosmos DB has unlimited partitions. Every schedule runs on a sharded scheduler, 8 to 128 shards. Every reply is pushed to that user's own connections: Web PubSub scales past 100,000 connections. Every conversation holds a 60-second lease on its session, never a lock shared between users." src="docs/assets/scale-design-light.svg">
-</picture>
-
-Each limit, the setting that raises it and what to change first for a very large deployment are in [Architecture: Scaling](docs/Architecture.md#scaling).
-
-### Measured end to end
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/stats-dark.svg">
-  <img alt="3,000 of 3,000 turns completed with 1,000 users arriving in 3 minutes; 0.12 s to accept a message; about $2 model cost per 1,000 turns with GPT-5.6 Luna; zero servers per user." src="docs/assets/stats-light.svg">
-</picture>
-
-On one fresh deployment, 1,000 users arriving over three minutes completed 3,000 of 3,000 turns, and a message was accepted in about 0.1 s (p50) at every size from 50 to 1,000 users. With a real model, GPT-5.6 Luna, 120 users completed 4,799 of 4,800 turns at about $2 of model cost per 1,000 turns. Method, charts and raw results: [Benchmarks](docs/Benchmarks.md).
-
-## Pay for awake agents, not for users
-
-You pay per turn, and model tokens are most of the bill. **The platform adds about 1–2¢ per user a month, and an idle user costs about $0.0008 a month of storage.**
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/costs-dark.svg">
-  <img alt="100,000 users for a month. A machine per user: about $772,340. AgentForEach: about $14,292, of which $1,152 is the platform and the rest model tokens. Both include up to $13,140 of model tokens." src="docs/assets/costs-light.svg">
-</picture>
-
-The comparison is the smallest VM per user, the way self-hosted personal agents usually run. The estimate for 10,000, 100,000 and 1,000,000 users, every assumption behind it and a script to run with your own numbers are in [What it costs](docs/costs.md).
-
-## You build the product. It runs the brain.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/stack-dark.svg">
-  <img alt="Three layers. You build your product: app and brand, onboarding and sign-in, the agent's personality, skills and knowledge, pricing, your users. AgentForEach runs the brain: one agent per user, sessions and history, long-term memory, reminders and heartbeats, the tool loop, model failover, streaming to every device, approvals, per-user sandboxes, web, Telegram and WhatsApp, and tenant isolation. It runs on Azure serverless services created by one Pulumi program: Functions, Durable Functions, Cosmos DB, Web PubSub, Container Apps, AI Search and Key Vault." src="docs/assets/stack-light.svg">
-</picture>
-
-It's for teams shipping a product where every user gets their own agent:
-
-- **Startups building a personal-agent app.** Your own Muse for a market, a language or a niche, without spending months on the platform first.
-- **Product teams adding an agent to an app they already have.** A tutor for every student, a coach for every client, a concierge for every customer.
-
-It runs in your own cloud account, so your users' data never passes through anyone else. Running an agent just for yourself? [Single-user mode](docs/Identity.md#deployment-scenarios) does that.
-
-## Your agent in code
-
-You configure the agent and teach it skills; you don't write the platform.
-
-**Who the agent is.** Every user's agent is built from these documents (excerpt). A change reaches every user; with `"prompt": { "type": "dynamic" }` each user's agent can also update its own copy. What it learns about each user lives in their own profile and memories:
-
-```jsonc
-// gateway/config/agentforeach.json
-"templates": {
-  "IDENTITY": { "name": "Tara", "emoji": "📚", "role": "Study coach", "vibe": "Patient and encouraging" },
-  "SOUL": { "coreTruths": ["Find out what the student already knows before explaining anything."] }
-}
-```
-
-**What it can do.** A skill is a Markdown file. Each user adds their own credentials, which the platform injects so the model never sees them ([Skills](docs/Skills_Architecture.md)):
-
-```markdown
----
-id: courses
-name: Courses
-description: Look up the student's courses, grades and deadlines
-category: education
-credentials: [{"key":"LMS_TOKEN","label":"Your LMS token","hosts":["lms.example.com"],"header":"Authorization","format":"Bearer {value}"}]
----
-Call `https://lms.example.com/api/me/courses` with `Authorization: Bearer $LMS_TOKEN`.
-```
-
-**How your app talks to it.** One request per message, as the signed-in user; the reply streams to every device they have open:
-
-```js
-await fetch(`${API}/api/chat`, {
-  method: "POST",
-  headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-  body: JSON.stringify({ message: "Remind me to revise chapter 3 at 7pm" }),
-}); // 202 { runId, sessionId }; the reply arrives over Web PubSub
-```
-
-Memory, the reminder at 7pm, the tool loop, approvals and the per-user sandbox come with the platform.
-
-## What companies build with it
+<p align="center">
+  <a href="#quick-start"><b>Try it</b></a> ·
+  <a href="#whats-new">What's new</a> ·
+  <a href="#your-agent-in-code">See the code</a> ·
+  <a href="docs/README.md">Docs</a> ·
+  <a href="https://github.com/agentforeach/agentforeach/discussions">Talk to us</a>
+</p>
 
 <table>
   <tr>
-    <td width="50%" valign="top">
-      <img src="docs/assets/agents/app.svg" width="56" alt=""><br>
-      <b>Your own Muse</b><br>
-      A consumer personal-agent app under your brand. Every user's agent remembers them, works while they're away and follows up on its own.
-    </td>
-    <td width="50%" valign="top">
-      <img src="docs/assets/agents/concierge.svg" width="56" alt=""><br>
-      <b>An agent for every customer</b><br>
-      Give each customer of your bank, telco or store their own agent in your app or on WhatsApp, with their history and an approval step before anything that matters.
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <img src="docs/assets/agents/tutor.svg" width="56" alt=""><br>
-      <b>A tutor for every student</b><br>
-      A vertical agent product: memory of what each student knows, reminders to practise, a sandbox to run their code and your course material as a knowledge base.
-    </td>
-    <td width="50%" valign="top">
-      <img src="docs/assets/agents/team.svg" width="56" alt=""><br>
-      <b>An assistant for every employee</b><br>
-      Roll out an agent to everyone in your company, with skills that call your internal APIs. Credentials are injected by the platform and never reach the model.
-    </td>
+    <td width="33%" valign="top"><img src="docs/assets/icons/memory.svg" width="28" alt=""><br><b>Remembers each person</b><br>Profiles, preferences and long-term memory belong to the user, across sessions and devices.</td>
+    <td width="33%" valign="top"><img src="docs/assets/icons/schedule.svg" width="28" alt=""><br><b>Follows through</b><br>Reminders and scheduled work wake the agent while its user is away. Durable jobs own the work.</td>
+    <td width="33%" valign="top"><img src="docs/assets/icons/browser.svg" width="28" alt=""><br><b>Gives the user control</b><br>Approval forms pause a run. A live browser handoff lets the user handle a login, CAPTCHA or payment.</td>
   </tr>
 </table>
 
-## What's in the box
+<details>
+<summary><b>Watch the web chat demo: memory, approval and a reminder</b></summary>
 
-<table>
-  <tr>
-    <td width="33%" valign="top"><img src="docs/assets/icons/runtime.svg" width="32" alt=""><br><b>Agent runtime</b><br>Tool loop on OpenAI (Responses API), Azure OpenAI, Anthropic, Amazon Bedrock and OpenAI-compatible providers, with failover, streaming, deadlines and per-tool error isolation.</td>
-    <td width="33%" valign="top"><img src="docs/assets/icons/memory.svg" width="32" alt=""><br><b>Memory</b><br>Long-term memories with hybrid vector and full-text search, episodes, session digests and compaction.</td>
-    <td width="33%" valign="top"><img src="docs/assets/icons/schedule.svg" width="32" alt=""><br><b>Scheduled work</b><br>Reminders, recurring jobs and heartbeats on a sharded Durable Functions scheduler.</td>
-  </tr>
-  <tr>
-    <td valign="top"><img src="docs/assets/icons/approval.svg" width="32" alt=""><br><b>Human in the loop</b><br>Forms and approvals that pause a run and resume it later.</td>
-    <td valign="top"><img src="docs/assets/icons/channels.svg" width="32" alt=""><br><b>Channels</b><br>Web and apps over Web PubSub, Telegram and WhatsApp, with identity linking and pairing.</td>
-    <td valign="top"><img src="docs/assets/icons/sandbox.svg" width="32" alt=""><br><b>Skills and sandboxes</b><br>Per-user code sandboxes on Azure Container Apps. Credentials are injected at the egress proxy and never enter the sandbox.</td>
-  </tr>
-  <tr>
-    <td valign="top"><img src="docs/assets/icons/knowledge.svg" width="32" alt=""><br><b>Knowledge</b><br>An optional Azure AI Search index for reference documents.</td>
-    <td valign="top"><img src="docs/assets/icons/isolation.svg" width="32" alt=""><br><b>Multi-tenant safety</b><br>Tenant-scoped data, SSRF-safe fetching, rate limits, per-session run leases, managed identities, Key Vault secrets and pseudonymised logs.</td>
-    <td valign="top"><img src="docs/assets/icons/infra.svg" width="32" alt=""><br><b>Infrastructure as code</b><br>One Pulumi program creates the whole stack.</td>
-  </tr>
-  <tr>
-    <td colspan="3" valign="top"><img src="docs/assets/icons/browser.svg" width="32" alt=""><br><b>Browser</b> <sub>new</sub><br>A real Chromium in each user's sandbox: the agent reads pages, clicks, types, fills in forms and sees screenshots, and hands the live browser to the user for a login, a CAPTCHA or a payment. Card details never reach the model. Capped per turn and per user, and billable per action.</td>
-  </tr>
-</table>
+<p align="center"><img src="docs/assets/demo.gif" width="760" alt="A real web chat on Azure: an agent remembers Ann's running goal, asks her to approve a reminder, sends it later and recalls her goal in a new message."></p>
+<p align="center"><sub>Memory → an approval → a reminder → remembered context.<br>Recorded on a deployed Azure stack using the <a href="examples/web-chat/">web chat sample</a>.</sub></p>
 
-## Architecture
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/architecture-dark.svg">
-  <img alt="Architecture. Requests come in along the top: users on Telegram, WhatsApp or an app reach one Function App, which runs as 1 to 1,000 identical, stateless instances and scales to zero. It accepts a message in about 0.12 seconds, runs the turn as a durable orchestration and hands it to the agent runner; a sharded scheduler (8 to 128 shards) hands it due reminders and heartbeats. The runner reads and writes Cosmos DB, where every user has their own partition, calls model providers, a per-user sandbox and optional AI Search. The reply goes back along the bottom through Web PubSub to every device the user has open." src="docs/assets/architecture-light.svg">
-</picture>
-
-A message is accepted in the HTTP request (auth, validation, rate limit) and handed to a Durable orchestration, so no turn is bound by the HTTP timeout and an instance recycled mid-turn doesn't lose it. The runner takes a short, renewed lease on the session so a conversation never runs two turns at once, and the reply streams to every device the user has connected.
-
-More: [Architecture](docs/Architecture.md) · [Sessions](docs/Session-management.md) · [Scheduler](docs/Crons.md) · [Human in the loop](docs/HITL.md) · [Identity](docs/Identity.md) · [Channels](docs/Channel.md) · [Sandboxes](docs/Sandbox.md) · [Browser](docs/Browser.md) · [Knowledge](docs/Knowledge.md)
-
-## How it compares
-
-| | A machine per user | An agent framework | AgentForEach |
-|---|---|---|---|
-| Built for | One person's own agent | Writing agent logic | Running an agent for every user |
-| An idle user costs | A machine that stays on | Up to your hosting | Storage only |
-| A million users means | A million machines to run | Infrastructure you design | The same deployment, scaled out |
-| Memory, schedules and sandboxes per user | For the one owner | You build them | Built in, isolated per tenant |
-| Channels and identity linking | The owner's own accounts | You build them | Web, apps, Telegram and WhatsApp, with pairing |
-
-Against Cloudflare Agents, Letta, LangGraph, Mastra and the OpenAI Agents SDK: [How AgentForEach compares](docs/Comparisons.md).
+</details>
 
 ## Quick start
 
-> **Preview.** Load-tested, security-reviewed and covered by 1,200+ tests, but not yet run in many production deployments. Read [SECURITY.md](SECURITY.md) before exposing it to users.
+Choose where to run it. Your agent code and client API stay the same.
 
-Open the repo in GitHub Codespaces, which has every tool installed, and run one command. It asks for an Azure sign-in (on a subscription where you can assign roles) and an OpenAI API key, deploys a trial stack and prints a login for the [web chat sample](examples/web-chat/).
+| Cloud | Runs on | Start here |
+|---|---|---|
+| **Azure** | Functions, Cosmos DB or PostgreSQL, Web PubSub and Container Apps | `./scripts/quickstart.sh` · [Guide](docs/getting-started.md) |
+| **Cloudflare** | Workers, Durable Objects, PostgreSQL through Hyperdrive, R2 and Containers | `./scripts/quickstart-cloudflare.sh` · [Guide](docs/Cloudflare.md) |
+| **AWS · preview** | Lambda, Lambda durable functions, PostgreSQL, S3, AppSync Events and AgentCore | [Guided deployment](docs/AWS.md) · [Live validation](docs/AWS-Validation.md) |
+
+**Fastest way to try the Azure sample:** open Codespaces, then run the quickstart. It asks for an Azure sign-in and an OpenAI API key, creates a trial stack and prints a login for the web chat.
 
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/AgentForEach/AgentForEach)
 
@@ -214,12 +66,12 @@ Open the repo in GitHub Codespaces, which has every tool installed, and run one 
 ./scripts/quickstart.sh
 ```
 
-The trial signs users in with tokens the script makes; `pulumi destroy` removes everything.
+The Azure and Cloudflare quickstarts use test sign-in. The cloud guides cover prerequisites, real authentication and teardown. [Getting started](docs/getting-started.md) also covers local setup and Azure OpenAI.
 
-On Cloudflare, `./scripts/quickstart-cloudflare.sh` does the same with Wrangler and a PostgreSQL database of your own; see [Cloudflare](docs/Cloudflare.md). On AWS (preview), `deploy/aws/deploy.sh` deploys with Pulumi, on your PostgreSQL or a new RDS one; see [AWS](docs/AWS.md).
+> **Preview.** Tested on real deployments and covered by 2,100+ tests on Node 22 and 24. Production experience is still limited; check the [cloud capabilities](docs/Platforms.md) and [security model](SECURITY.md) for your deployment.
 
 <details>
-<summary><b>Deploy step by step, or with real sign-in</b></summary>
+<summary><b>Azure: deploy step by step, or with real sign-in</b></summary>
 
 You need Node 22, [Azure Functions Core Tools](https://learn.microsoft.com/azure/azure-functions/functions-run-local) 4 (4.15.2 or newer), the Azure CLI, [Pulumi](https://www.pulumi.com/docs/install/), and an Azure subscription where you can assign roles (Owner, or Contributor plus User Access Administrator): the stack grants its own identities access to storage, Key Vault and Cosmos DB.
 
@@ -246,27 +98,178 @@ pulumi up && cd ..
 
 </details>
 
-[Getting started](docs/getting-started.md) covers running locally, Azure OpenAI, channels and every setting. Questions like "does it include an app?" are answered in the [FAQ](docs/FAQ.md).
+## What's new
+
+- **Oct 5, 2026 · AWS joins the platform layer.** The same gateway now runs on Lambda, with durable work, S3 files, AppSync Events and AgentCore sandboxes. The shared browser and realtime client work on AWS too. A fresh deployment passed functional checks plus worker timeout/retry, active-turn reconnect, pending forms across a release and an eight-minute browser handoff with image-version recovery. [AWS](docs/AWS.md) · [What was tested](docs/AWS-Validation.md)
+- **Oct 5 · Runs and approvals recover more cleanly.** Follow a turn's status, recover unanswered forms after reconnecting, and resume an answer once. Queued turns reject stale work, and scheduled jobs recheck their current definition before running. These changes live in the shared core. [Sessions](docs/Session-management.md) · [Human in the loop](docs/HITL.md) · [Upgrade notes](docs/UPGRADING.md)
+- **Oct 2 · Cloudflare and PostgreSQL.** Cloud packs implement six shared contracts; the same agents run on Azure or Cloudflare. Cosmos DB and PostgreSQL with pgvector pass the same storage suite. [Platforms](docs/Platforms.md) · [Database](docs/Database.md)
+- **Oct 1 · A real browser for every agent.** Chromium reads pages, clicks, types and handles files inside the user's sandbox. For a step the user needs to take, the agent hands over the live browser and continues after Done. Off by default. [Browser](docs/Browser.md)
+
+<details>
+<summary>Earlier updates</summary>
+
+- **Sep 30 · One-command quickstart** and a web chat sample with approval forms and reminders.
+- **Sep 30 · Backend review.** Scheduler, billing, sessions, approvals and credential handling received fixes recorded in [UPGRADING.md](docs/UPGRADING.md).
+- **Sep 29 · Open source**, Apache-2.0, in preview.
+
+</details>
+
+**Next:** local development without an Azure account, a starter app you can rebrand, and a Google Cloud pack. [Roadmap](ROADMAP.md)
+
+## What you can build
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/assets/agents/app.svg" width="56" alt=""><br>
+      <b>Your own personal-agent app</b><br>
+      A consumer personal-agent app under your brand. Every user's agent remembers them, works while they're away and follows up on its own.
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/assets/agents/concierge.svg" width="56" alt=""><br>
+      <b>An agent for every customer</b><br>
+      Give each customer of your bank, telco or store their own agent in your app or on WhatsApp, with their history and an approval step before anything that matters.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/assets/agents/tutor.svg" width="56" alt=""><br>
+      <b>A tutor for every student</b><br>
+      A vertical agent product: memory of what each student knows, reminders to practise, a sandbox to run their code and your course material as a knowledge base.
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/assets/agents/team.svg" width="56" alt=""><br>
+      <b>An assistant for every employee</b><br>
+      Roll out an agent to everyone in your company, with skills that call your internal APIs. Credentials are injected by the platform and never reach the model.
+    </td>
+  </tr>
+</table>
+
+You bring the interface, brand, sign-in, agent personality and skills. AgentForEach supplies the runtime and keeps each user's state separate. It runs in your cloud account. For one person's own agent, there is [single-user mode](docs/Identity.md#deployment-scenarios).
+
+## Your agent in code
+
+**Give it a personality.** Configure shared defaults; profiles and memories hold what the agent learns about each user. Dynamic prompts can also let each user's agent update its own documents ([Configuration](gateway/config/agentforeach.json)):
+
+```jsonc
+// Excerpt from gateway/config/agentforeach.json
+"templates": {
+  "IDENTITY": { "name": "Tara", "emoji": "📚", "role": "Study coach", "vibe": "Patient and encouraging" },
+  "SOUL": { "coreTruths": ["Find out what the student already knows before explaining anything."] }
+}
+```
+
+**Teach it a skill.** A Markdown file describes the tool and the user's connection. The platform handles host-bound credentials; sandbox injection capabilities depend on the cloud ([Skills](docs/Skills_Architecture.md), [Sandboxes](docs/Sandbox.md)):
+
+```markdown
+---
+id: courses
+name: Courses
+description: Look up the student's courses, grades and deadlines
+category: education
+credentials: [{"key":"LMS_TOKEN","label":"Your LMS token","hosts":["lms.example.com"],"header":"Authorization","format":"Bearer {value}"}]
+---
+Call `https://lms.example.com/api/me/courses` with `Authorization: Bearer $LMS_TOKEN`.
+```
+
+**Connect your app.** Send a message as the signed-in user. Background work owns the turn, so the HTTP request can return immediately:
+
+```js
+const response = await fetch(`${API}/api/chat`, {
+  method: "POST",
+  headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+  body: JSON.stringify({ message: "Remind me to revise chapter 3 at 7pm" }),
+});
+const { runId, sessionId } = await response.json(); // 202 Accepted
+```
+
+The [portable realtime client](packages/platform/src/realtime/client/index.ts) streams events on all three clouds. Follow the turn with `GET /api/chat/runs/{runId}`; the [web chat sample](examples/web-chat/) shows chat, approvals, reconnects and browser handoffs together.
+
+## What's included
+
+| Capability | What your product gets |
+|---|---|
+| **Agent runtime** | Streaming, tool loops, deadlines and model failover. OpenAI, Azure OpenAI, Anthropic, Amazon Bedrock and compatible APIs |
+| **Memory and knowledge** | Per-user profiles, long-term memories and conversation history. Optional reference documents through Azure AI Search |
+| **Scheduled work** | Durable jobs, waits, alarms, reminders and heartbeats |
+| **Human in the loop** | Forms and approvals that pause work and resume after an answer |
+| **Skills, files and browser** | Markdown skills, private code sandboxes, time-limited downloads and Chromium with live handoffs |
+| **Channels** | Your app, web chat, Telegram and WhatsApp, with identity linking and pairing |
+| **Tenant isolation** | User-scoped storage, session leases, rate limits, SSRF controls and account erasure |
+| **Deployment** | Cloud packs, conformance suites, bundle guards and infrastructure as code |
+
+Capabilities such as sandbox credential injection vary by backend. [Platforms](docs/Platforms.md) and [Sandboxes](docs/Sandbox.md) describe those differences.
+
+## Architecture
+
+The runtime talks to six contracts: **host, durable work, database, files, realtime and sandbox**. Each cloud pack implements them. The product API, agent loop and client stay shared.
+
+```mermaid
+flowchart TB
+    app["Your app · Telegram · WhatsApp"] --> runtime["Shared agent runtime"]
+    runtime --> ports["Six platform contracts"]
+    ports --> azure["Azure"]
+    ports --> cloudflare["Cloudflare"]
+    ports --> aws["AWS"]
+    classDef core fill:#F29A1F,stroke:#B87912,color:#151827
+    class runtime core
+```
+
+A request authenticates the user and starts durable work. The run loads that user's state, calls the model and tools, and streams events to their connections. A renewed session lease prevents concurrent turns in one conversation. Reconnects can recover run status and pending forms.
+
+[Architecture](docs/Architecture.md) · [Cloud packs](docs/Platforms.md) · [Sessions](docs/Session-management.md) · [Approvals](docs/HITL.md)
+
+## Hyperscale by design
+
+An agent is a user's state and work, with compute allocated when needed. You don't provision an always-on brain process for every user. Independent users can run on different instances; a conversation keeps its own lease. Cloud quotas, the database and your configuration set the deployment's capacity.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/stats-dark.svg">
+  <img alt="Measured on Azure: 3,000 completed turns from 1,000 users, about 0.12 seconds to accept a message, and about $2 model cost per 1,000 turns in the real-model benchmark." src="docs/assets/stats-light.svg">
+</picture>
+
+**Measured on Azure:** 1,000 users arriving over three minutes completed 3,000/3,000 turns, with about 0.1 s p50 to accept a message. In a separate GPT-5.6 Luna run, 120 users completed 4,799/4,800 turns at about $2 of model cost per 1,000 turns. [Method and raw results](docs/Benchmarks.md)
+
+**Validated on AWS:** application, durable jobs, sandbox, S3, realtime and browser contracts on a fresh deployment, with targeted resilience checks. This is functional validation, not an AWS load benchmark. [Validation record](docs/AWS-Validation.md)
+
+### What it costs
+
+On the [Azure cost model](docs/costs.md), the platform is estimated at about **1–2¢ per user a month**, plus model tokens, and an inactive user's 3 MB of storage at about **$0.0008 a month**. These are estimates with documented assumptions. Cloudflare and AWS have different pricing and minimum infrastructure costs; see their deployment guides.
+
+[Run the cost model with your own numbers](docs/costs.md) · [Cloudflare](docs/Cloudflare.md) · [AWS](docs/AWS.md)
+
+## How it compares
+
+| | A machine per user | An agent framework | AgentForEach |
+|---|---|---|---|
+| Built for | One person's own agent | Writing agent logic | Running an agent for every user |
+| An idle user costs | A machine that stays on | Up to your hosting | User storage, plus shared cloud infrastructure |
+| Memory, schedules and sandboxes | For the one owner | You build them | Built in, scoped to each user |
+| Channels and identity linking | The owner's own accounts | You build them | Web, apps, Telegram and WhatsApp, with pairing |
+| Deployment | A fleet you operate | Infrastructure you design | Shared runtime and a cloud pack |
+
+More detailed comparisons: [Cloudflare Agents, Letta, LangGraph, Mastra and the OpenAI Agents SDK](docs/Comparisons.md).
 
 ## Documentation
 
-- **Start:** [Getting started](docs/getting-started.md) · [What it costs](docs/costs.md) · [Benchmarks](docs/Benchmarks.md) · [FAQ](docs/FAQ.md) · [Upgrading](docs/UPGRADING.md)
-- **How it works:** [Architecture](docs/Architecture.md) · [Scaling](docs/Architecture.md#scaling) · [Sessions and messages](docs/Session-management.md) · [Identity](docs/Identity.md) · [Comparisons](docs/Comparisons.md)
-- **Features:** [Scheduler](docs/Crons.md) · [Human in the loop](docs/HITL.md) · [Channels](docs/Channel.md) · [Skills](docs/Skills_Architecture.md) · [Sandboxes](docs/Sandbox.md) · [Browser](docs/Browser.md) · [Knowledge](docs/Knowledge.md)
+- **Start:** [Getting started](docs/getting-started.md) · [Azure](docs/getting-started.md) · [Cloudflare](docs/Cloudflare.md) · [AWS](docs/AWS.md) · [FAQ](docs/FAQ.md)
+- **Operate:** [Architecture](docs/Architecture.md) · [Identity](docs/Identity.md) · [Costs](docs/costs.md) · [Benchmarks](docs/Benchmarks.md) · [Upgrading](docs/UPGRADING.md)
+- **Build:** [Skills](docs/Skills_Architecture.md) · [Sandboxes](docs/Sandbox.md) · [Browser](docs/Browser.md) · [Channels](docs/Channel.md) · [Memory](docs/Architecture.md) · [Scheduler](docs/Crons.md)
 
-The full index is in [docs/README.md](docs/README.md).
+[Full documentation index](docs/README.md)
 
 ## Community
 
-- **Questions and ideas:** [GitHub Discussions](https://github.com/agentforeach/agentforeach/discussions)
-- **Bugs and deployment problems:** [open an issue](https://github.com/agentforeach/agentforeach/issues/new/choose)
-- **Security issues:** report privately, never in public issues; see [SECURITY.md](SECURITY.md)
-- **Contributing:** [CONTRIBUTING.md](CONTRIBUTING.md) · **What's next:** [ROADMAP.md](ROADMAP.md)
+Try a deployment, show what you're building, or tell us where you got stuck. Deployment reports, reproducible bugs and focused fixes are especially useful while the project is in preview.
+
+- [Discussions](https://github.com/agentforeach/agentforeach/discussions) · [Bug reports](https://github.com/agentforeach/agentforeach/issues/new/choose) · [Deployment reports](https://github.com/agentforeach/agentforeach/issues/new?template=deployment_report.yml)
+- [Contributing](CONTRIBUTING.md) · [Roadmap](ROADMAP.md)
+- Report security issues privately through [SECURITY.md](SECURITY.md).
+
+Created by [Mohit Garg](https://github.com/mohit67890) · [Updates](https://x.com/mohitt_garg)
 
 ## License
 
 [Apache-2.0](LICENSE). Copyright 2026 Mohit Garg and AgentForEach contributors. Third-party notices are in [NOTICE](NOTICE).
 
 AgentForEach and the AgentForEach logo are trademarks of Mohit Garg. The license covers the code, not the name or logo (Apache-2.0, section 6): a fork or a product built on AgentForEach needs its own name.
-
-Muse, Grok and Dots are products of Meta, xAI and OpenAI. AgentForEach is an independent project and is not affiliated with them.
