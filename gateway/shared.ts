@@ -48,3 +48,9 @@ export async function getAgentClient(): Promise<AgentClient> {
   }
   return _client;
 }
+
+/** For tests: use this client as the shared one, or none (the next call creates one). */
+export function setAgentClientForTests(client: AgentClient | null): void {
+  _client = client;
+  _initPromise = client ? Promise.resolve() : null;
+}

@@ -12,7 +12,12 @@
  * doesn't use.
  */
 
-import type { RealtimeCapabilities, RealtimeRelay } from "@agentforeach/platform";
+import {
+  resolveRealtimeCapabilities,
+  type RealtimeCapabilities,
+  type RealtimeRelay,
+  type ResolvedRealtimeCapabilities,
+} from "@agentforeach/platform";
 import type {
   WebSocketProvider,
   WebSocketProviderConfig,
@@ -49,6 +54,17 @@ export type WebSocketProviderTraits = {
 // Registry
 // ============================================================================
 
+/**
+ * A provider a platform pack registers from its own entry, so the gateway
+ * never imports the pack (the AWS pack's AppSync Events, from the Lambda
+ * entry): what `registerWebSocketProvider` takes, as one value.
+ */
+export type RealtimeProviderRegistration = {
+  id: WebSocketProviderId;
+  factory: WebSocketProviderFactory;
+  traits?: WebSocketProviderTraits;
+};
+
 /** Internal store: providerId → factory function and traits. */
 const factories = new Map<string, { factory: WebSocketProviderFactory; traits: WebSocketProviderTraits }>();
 
@@ -69,6 +85,11 @@ export function registerWebSocketProvider(
 ): void {
   factories.set(id, { factory, traits });
   instances.delete(id);
+}
+
+/** Registers a pack's provider (see `RealtimeProviderRegistration`). */
+export function installRealtimeProvider(registration: RealtimeProviderRegistration): void {
+  registerWebSocketProvider(registration.id, registration.factory, registration.traits);
 }
 
 function providerFor(id: string): Promise<WebSocketProvider> {
@@ -109,10 +130,10 @@ export function realtimeUpstreamWebhooks(): boolean {
   return factories.get(resolveProviderId())?.traits.upstreamWebhooks ?? true;
 }
 
-/** What the active provider can do, from config, without loading it. */
-export function realtimeCapabilities(): RealtimeCapabilities {
+/** What the active provider can do, from config, without loading it, with the protocol v1 defaults filled in. */
+export function realtimeCapabilities(): ResolvedRealtimeCapabilities {
   const traits = factories.get(resolveProviderId())?.traits;
-  return traits?.capabilities?.() ?? { push: true, relay: false };
+  return resolveRealtimeCapabilities(traits?.capabilities?.() ?? { push: true, relay: false });
 }
 
 /**

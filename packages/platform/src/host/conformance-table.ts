@@ -84,6 +84,12 @@ export function hostConformanceTable(): { routes: RouteDef[]; schedules: Schedul
         },
       },
       {
+        name: "conformanceDeadline",
+        route: "conformance/deadline",
+        methods: ["GET"],
+        handler: async (_request, context) => json(200, { deadlineAt: context.deadlineAt ?? null }),
+      },
+      {
         name: "conformanceBackground",
         route: "conformance/background/{key}",
         methods: ["POST", "GET"],

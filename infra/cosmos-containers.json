@@ -11,6 +11,138 @@
     "defaultTtl": 600
   },
   {
+    "id": "aws-durable-conformance",
+    "partitionKey": {
+      "paths": [
+        "/key"
+      ],
+      "kind": "Hash",
+      "version": 2
+    },
+    "defaultTtl": 86400,
+    "indexingPolicy": {
+      "automatic": true,
+      "indexingMode": "consistent",
+      "includedPaths": [
+        {
+          "path": "/*"
+        }
+      ],
+      "excludedPaths": [
+        {
+          "path": "/call/*"
+        },
+        {
+          "path": "/\"_etag\"/?"
+        }
+      ]
+    }
+  },
+  {
+    "id": "aws-durable-instances",
+    "partitionKey": {
+      "paths": [
+        "/id"
+      ],
+      "kind": "Hash",
+      "version": 2
+    },
+    "defaultTtl": -1,
+    "indexingPolicy": {
+      "automatic": true,
+      "indexingMode": "consistent",
+      "includedPaths": [
+        {
+          "path": "/*"
+        }
+      ],
+      "excludedPaths": [
+        {
+          "path": "/input/*"
+        },
+        {
+          "path": "/event/*"
+        },
+        {
+          "path": "/\"_etag\"/?"
+        }
+      ]
+    }
+  },
+  {
+    "id": "aws-sandbox-sessions",
+    "partitionKey": {
+      "paths": [
+        "/owner"
+      ],
+      "kind": "Hash",
+      "version": 2
+    },
+    "indexingPolicy": {
+      "automatic": true,
+      "indexingMode": "consistent",
+      "includedPaths": [
+        {
+          "path": "/*"
+        }
+      ],
+      "excludedPaths": [
+        {
+          "path": "/\"_etag\"/?"
+        }
+      ]
+    }
+  },
+  {
+    "id": "aws-sandbox-workspaces",
+    "partitionKey": {
+      "paths": [
+        "/owner"
+      ],
+      "kind": "Hash",
+      "version": 2
+    },
+    "indexingPolicy": {
+      "automatic": true,
+      "indexingMode": "consistent",
+      "includedPaths": [
+        {
+          "path": "/*"
+        }
+      ],
+      "excludedPaths": [
+        {
+          "path": "/\"_etag\"/?"
+        }
+      ]
+    }
+  },
+  {
+    "id": "chat-runs",
+    "partitionKey": {
+      "paths": [
+        "/userId"
+      ],
+      "kind": "Hash",
+      "version": 2
+    },
+    "defaultTtl": 604800,
+    "indexingPolicy": {
+      "automatic": true,
+      "indexingMode": "consistent",
+      "includedPaths": [
+        {
+          "path": "/*"
+        }
+      ],
+      "excludedPaths": [
+        {
+          "path": "/\"_etag\"/?"
+        }
+      ]
+    }
+  },
+  {
     "id": "cron-due-index",
     "partitionKey": {
       "paths": [

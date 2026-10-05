@@ -634,6 +634,32 @@ test("handoff: starts the live view, then asks the runner to pause on a form tha
   assert.deepEqual(units, { browserAction: 1, browserHandoff: 1 });
 });
 
+test("handoff: a relay with connection descriptors (AppSync Events) hands each party its own", async () => {
+  const expiresAtMs = Date.now() + 660_000;
+  const descriptor = (party: string) => ({
+    protocol: "appsync-events" as const,
+    url: "wss://example.appsync-realtime-api.us-west-2.amazonaws.com/event/realtime",
+    authorization: { host: "example.appsync-api.us-west-2.amazonaws.com", Authorization: `afeb1.${party}.mac` },
+    channels: [`/agentforeach-browser/h/g/${party}`],
+    publish: `/agentforeach-browser/h/g/${party === "driver" ? "viewer" : "driver"}`,
+    expiresAtMs,
+  });
+  const appsync: HandoffRelay = {
+    async issue() {
+      const url = descriptor("driver").url;
+      return { driverUrl: url, viewerUrl: url, driver: descriptor("driver"), viewer: descriptor("viewer") };
+    },
+  };
+  const { backend, browser } = setup(undefined, { userId: "u1", handoff: { relay: appsync } });
+  backend.reply = { stdout: JSON.stringify({ ok: true, handled: true, action: "handoff_start", handoff: "started" }) };
+  const result = await browser.run({ action: "handoff", reason: "Log in", kind: "login" });
+  const sent = payloadOf(backend.commands[0].command, backend.files).args as Record<string, unknown>;
+  assert.deepEqual(sent.relay, descriptor("driver"), "the driver connects with its own descriptor");
+  const q = new URLSearchParams(String(result.inputRequest!.proposedArgs.viewerUrl).split("#")[1]);
+  assert.deepEqual(JSON.parse(q.get("c")!), JSON.parse(JSON.stringify(descriptor("viewer"))), "the viewer's rides in the fragment");
+  assert.doesNotMatch(result.output, /afeb1/, "no token reaches the model");
+});
+
 test("handoff: refused where it can't happen, without using the browser or a cap", async () => {
   const cases: Array<[string, BrowserGuards, BrowserConfig]> = [
     ["turned off", { userId: "u1", handoff: { relay: relay() } }, { ...CONFIG, handoff: { ...CONFIG.handoff, enabled: false } }],
@@ -743,7 +769,8 @@ test("viewer: the page runs only its own script, connects only to our relay and 
   assert.match(headers["Content-Security-Policy"], /connect-src wss:\/\/afe-wps\.webpubsub\.azure\.com(;|$)/, "pinned to this deployment's relay");
   assert.match(html, /<meta name="afe-relay-host" content="afe-wps.webpubsub.azure.com">/);
   assert.match(html, /new URL\(relayUrl\)\.host !== relayHost/, "the script refuses a link to another relay");
-  assert.match(html, /msg\.fromUserId !== driverId/, "and believes only the driver");
+  assert.match(html, /peerUserId: driverId/, "and believes only the driver");
+  assert.match(html, /fromUserId !== driverId/);
   assert.equal(viewerHtml('evil"><script>').includes('evil"><script>'), false, "the host can't break out of the attribute");
   const script = /<script>([\s\S]*)<\/script>/.exec(html)![1];
   const hash = createHash("sha256").update(script).digest("base64");
@@ -758,6 +785,7 @@ test("viewer: links carry everything in the fragment; the base comes from config
   const link = viewerLink("https://gw.example", { relayUrl: "wss://x/?access_token=T", group: "bh-1", expiresAt: 5, reason: "Pay", driverUserId: "browser-driver:ab" });
   assert.equal(link.split("#")[0], "https://gw.example/api/browser/view");
   assert.equal(new URLSearchParams(link.split("#")[1]).get("r"), "wss://x/?access_token=T");
+  assert.equal(new URLSearchParams(link.split("#")[1]).get("c"), null, "no descriptor for a protocol v1 relay");
   const saved = process.env.WEBSITE_HOSTNAME;
   process.env.WEBSITE_HOSTNAME = "afe-func.azurewebsites.net";
   try {

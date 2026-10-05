@@ -1,0 +1,18 @@
+{
+  // Typechecks the Lambda entry (lambda.ts, bootstrap.ts) and everything it imports
+  // (npm run typecheck:aws). Node, not Workers: the gateway's Node APIs are typed by
+  // @types/node, as on Azure. Nothing is emitted: scripts/build-lambda.mjs bundles it.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "noEmit": true
+  },
+  "files": ["lambda.ts"]
+}

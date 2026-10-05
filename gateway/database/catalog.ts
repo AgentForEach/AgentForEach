@@ -37,10 +37,13 @@ import { loadMemoryConfig } from "../memory/config.js";
 import { StorageMemoryStore } from "../memory/providers/storage.js";
 import { PromptDocumentStore } from "../prompt/store.js";
 import { SessionStore } from "../sessions/store.js";
+import { ChatRunStore } from "../sessions/chat-runs.js";
 import { loadSkillsConfig, UserSkillStore } from "../skills/index.js";
 import { UsageStore } from "../usage/store.js";
 import { RateLimiter } from "../ratelimit/index.js";
 import { getSharedStorage } from "./storage.js";
+// The collection definitions only: the AWS pack's root loads the AWS SDKs.
+import { AWS_SANDBOX_COLLECTIONS, DURABLE_INSTANCES_COLLECTION, DURABLE_CONFORMANCE_COLLECTION } from "@agentforeach/platform-aws/collections";
 
 /**
  * A file in infra/, found by walking up from this file (it runs from source
@@ -96,12 +99,15 @@ export async function recordCollectionSpecs(): Promise<CollectionSpec[]> {
     new UsageStore(storage).initialize(),
     new HitlStore(storage).initialize(),
     new AbortStore(storage).initialize(),
+    new ChatRunStore(storage).initialize(),
     new EpisodeStore(storage, loadEpisodeConfig().containerId).initialize(),
     new DigestStore(storage, loadDigestConfig().containerId).initialize(),
     new UserSkillStore(storage, loadSkillsConfig().containerId).initialize(),
     new IdentityStore(storage, loadIdentityConfig()).initialize(),
     new RateLimiter(storage).initialize(),
     createCosmosTtlStore("catalog", undefined, storage),
+    // The AWS pack's definitions import no SDK; include them on every cloud.
+    ...[DURABLE_INSTANCES_COLLECTION, DURABLE_CONFORMANCE_COLLECTION, ...AWS_SANDBOX_COLLECTIONS].map((spec) => storage.collection(spec)),
   ]);
   return [...storage.specs.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -156,8 +162,9 @@ export async function sweepExpiredRows(storage: StorageAdapter = getSharedStorag
 
 /**
  * The schedule that runs `sweepExpiredRows`, every 5 minutes, for hosts
- * without a long-lived process (Cloudflare Workers). Persistent hosts don't
- * serve it: Postgres there sweeps on its own timer.
+ * without a long-lived process (Cloudflare Workers) or that freeze it between
+ * invocations (Lambda). Other persistent hosts don't serve it: Postgres there
+ * sweeps on its own timer.
  */
 export const databaseSweepSchedule: ScheduleDef = {
   name: "DatabaseSweep",

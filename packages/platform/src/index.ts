@@ -20,8 +20,11 @@ export type {
   ScopeKey,
   OpenScopeOptions,
 } from "./host.js";
+export { effectiveDeadline } from "./host.js";
+export { consoleContext, createFetchHost, type FetchHostOptions, type FetchInvocation } from "./host/fetch.js";
+export { cronMatcher, minuteCron } from "./host/cron.js";
 export { matchRoute, type RouteMatch } from "./routing.js";
-export { background, currentScope, openScope, scopeKey, type OpenedScope } from "./scope.js";
+export { background, currentScope, openScope, scopeKey, type OpenedScope, type SettleOutcome } from "./scope.js";
 export { corsHeaders, corsPolicy, type CorsPolicy } from "./cors.js";
 export { readBodyBytes, readBodyText, type ResponseWithBody } from "./http/body.js";
 
@@ -32,6 +35,7 @@ export * from "./objects/index.js";
 export type {
   SandboxBackend,
   SandboxCapabilities,
+  SandboxPersistenceLimits,
   SandboxExecArgs,
   SandboxExecResult,
   SandboxFileWriteArgs,
@@ -43,7 +47,7 @@ export type {
   SandboxFileInfo,
   EgressCredential,
 } from "./sandbox/types.js";
-export { SandboxUnsupportedError } from "./sandbox/types.js";
+export { SandboxPersistenceLimitError, SandboxUnsupportedError } from "./sandbox/types.js";
 export {
   SandboxServerClient,
   SandboxServerError,

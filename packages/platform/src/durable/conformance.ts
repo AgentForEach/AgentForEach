@@ -58,6 +58,14 @@ export type DurableConformanceOptions = {
   unitMs?: number;
   /** How long to wait for something that should happen. Default 5000 ms. */
   patienceMs?: number;
+  /**
+   * Cut off an instance's running handler the way the host would (a restart,
+   * a deploy, an invocation that timed out), so the host runs it again with
+   * `attempt > 1`. The handler is held while this runs; call `release` to let
+   * it (and its re-run) go on. Hosts that can't tell a re-run leave it unset,
+   * and that test is skipped.
+   */
+  interrupt?: (instanceId: string, release: () => Promise<void>) => Promise<void>;
 } & (
   | {
       /** Build the implementation under test, running the kinds in `registry` in this process. */
@@ -129,7 +137,35 @@ export function runDurableConformance(options: DurableConformanceOptions): void 
         assert.deepEqual((await callsFor(jobId))[0].input, input);
         const info = await durable.status(jobId);
         assert.ok(info?.createdAt instanceof Date, "createdAt is a Date");
+        assert.ok([undefined, 1].includes((await callsFor(jobId))[0].attempt), "a first run is attempt 1, where the host tells");
       });
+
+      it("round-trips a large input (256 KiB) intact", async () => {
+        const jobId = id("job-large");
+        // 10 bytes of UTF-8 per repeat, characters of 1 to 4 bytes (one outside the BMP).
+        const big = "aé✓𝄞".repeat(Math.ceil((256 * 1024) / 10));
+        assert.equal((await durable.startJob("conformance-job", { value: big }, jobId)).started, true);
+        await eventually("job completes", async () => (await statusOf(jobId)) === "completed");
+        const recorded = (await callsFor(jobId))[0].input as { value: string };
+        assert.equal(recorded.value.length, big.length);
+        assert.ok(recorded.value === big, "the input arrives unchanged");
+      });
+
+      it(
+        "runs a handler that was cut off mid-way again, with attempt > 1",
+        { skip: options.interrupt ? false : "the host can't tell a re-run" },
+        async () => {
+          const jobId = id("job-rerun");
+          const hold = `hold-${jobId}`;
+          await durable.startJob("conformance-job", { value: 1, hold }, jobId);
+          await eventually("job is running", () => recorder.gateHeld(hold));
+          await options.interrupt!(jobId, () => recorder.release(hold));
+          await eventually("job completes", async () => (await statusOf(jobId)) === "completed");
+          const attempts = (await callsFor(jobId)).map((c) => c.attempt);
+          assert.equal(attempts[0], 1, "the first run is attempt 1");
+          assert.ok(attempts.length >= 2 && (attempts.at(-1) ?? 0) > 1, `the re-run counts its attempt (got ${attempts.join(", ")})`);
+        },
+      );
 
       it("starts nothing for an id that is pending or running", async () => {
         const jobId = id("job-dedupe");

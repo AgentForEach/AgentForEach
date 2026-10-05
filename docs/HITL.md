@@ -42,6 +42,8 @@ Core modules:
 | `hitl/policy.ts` | Decides whether a tool call should be gated |
 | `hitl/store.ts` | Cosmos DB persistence for `HitlRunState` |
 | `hitl/orchestrator.ts` | The `HitlAwaitInput` durable wait (`hitlWait`): start, event and timeout handlers |
+| `hitl/answer.ts` | `answerInputRequest`: saves an answer, then delivers it, for every client path (§7.2) |
+| `hitl/recovery.ts` | What `GET /api/hitl/pending` and `GET /api/hitl/{id}` return (§7.5) |
 | `hitl/index.ts` | Re-exports |
 
 Integration points:
@@ -52,7 +54,8 @@ Integration points:
 | `client/runner.ts` | HITL gate inside the tool loop (around the `hitlGateAction` call) |
 | `handlers/chat-turn.ts` | `executeChatTurn` sets `canSuspendForInput`, so only its turns can pause for a form |
 | `client/client.ts` | Exposes `_hitlStore`, `_sessionStore`, `_mcpManager` |
-| `handlers/client-events.ts` | Receives `input_response` from the client (via `ws-message.ts`), delivers it with `durable().signal(...)` |
+| `handlers/client-events.ts` | Receives `input_response` from the client (via `ws-message.ts`), answers it with `answerInputRequest` |
+| `handlers/api.ts` | `POST /api/chat` with `hitlInputResponse` (`answerInputRequest`), and the two recovery routes (§7.5) |
 | `websocket/types.ts` | `ChatInputRequestPayload`, `ChatInputExpiredPayload` |
 | `sessions/store.ts` | Shared session persistence (`appendMessages`) |
 | `config/agentforeach.json` | The `hitl` configuration section |
@@ -357,7 +360,7 @@ interface HitlDocument {
 **TTL policy:**
 - Pending requests: the request's timeout plus **10 minutes**, and at least **1 hour**, so an answer (or the timeout) always finds the state
 - When a gated call pauses the run, the other calls from the same response get up to **10 seconds** to finish; their results are saved with the request and written into the history on resume or timeout
-- Resolved requests (responded/cancelled/timed_out): **24 hours**, kept for debugging
+- Resolved requests (responded/cancelled/timed_out/failed): **24 hours**, kept for debugging and for `GET /api/hitl/{id}` (§7.5)
 
 ### 5.2 HitlRunState
 
@@ -387,9 +390,18 @@ interface HitlRunState {
   model: string;
   usage?: Record<string, unknown>;
   createdAt: number;
-  status: "pending" | "responded" | "cancelled" | "timed_out";
+  status: "pending" | "responded" | "cancelled" | "timed_out" | "failed";
+  inputRequest?: InputRequestPayload;  // The form as the client received it (§7.5)
+  answer?: {                           // The user's answer, saved before it is delivered (§7.2)
+    data: Record<string, unknown>;
+    cancelled: boolean;
+    answeredAt: string;                // ISO 8601
+  };
+  resumedRunId?: string;               // The run that continued after the answer, once finished
 }
 ```
+
+`failed`: the user answered, but the run didn't continue (the resume was cut off, or its turn failed).
 
 ### 5.3 Store operations
 
@@ -397,7 +409,8 @@ interface HitlRunState {
 |--------|-------------|
 | `create(state)` | Persist a new HITL request when the runner pauses |
 | `get(requestId, userId)` | Read a request by ID + partition key |
-| `updateStatus(requestId, userId, status)` | Mark as responded/cancelled/timed_out, extend TTL |
+| `transition(requestId, userId, update)` | One guarded write (an etag): `update` sees the latest state and returns the next one, or nothing. Saving an answer, a resume's claim and the continuation's outcome all go through it |
+| `updateStatus(requestId, userId, status, fields?)` | Move a **pending** request to responded/cancelled/timed_out (a request already resolved isn't changed), extend TTL; returns whether it changed |
 | `listPending(userId)` | List all pending requests for a user |
 | `cancelAllPending(userId)` | Cancel all pending requests (called on disconnect/reset) |
 
@@ -508,6 +521,24 @@ type ClientInputResponseMessage = {
 };
 ```
 
+Or over HTTP, for clients that send nothing over the socket: `POST /api/chat` with `hitlInputResponse: { requestId, data | cancelled }`. Either way answers every kind of form:
+
+- **A gated tool's form** (an MCP tool that asks first) is answered by signalling its durable wait, which resumes the run. Over HTTP the answer gets `202 { status: "accepted", resumed: true, requestId }`, and no new turn starts: the chat message sent with it isn't used.
+- **A form the model raised** (`request_user_input`, a browser handoff) is answered by the chat turn that carries it, which resumes the response that asked. Over the socket, `input_response` for such a form gets a 404 saying to answer it with a chat request.
+
+Only the user a form belongs to can answer it, and only while it's pending; anything else is not found.
+
+Both paths go through `answerInputRequest` (`hitl/answer.ts`), which **saves the answer first**: before anything is delivered, the answer (`data`, `cancelled`, `answeredAt`) is written on the request with a guarded store write (`HitlStore.transition`), and the first answer saved is the one that counts.
+
+| The answer | Outcome | Over HTTP | Over the socket |
+|---|---|---|---|
+| The first answer to a pending request | Saved, then delivered (a gated tool's wait is signalled; a model-raised form is left to the chat turn) | `202 { resumed: true }`, or the chat turn | `200 { ok: true }`, or 404 "answer with a chat request" |
+| The same answer again (equal `data` and `cancelled`) | The outcome the first got. A gated tool's wait is signalled again only while it hasn't taken the answer, which is harmless | as the first | as the first |
+| A different answer to an answered request | `conflict`; nothing is delivered | `409 { error, requestId }` | `409 { error }` |
+| Another user's request, one that was resolved without an answer (timed out, cancelled by a new message), or none | `not_found` | the message runs as a new turn, as before | 404 |
+
+The wait's resume reads the saved answer, not the event that delivered it, so a re-delivered or altered event can't change what the user answered. An answer saved before the deadline wins, even if the timeout fires first: when the signal is refused while the wait is still running, the answer is accepted (`resumed`), and the timeout resumes the run with it instead of expiring the form. A model-raised form's answer is saved too (for §7.5); the chat turn that carries it resumes the response as before.
+
 ### 7.3 Server → client: `input_expired`
 
 Pushed when a HITL request times out. The client should dismiss the form.
@@ -535,6 +566,53 @@ The runner's `SendResponse` when it suspends for HITL (returned from the HTTP en
   sessionId: string
 }
 ```
+
+### 7.5 Recovering forms after a reconnect
+
+A form reaches the client once, as an `input_request` event. A client that was offline when it was pushed, or reconnects, asks again. Both routes are part of the shared gateway, so every cloud serves them; both need the user's sign-in, read the store partition-scoped to that user, and answer with `Cache-Control: no-store`.
+
+**`GET /api/hitl/pending`**: the signed-in user's forms still waiting for an answer (pending, not answered, and before their timeout), newest first, each as the `input_request` event that showed it, plus when it expires:
+
+```typescript
+{
+  requests: Array<{
+    state: "input_request";
+    requestId: string;
+    runId: string;
+    sessionId: string;
+    toolName: string;
+    toolCallId: string;
+    formType: HitlFormType;
+    formName?: string;
+    intent: string;
+    proposedArgs: Record<string, unknown>;
+    schema?: Record<string, unknown>;   // always for a gated tool's form
+    options?: Array<{ label: string; value: string; description?: string }>;
+    uiHints?: HitlUiHints;
+    timeoutSeconds: number;
+    expiresAt: string;                  // ISO 8601: creation + timeoutSeconds
+  }>;
+}
+```
+
+A client renders them as it renders the event, and answers them the usual way (§7.2). Requests saved before the form was stored with them (`HitlRunState.inputRequest`) aren't listed.
+
+**`GET /api/hitl/{id}`**: where one request is. Another user's request, or none, is a 404.
+
+```typescript
+{
+  requestId: string;
+  status: "pending" | "responded" | "expired" | "cancelled" | "failed";
+  sessionId: string;
+  runId: string;           // the run that asked
+  answeredAt?: string;     // when the answer was accepted
+  resumedRunId?: string;   // the run that continued after the answer, once it has finished
+}
+```
+
+`expired` is a request that timed out, or a pending one past its timeout that nobody answered. `cancelled` is a cancel answer, or a model-raised form the user moved past with a new message. `failed`: the answer was accepted, but the run didn't continue. After a `202 { resumed: true }`, a client polls this until `resumedRunId` appears, then shows that run's reply from `GET /api/sessions/{sessionId}` (by `runId`); `examples/web-chat` does (`recoverApproval`). For a model-raised form, `resumedRunId` is the chat turn that carried the answer. A gated tool's continuation is a run like any other: it has a status record (`GET /api/chat/runs/{runId}`) from the moment it starts, so a client that saw its events can follow it there before `resumedRunId` appears. If the session was busy, each attempt is its own run, and `resumedRunId` names the one that ran.
+
+Both routes answer 503 when no HITL store is configured.
 
 ## 8. Policy resolution pipeline
 
@@ -575,11 +653,11 @@ Pushes the `input_request` event to the user's connected clients via Web PubSub.
 
 Resumes the agent runner after the user provides input:
 
-1. Loads `HitlRunState` from HITL store
-2. Validates state is `pending`
-3. Marks as `responded`
-4. If user cancelled → calls `resumeRunWithResult(client, runState, "User cancelled this action.")`
-5. If user submitted → merges args, executes tool, calls `resumeRunWithResult(client, runState, toolResult)`
+1. Loads `HitlRunState` from HITL store, and takes the answer saved on it (§7.2); the delivered event is used only for a request answered before answers were saved
+2. Claims the request: moves it from `pending` to `responded` (or `cancelled`) with a guarded write; a request no longer pending isn't resumed again
+3. If user cancelled → calls `resumeRunWithResult(client, runState, "User cancelled this action.")`
+4. If user submitted → merges args, executes tool, calls `resumeRunWithResult(client, runState, toolResult)`
+5. Records the continuation's run id (`resumedRunId`), or `failed` when it failed (§7.5)
 
 The `resumeRunWithResult` function:
 - Saves the tool result to the session as an assistant message
@@ -590,7 +668,7 @@ The `resumeRunWithResult` function:
 
 Handles a timed-out request without calling the LLM:
 
-1. Marks the request as `timed_out`
+1. Marks the request as `timed_out`, only if it is pending and unanswered. A request resolved in time is left alone; one with a saved answer (the signal lost the race with the timeout) is resumed with that answer, as `onEvent` would (§9.2), and nothing below happens
 2. Saves a friendly timeout note to the session
 3. Sends `input_expired` to the client
 4. Zero LLM calls: no loops, no unnecessary cost
@@ -604,8 +682,9 @@ Handles a timed-out request without calling the LLM:
 | Session persistence fails during resume | Non-fatal: the continuation message also carries the tool result |
 | Delivering the answer fails (`durable().signal` throws) | Returns HTTP 500 to the client, which can retry |
 | Wait not running (e.g. timed out) | Returns HTTP 404; the client shows "request expired" |
+| A second, different answer to an answered form | Returns HTTP 409; the first answer stands |
 | Turn can't suspend (channel, cron or resumed turn; no HITL store; no Durable installed) | The gated tool is refused: the model is told the action needs the user's approval in the app |
-| `client.send()` fails during resume | Error logged, best-effort `input_expired` pushed to client |
+| `client.send()` fails during resume | Error logged, best-effort `error` event pushed to client; the request is recorded `failed` |
 
 ## 11. Sequence diagram: full happy path
 

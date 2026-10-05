@@ -183,7 +183,11 @@ export function createStorage(config: ResolvedDatabaseConfig): StorageAdapter {
         );
       }
       // Read when the storage is built: a host installs its HostInfo first.
-      const persistent = hostInfo().persistent !== false;
+      const host = hostInfo();
+      const persistent = host.persistent !== false;
+      // A host that freezes between invocations (Lambda) can't keep a sweep timer;
+      // it serves databaseSweepSchedule instead, as hosts that aren't persistent do.
+      const sweepTimer = host.backgroundAfterResponse !== false;
       return new LazyStorage("postgres", async () => {
         const { PostgresStorage, createPool } = await import("@agentforeach/storage-postgres");
         const onError = (err: unknown) =>
@@ -193,7 +197,7 @@ export function createStorage(config: ResolvedDatabaseConfig): StorageAdapter {
           // Persistent hosts keep one pool for the process, as before.
           // Elsewhere each invocation has its own, and shared setup outlives the request that began it.
           ...(persistent
-            ? pool
+            ? { ...pool, ...(sweepTimer ? {} : { sweepIntervalMs: 0 }) }
             : { poolSource: scopedPoolSource(createPool, pool), sweepIntervalMs: 0, keepAlive: (work) => background(work, () => {}) }),
           schema: config.schema,
           provisionTables: config.provisionContainers,

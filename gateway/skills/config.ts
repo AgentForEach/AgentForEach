@@ -13,6 +13,8 @@ import type { SkillsJsonConfig, SkillsConfig } from "./types.js";
 import type {
   AcaSandboxesConfig,
   AcaSandboxesJsonConfig,
+  AgentCoreSandboxConfig,
+  AgentCoreSandboxJsonConfig,
   ContainersSandboxConfig,
   ContainersSandboxJsonConfig,
   SandboxConfig,
@@ -157,6 +159,42 @@ function resolveContainers(json: ContainersSandboxJsonConfig = {}): ContainersSa
   };
 }
 
+const AGENTCORE_DEFAULTS = {
+  defaultTimeoutSec: 60,
+  maxTimeoutSec: 200,
+  maxBytes: 32 * 1024 * 1024,
+  maxFiles: 10_000,
+};
+
+/**
+ * Resolve the Bedrock AgentCore section. Each field falls back to an env var
+ * so the IaC can inject it (AWS_SANDBOX_*); the backend checks the values.
+ */
+function resolveAgentCore(json: AgentCoreSandboxJsonConfig = {}): AgentCoreSandboxConfig {
+  const pick = (value: string | undefined, envVar: string) => resolveEnvValue(value) ?? (process.env[envVar] || undefined);
+  const number = (value: number | undefined, envVar: string) => value ?? (process.env[envVar] ? Number(process.env[envVar]) : undefined);
+  const storageMode = (pick(json.storageMode, "AWS_SANDBOX_STORAGE_MODE") ?? "ephemeral") as AgentCoreSandboxConfig["storageMode"];
+  const maxBytes = number(json.persistenceLimits?.maxBytes, "AWS_SANDBOX_ARCHIVE_MAX_BYTES");
+  const maxFiles = number(json.persistenceLimits?.maxFiles, "AWS_SANDBOX_ARCHIVE_MAX_FILES");
+  const qualifier = pick(json.qualifier, "AWS_SANDBOX_QUALIFIER");
+  const region = pick(json.region, "AWS_SANDBOX_REGION");
+  const workspaceBucket = pick(json.workspaceBucket, "AWS_SANDBOX_WORKSPACE_BUCKET");
+  return {
+    runtimeArn: pick(json.runtimeArn, "AWS_SANDBOX_RUNTIME_ARN") ?? "",
+    ...(qualifier ? { qualifier } : {}),
+    ...(region ? { region } : {}),
+    serverToken: pick(json.serverToken, "AWS_SANDBOX_SERVER_TOKEN") ?? "",
+    storageMode,
+    ...(workspaceBucket ? { workspaceBucket } : {}),
+    ...(storageMode === "s3-checkpoint"
+      ? { persistenceLimits: { maxBytes: maxBytes ?? AGENTCORE_DEFAULTS.maxBytes, maxFiles: maxFiles ?? AGENTCORE_DEFAULTS.maxFiles } }
+      : {}),
+    browser: json.browser ?? false,
+    defaultTimeoutSec: json.defaultTimeoutSec ?? AGENTCORE_DEFAULTS.defaultTimeoutSec,
+    maxTimeoutSec: json.maxTimeoutSec ?? AGENTCORE_DEFAULTS.maxTimeoutSec,
+  };
+}
+
 /**
  * SANDBOX_PROVIDER (from the IaC) wins over agentforeach.json; "aca" is a
  * legacy alias. Any registered provider is accepted (skills/sandbox/registry.ts);
@@ -201,6 +239,7 @@ export function loadSkillsConfig(): SkillsConfig {
     const provider = resolveProvider(s.provider);
     const acaSandboxes = provider === "aca-sandboxes" ? resolveAcaSandboxes(s.sandboxes) : undefined;
     const containers = provider === "cloudflare-containers" ? resolveContainers(s.containers) : undefined;
+    const aws = provider === "aws-agentcore" ? resolveAgentCore(s.aws) : undefined;
     const browser = resolveBrowser(s.browser);
     // A handoff's live view goes out to the realtime relay; let it through a deny-by-default egress policy.
     // ACA's egress rules match hosts only, so it gets the relay's host; the
@@ -222,6 +261,7 @@ export function loadSkillsConfig(): SkillsConfig {
       provider,
       sandboxes: acaSandboxes,
       containers,
+      aws,
       poolManagementEndpoint: poolEndpoint,
       containerType:
         s.aca?.containerType ?? SANDBOX_DEFAULTS.containerType,

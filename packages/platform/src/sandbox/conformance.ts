@@ -18,12 +18,17 @@
  * it: `sleep` (put a sandbox to sleep, for persistence) and `egress` (an
  * echo host the sandbox may reach, for egress and credential injection).
  * Checks gated by a capability run only when the backend declares it.
+ *
+ * Every backend must take concurrent calls on one sandbox (the runner calls
+ * tools in parallel), whether it runs them at once or one after another; and
+ * after deleteUserSandboxes, the user's next call gets a new, empty sandbox.
  */
 
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { after, before, describe, it } from "node:test";
 import type { SandboxBackend } from "./types.js";
+import { SandboxPersistenceLimitError } from "./types.js";
 
 export type SandboxConformanceOptions = {
   /** Shown in the suite name. */
@@ -73,10 +78,15 @@ export function runSandboxConformance(options: SandboxConformanceOptions): void 
 
     it("is ready and declares its capabilities", { timeout }, () => {
       assert.equal(backend.isReady(), true);
-      const { browser, egressCredentials, persistence } = backend.capabilities;
+      const { browser, egressCredentials, persistence, persistenceLimits } = backend.capabilities;
       assert.equal(typeof browser, "boolean");
       assert.equal(typeof egressCredentials, "boolean");
-      assert.ok(["none", "disk", "memory"].includes(persistence), `persistence: ${persistence}`);
+      assert.ok(["none", "data", "disk", "memory"].includes(persistence), `persistence: ${persistence}`);
+      if (persistenceLimits) {
+        assert.notEqual(persistence, "none", "limits on persistence that keeps nothing");
+        assert.ok(Number.isInteger(persistenceLimits.maxBytes) && persistenceLimits.maxBytes > 0, "maxBytes");
+        assert.ok(Number.isInteger(persistenceLimits.maxFiles) && persistenceLimits.maxFiles > 0, "maxFiles");
+      }
       assert.equal(typeof id, "string");
       assert.ok(id.length > 0);
     });
@@ -115,6 +125,20 @@ export function runSandboxConformance(options: SandboxConformanceOptions): void 
       assert.equal(binary.sizeBytes, Buffer.byteLength("héllo sandbox"));
       assert.equal((await backend.exec({ command: "cat notes.txt sub/dir/deep.txt" }, id)).stdout, "héllo sandboxdeep");
       await assert.rejects(backend.fileRead({ filename: "nope.txt" }, id), /404|not found/i);
+    });
+
+    it("concurrent calls: two execs and a file write at once all succeed, each with its own result", { timeout }, async () => {
+      const [first, second, written] = await Promise.all([
+        backend.exec({ command: "sleep 1; echo first" }, id),
+        backend.exec({ command: "echo second >&2; exit 4" }, id),
+        backend.fileWrite({ filename: "concurrent.txt", content: "written alongside" }, id),
+      ]);
+      assert.equal(first.exitCode, 0);
+      assert.equal(first.stdout.trim(), "first");
+      assert.equal(second.exitCode, 4);
+      assert.equal(second.stderr.trim(), "second");
+      assert.equal(written.success, true);
+      assert.equal((await backend.fileRead({ filename: "concurrent.txt" }, id)).content, "written alongside");
     });
 
     it("env: setEnv reaches commands and replaces the whole set", { timeout }, async () => {
@@ -167,6 +191,18 @@ export function runSandboxConformance(options: SandboxConformanceOptions): void 
       await options.sleep(backend, id);
       assert.equal((await backend.fileRead({ filename: "kept.txt" }, id)).content, "still here");
       assert.equal((await backend.exec({ command: 'printf %s "$KEPT"' }, id)).stdout, "env too");
+    });
+
+    it("persistence limits: over a limit the call fails clearly and the saved files stay", { timeout }, async (t) => {
+      const limits = backend.capabilities.persistenceLimits;
+      if (!limits) return t.skip("persistence is not bounded");
+      await backend.fileWrite({ filename: "saved.txt", content: "saved before" }, id);
+      await assert.rejects(
+        backend.exec({ command: `head -c ${limits.maxBytes + 1} /dev/zero > too-big.bin` }, id),
+        (err: unknown) => err instanceof SandboxPersistenceLimitError || (err instanceof Error && err.name === "SandboxPersistenceLimitError"),
+      );
+      assert.equal((await backend.fileRead({ filename: "saved.txt" }, id)).content, "saved before");
+      await backend.exec({ command: "rm -f too-big.bin" }, id);
     });
 
     it("deleteUserSandboxes removes the user's sandboxes and their files", { timeout }, async (t) => {

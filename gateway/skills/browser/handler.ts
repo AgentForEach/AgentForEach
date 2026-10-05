@@ -26,6 +26,7 @@
  *     which credits.unitCoins can charge for
  */
 
+import type { ConnectionDescriptor } from "@agentforeach/platform";
 import type { ToolDefinition } from "../../memory/types.js";
 import { checkUrl } from "../../utils/safe-fetch.js";
 import type { SandboxToolHandler } from "../sandbox/handler.js";
@@ -198,15 +199,21 @@ const HANDOFF_TITLES: Record<HandoffKind, string> = {
 };
 
 /**
- * Issues the two Web PubSub tokens a handoff needs, both limited to its one
+ * Issues the two relay connections a handoff needs, both limited to its one
  * group: the driver's, and the viewer's (whose user id is the user's own, so
- * the driver can tell their input from anyone else's). Injectable for tests.
+ * the driver can tell their input from anyone else's). Each comes with a
+ * connection descriptor where the provider isn't protocol v1 (AppSync
+ * Events). Injectable for tests; ./relay.ts is the real one.
  */
 export interface HandoffRelay {
-  issue(viewerUserId: string, group: string, ttlMinutes: number): Promise<{ driverUrl: string; viewerUrl: string }>;
+  issue(
+    viewerUserId: string,
+    group: string,
+    ttlMinutes: number,
+  ): Promise<{ driverUrl: string; viewerUrl: string; driver?: ConnectionDescriptor; viewer?: ConnectionDescriptor }>;
 }
 
-/** The Web PubSub user id the sandbox's driver connects as (a hash: no user ids in the relay). */
+/** The relay user id the sandbox's driver connects as (a hash: no user ids in the relay). */
 export function handoffDriverUserId(userId: string): string {
   return `browser-driver:${createHash("sha256").update(userId).digest("hex").slice(0, 24)}`;
 }
@@ -576,7 +583,7 @@ export class BrowserToolHandler {
     }
     const sent = await this.send(
       "handoff_start",
-      { relayUrl: tokens.driverUrl, group, viewerUserId: userId, expiresAt, reason, kind },
+      { relayUrl: tokens.driverUrl, ...(tokens.driver ? { relay: tokens.driver } : {}), group, viewerUserId: userId, expiresAt, reason, kind },
       true,
     );
     if ("error" in sent) return fail(sent.error);
@@ -599,7 +606,7 @@ export class BrowserToolHandler {
         proposedArgs: {
           viewerUrl: viewerLink(
             base,
-            { relayUrl: tokens.viewerUrl, group, expiresAt, reason, driverUserId: handoffDriverUserId(userId) },
+            { relayUrl: tokens.viewerUrl, relay: tokens.viewer, group, expiresAt, reason, driverUserId: handoffDriverUserId(userId) },
             true,
           ),
           kind,

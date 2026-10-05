@@ -42,6 +42,11 @@ const scalarExcluded = (path: string) => ({
 
 const specs: CollectionSpec[] = [
   { name: "abort-requests", partitionKey: "userId", defaultTtl: 600, adapterOptions: defaultPolicy },
+  { name: "aws-durable-conformance", partitionKey: "key", defaultTtl: 86400, unindexed: ["call"] },
+  { name: "aws-durable-instances", partitionKey: "id", defaultTtl: -1, indexes: ["status", "sweptAt", "userId"], unindexed: ["input", "event"] },
+  { name: "aws-sandbox-sessions", partitionKey: "owner" },
+  { name: "aws-sandbox-workspaces", partitionKey: "owner" },
+  { name: "chat-runs", partitionKey: "userId", defaultTtl: 604800 },
   { name: "cron-due-index", partitionKey: "shardId", defaultTtl: 604800 },
   { name: "cron-heartbeat-events", partitionKey: "shardId", defaultTtl: 172800 },
   { name: "cron-jobs", partitionKey: "userId" },

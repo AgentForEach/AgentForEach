@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import test, { describe, it } from "node:test";
+import { runRealtimeConformance, webSocketTestClient } from "@agentforeach/platform/realtime/conformance";
 import { WebPubSubRealtime, webPubSubHost, webPubSubRelay } from "./web-pubsub.js";
 
 // A made-up key, built here so it never appears as a literal.
@@ -46,3 +47,17 @@ describe("azure web pubsub provider", () => {
     assert.throws(() => new WebPubSubRealtime({ connectionString: "", hub: "h" }), /requires a connection string/);
   });
 });
+
+// The suite against a live service. Its own hub, with no event handlers: the
+// deployment's hub would send connects and messages upstream to the gateway.
+const liveConnection = process.env.WEBPUBSUB_CONNECTION_STRING;
+if (!liveConnection) {
+  test("azure web pubsub conformance (set WEBPUBSUB_CONNECTION_STRING to run against a live service)", { skip: true }, () => {});
+} else {
+  runRealtimeConformance({
+    name: "azure web pubsub (live)",
+    createProvider: () => new WebPubSubRealtime({ connectionString: liveConnection, hub: "conformance" }),
+    connect: webSocketTestClient,
+    oversizeFrames: "close-silently",
+  });
+}

@@ -166,3 +166,18 @@ test("with a token, /archive moves /mnt/data between two servers; without one it
     rmSync(to.root, { recursive: true, force: true });
   }
 });
+
+test("two servers started at once each answer on their own port, with their own folder", async () => {
+  const dirs = [sandboxDirs(), sandboxDirs()];
+  const servers = await Promise.all(dirs.map((d) => startServer(d.env)));
+  try {
+    assert.notEqual(servers[0].port, servers[1].port);
+    for (const [i, { port }] of servers.entries()) {
+      const health = (await (await fetch(`http://127.0.0.1:${port}/health`)).json()) as { workDir: string };
+      assert.equal(health.workDir, dirs[i].root);
+    }
+  } finally {
+    await Promise.all(servers.map((s) => stopServer(s.proc)));
+    for (const d of dirs) rmSync(d.root, { recursive: true, force: true });
+  }
+});

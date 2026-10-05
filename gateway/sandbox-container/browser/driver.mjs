@@ -30,6 +30,7 @@ import {
 } from "./guard.mjs";
 import { cardFieldFilledInPage, labelsInPage, snapshotInPage, textInPage } from "./snapshot.mjs";
 import { trustEgressCa } from "./egress-ca.mjs";
+import { backoffDelay, connectRelay } from "./realtime-client.mjs";
 
 const require = createRequire(import.meta.url);
 const { chromium } = require("playwright-core");
@@ -67,14 +68,19 @@ function preferDownloads() {
   writeFileSync(file, JSON.stringify(prefs));
 }
 
-/** Chromium from the image (PLAYWRIGHT_BROWSERS_PATH), or Playwright's own lookup elsewhere. */
+/**
+ * Chromium from the image (PLAYWRIGHT_BROWSERS_PATH), or Playwright's own
+ * lookup elsewhere. Playwright's folder is named for the platform:
+ * chrome-linux64 on amd64, chrome-linux (or, in some releases,
+ * chrome-linux-arm64) on arm64; whichever exists.
+ */
 function chromePath() {
   if (process.env.AFE_BROWSER_CHROME) return process.env.AFE_BROWSER_CHROME;
   const root = process.env.PLAYWRIGHT_BROWSERS_PATH ?? "/opt/ms-playwright";
   if (!existsSync(root)) return undefined;
   const dir = readdirSync(root).filter((d) => /^chromium-\d+$/.test(d)).sort().pop();
-  const exe = dir && join(root, dir, "chrome-linux64", "chrome");
-  return exe && existsSync(exe) ? exe : undefined;
+  if (!dir) return undefined;
+  return ["chrome-linux64", "chrome-linux", "chrome-linux-arm64"].map((platform) => join(root, dir, platform, "chrome")).find((exe) => existsSync(exe));
 }
 
 mkdirSync(RUN_DIR, { recursive: true, mode: 0o700 });
@@ -106,6 +112,14 @@ const context = await chromium.launchPersistentContext(PROFILE, {
     "--disable-quic",
   ],
 });
+// Storage saved before /mnt/data was archived (POST /checkpoint), loaded once
+// after the sandbox server restored an archive (../browser-checkpoint.mjs).
+const STORAGE_STATE = join(DATA, ".browser", "storage-state.json");
+const RESTORE_STORAGE = join(RUN_DIR, "restore-storage");
+if (existsSync(RESTORE_STORAGE)) {
+  if (existsSync(STORAGE_STATE)) await context.setStorageState(STORAGE_STATE).catch((err) => console.error(`restoring storage: ${err.message}`));
+  rmSync(RESTORE_STORAGE, { force: true });
+}
 let resetting = false;
 context.on("close", () => {
   if (!resetting) process.exit(0);
@@ -759,11 +773,13 @@ function withDeadline(work, ms) {
 
 /*
  * For a login, a CAPTCHA, a second factor or a payment, the agent hands the
- * browser to the user. The driver connects OUT to Web PubSub (the sandbox
- * takes no inbound connections), joins the handoff's group, streams the page
- * as JPEG frames (CDP screencast, sent only when the screen changes) and
- * applies the user's mouse and keyboard input. Only messages Web PubSub
- * stamps with the user's own id are accepted.
+ * browser to the user. The driver connects OUT to the realtime relay (the
+ * sandbox takes no inbound connections) with the portable realtime client
+ * (./realtime-client.mjs: Web PubSub, Cloudflare or AppSync Events), streams
+ * the page as JPEG frames (CDP screencast, sent only when the screen
+ * changes) and applies the user's mouse and keyboard input. Only messages
+ * from the user's own id are accepted: the relay stamps the sender (v1), or
+ * only the user's token can publish to the driver's channel (AppSync).
  */
 async function cardFieldFilled(p) {
   for (const frame of p.frames()) {
@@ -784,10 +800,9 @@ const MAX_PENDING_INPUT = 200;
 const VIEWER_QUIET_MS = 30_000;
 const FRAME_INTERVAL_MS = 150;
 
+/** Send to the viewer. A screen frame on a congested link is dropped (the next one replaces it). */
 function relaySend(data, h = handoff) {
-  if (h?.ws.readyState === 1) {
-    h.ws.send(JSON.stringify({ type: "sendToGroup", group: h.group, dataType: "json", noEcho: true, data }));
-  }
+  h?.ws?.send(data, { droppable: data.kind === "frame" });
 }
 
 function sendStatus() {
@@ -907,14 +922,9 @@ async function applyInput(input) {
   }
 }
 
-function onRelayMessage(raw) {
-  let message;
-  try {
-    message = JSON.parse(String(raw));
-  } catch {
-    return;
-  }
-  const input = parseViewerInput(message, handoff?.viewerUserId);
+/** A message from the viewer, as the relay delivered it (the client checked it came from the viewer's id). */
+function onRelayMessage(data, fromUserId) {
+  const input = parseViewerInput({ type: "message", from: "group", fromUserId, data }, handoff?.viewerUserId);
   if (!input) return;
   touch();
   handoff.viewerSeen = Date.now();
@@ -947,17 +957,17 @@ async function drainInput() {
   }
 }
 
-async function startHandoff({ relayUrl, group, viewerUserId, expiresAt, reason, kind }) {
+async function startHandoff({ relayUrl, relay, group, viewerUserId, expiresAt, reason, kind }) {
   await stopHandoff("replaced");
-  if (typeof relayUrl !== "string" || !relayUrl.startsWith("wss://") || !group || !viewerUserId) {
+  // A relay that isn't protocol v1 (AppSync Events) sends its connection descriptor; v1 needs only the URL.
+  const descriptor = relay ?? { protocol: "v1", url: relayUrl };
+  if (typeof relayUrl !== "string" || !relayUrl.startsWith("wss://") || descriptor?.url !== relayUrl || !group || !viewerUserId) {
     throw new ActionError("The handoff is missing its live-view connection.");
   }
   const until = Number(expiresAt) || Date.now() + 10 * 60_000;
   if (until <= Date.now() + 5_000) throw new ActionError("The handoff's deadline has already passed.");
-  const ws = await openRelay(relayUrl);
-  handoff = {
-    ws,
-    relayUrl,
+  const h = {
+    descriptor,
     group,
     viewerUserId,
     expiresAt: until,
@@ -967,7 +977,8 @@ async function startHandoff({ relayUrl, group, viewerUserId, expiresAt, reason, 
     keys: new Set(),
     buttons: new Set(),
   };
-  const h = handoff;
+  await openRelay(h);
+  handoff = h;
   if (kind === "payment") {
     try {
       paymentOrigin = new URL((await page()).url()).origin;
@@ -975,7 +986,6 @@ async function startHandoff({ relayUrl, group, viewerUserId, expiresAt, reason, 
       // not on a web page yet
     }
   }
-  attachRelay(h, ws);
   h.timer = setTimeout(() => stopHandoff("expired").catch(() => {}), Math.max(until - Date.now(), 1000));
   // A heartbeat, so the viewer can tell the browser is still there.
   h.heartbeat = setInterval(sendStatus, 10_000);
@@ -983,31 +993,29 @@ async function startHandoff({ relayUrl, group, viewerUserId, expiresAt, reason, 
   return { handoff: "started", expiresAt: until };
 }
 
-/** Open the relay socket (the live view's connection), or fail with a message for the agent. */
-async function openRelay(relayUrl) {
-  const ws = new WebSocket(relayUrl, "json.webpubsub.azure.v1");
-  await new Promise((ok, fail) => {
-    const timer = setTimeout(() => fail(new ActionError("The live view could not connect (timed out).")), 15_000);
-    ws.onopen = () => {
-      clearTimeout(timer);
-      ok();
-    };
-    ws.onerror = () => {
-      clearTimeout(timer);
-      fail(new ActionError("The live view could not connect. If sandbox egress is restricted, allow the Web PubSub host."));
-    };
-  });
-  return ws;
-}
-
-/** Join the handoff's group on `ws` and handle its messages; a socket that drops is opened again. */
-function attachRelay(h, ws) {
+/**
+ * Open the handoff's relay connection (the live view's) into `h.ws`, or fail
+ * with a message for the agent. A connection that drops is opened again.
+ */
+async function openRelay(h) {
+  let ws;
+  try {
+    ws = await connectRelay(h.descriptor, {
+      group: h.group,
+      peerUserId: h.viewerUserId,
+      onMessage: onRelayMessage,
+      onClose: () => {
+        if (handoff === h && h.ws === ws) reconnectRelay(h).catch(() => {});
+      },
+    });
+  } catch (err) {
+    throw new ActionError(
+      /timed out/.test(err?.message ?? "")
+        ? "The live view could not connect (timed out)."
+        : "The live view could not connect. If sandbox egress is restricted, allow the realtime relay's host.",
+    );
+  }
   h.ws = ws;
-  ws.send(JSON.stringify({ type: "joinGroup", group: h.group, ackId: 1 }));
-  ws.onmessage = (m) => onRelayMessage(m.data);
-  ws.onclose = () => {
-    if (handoff === h && h.ws === ws) reconnectRelay(h).catch(() => {});
-  };
 }
 
 /** Relay reconnects in a row before the handoff ends as disconnected. */
@@ -1016,21 +1024,21 @@ const RELAY_RECONNECTS = 5;
 /**
  * The relay socket dropped mid-handoff (a network blip, or a platform that
  * ends long outbound connections): open it again while the handoff lasts,
- * with a short backoff, so the user's live view carries on. The backoff
- * totals about 12 s, inside the 30 s a relay URL may reconnect after its
- * connection closed (RELAY_RESUME_MS on self-hosted realtime providers).
+ * with a short, jittered backoff, so the user's live view carries on. The
+ * backoff totals 17 s at most, inside the 30 s a relay URL may reconnect
+ * after its connection closed (RELAY_RESUME_MS on self-hosted realtime
+ * providers); AppSync's relay tokens last until the handoff's deadline.
  */
 async function reconnectRelay(h) {
   for (let attempt = 1; attempt <= RELAY_RECONNECTS && handoff === h && Date.now() < h.expiresAt - 2_000; attempt++) {
-    await new Promise((resolve) => setTimeout(resolve, Math.min(500 * 2 ** (attempt - 1), 5_000)));
+    await new Promise((resolve) => setTimeout(resolve, backoffDelay(attempt, 1_000, 5_000)));
     if (handoff !== h) return;
     try {
-      const ws = await openRelay(h.relayUrl);
+      await openRelay(h);
       if (handoff !== h) {
-        ws.close();
+        h.ws.close();
         return;
       }
-      attachRelay(h, ws);
       h.reconnects = (h.reconnects ?? 0) + 1;
       console.error(`[driver] relay reconnected (attempt ${attempt}, ${h.reconnects} so far)`);
       // The screencast carries on into the new socket; send a whole frame now.
@@ -1062,7 +1070,7 @@ async function stopHandoff(reason) {
   await h.cdp?.send("Page.stopScreencast").catch(() => {});
   await h.cdp?.detach().catch(() => {});
   try {
-    h.ws.close();
+    h.ws?.close();
   } catch {
     // already closed
   }
@@ -1099,7 +1107,24 @@ const server = createServer((req, res) => {
     res.end(JSON.stringify(body));
   };
   if (!authorized(req)) return reply(401, { ok: false, error: "unauthorized" });
-  if (req.method === "GET" && req.url === "/ping") return reply(200, { ok: true, pid: process.pid });
+  // The handoff's state too: while the user has the browser, the sandbox server refuses the agent's writes.
+  if (req.method === "GET" && req.url === "/ping") {
+    return reply(200, { ok: true, pid: process.pid, handoff: Boolean(handoff), ...(handoff ? { expiresAt: handoff.expiresAt } : {}) });
+  }
+  if (req.method === "POST" && req.url === "/checkpoint") {
+    // In the queue, so no action changes storage while it is read.
+    queue = queue.then(async () => {
+      try {
+        const state = JSON.stringify(await context.storageState({ indexedDB: true }));
+        if (Buffer.byteLength(state) > 32 * 1024 * 1024) throw new Error("storage is larger than 32 MiB");
+        writeFileSync(STORAGE_STATE, state, { mode: 0o600 });
+        reply(200, { ok: true });
+      } catch (err) {
+        reply(500, { ok: false, error: `saving storage failed: ${err.message}` });
+      }
+    });
+    return;
+  }
   if (req.method !== "POST" || req.url !== "/action") return reply(404, { ok: false, error: "not found" });
   let body = "";
   let gone = false;

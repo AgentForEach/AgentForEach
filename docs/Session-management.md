@@ -45,6 +45,7 @@ If the range to compact is empty (for example, a session from before the current
 | `messagesContainerId` | `session-messages-v2` | Message docs; must be partitioned on `/pk` |
 | `ttlSeconds` | `86400` | Session inactivity TTL |
 | `messageTtlSeconds` | `604800` | Message doc TTL. Messages of an expired session can't be read again, so this bounds what they cost; active sessions are compacted by age at half this value. `0` = never |
+| `runStatusTtlSeconds` | `604800` | How long a chat turn's status record (`GET /api/chat/runs/{runId}`, container `chat-runs`) lives after its last change. `0` = never |
 | `maxHistoryMessages` | `100` | Recent messages loaded into the LLM context |
 | `compactionThreshold` | `60` | Messages since the last compaction that trigger it |
 | `compactionRetainCount` | `20` | Recent messages kept verbatim after compaction |

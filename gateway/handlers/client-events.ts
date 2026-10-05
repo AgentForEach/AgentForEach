@@ -15,9 +15,7 @@
  *   { type: "ping" }
  */
 
-import { openScope, type HandlerContext, type HttpResult, type HubEventHandler } from "@agentforeach/platform";
-import { durable } from "../runtime/durable.js";
-import { HITL_INPUT_EVENT } from "../hitl/types.js";
+import { effectiveDeadline, openScope, type HandlerContext, type HttpResult, type HubEventHandler } from "@agentforeach/platform";
 import { getAgentClient } from "../shared.js";
 import { sendEventToUser, EVENTS } from "../websocket/index.js";
 import { abortActiveRequest, type SharedAbortStore } from "./active-request-store.js";
@@ -28,9 +26,11 @@ import {
 import { INVALID_SESSION_ID_MESSAGE, isValidSessionId } from "../sessions/ids.js";
 import { isModelAllowed } from "../llms/model-policy.js";
 import { resolveDefaultProviderId } from "../llms/config.js";
-import { authorizeHitlResponse, getHitlStore } from "../hitl/authorize.js";
+import { answerInputRequest } from "../hitl/answer.js";
 import {
+  acceptChatTurn,
   backgroundTurnsEnabled,
+  ChatRunConflictError,
   chatTurnIds,
   executeChatTurn,
   HTTP_RUN_DEADLINE_MS,
@@ -189,6 +189,13 @@ export async function handleClientEvent(
         body: JSON.stringify({ error: "Invalid JSON payload" }),
       };
     }
+    if (err instanceof ChatRunConflictError) {
+      return {
+        status: 409,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ error: err.message, code: "idempotency_conflict" }),
+      };
+    }
     const { message, stack } = toErrorParts(err);
     const errorId = context.invocationId;
     context.error(
@@ -333,7 +340,7 @@ async function handleChat(
     turn.sessionId ??= newSessionId;
     turn.rateLimitChecked = true;
     turn.acceptedAtMs = Date.now();
-    const { duplicate } = await startChatTurn(instanceId, turn);
+    const { duplicate } = await startChatTurn(context, instanceId, turn);
     context.log(
       `chat: accepted user=${redactId(userId)} run=${runId}` + (duplicate ? " (duplicate of a running turn)" : ""),
     );
@@ -344,8 +351,9 @@ async function handleChat(
     };
   }
 
-  // Azure's front end drops HTTP requests after 230 s.
-  const response = await executeChatTurn(context, turn, Date.now() + HTTP_RUN_DEADLINE_MS);
+  await acceptChatTurn(context, turn);
+  // Azure's front end drops HTTP requests after 230 s; the host's deadline may come sooner.
+  const response = await executeChatTurn(context, turn, effectiveDeadline(HTTP_RUN_DEADLINE_MS, context));
   if (!response) {
     context.log(`chat: user=${redactId(userId)} — aborted by client`);
     return {
@@ -423,12 +431,14 @@ async function handleAbort(
  * sleeping until the "hitl_input_response" event or its timeout.
  * This handler:
  *   1. Validates the requestId
- *   2. Signals the wait with the answer
+ *   2. Saves the answer on the request (a different answer to an already
+ *      answered request is a 409), then signals the wait with it
  *   3. The wait wakes up and resumes the run (in a new invocation)
  *
  * The key insight: this handler does NOT resume the runner directly.
  * It simply signals the durable wait, which handles resumption.
- * This keeps the handler fast and stateless.
+ * This keeps the handler fast and stateless. A chat request carrying
+ * `hitlInputResponse` takes the same path (answerInputRequest, hitl/answer.ts).
  */
 async function handleInputResponse(
   userId: string,
@@ -442,7 +452,6 @@ async function handleInputResponse(
     };
   }
 
-  const orchestrationId = `hitl-${msg.requestId}`;
   const notFound = {
     status: 404,
     body: JSON.stringify({
@@ -451,24 +460,33 @@ async function handleInputResponse(
   };
 
   try {
-    // Only the owner of a pending request may answer it: the answer resumes
-    // the run as that user, with this data merged into the tool call.
-    const hitlStore = getHitlStore(await getAgentClient());
-    if (!hitlStore) {
+    const outcome = await answerInputRequest(
+      userId,
+      { requestId: msg.requestId, data: msg.data, cancelled: msg.cancelled },
+      context,
+    );
+    if (outcome === "unavailable") {
       context.error("[hitl] input_response received but the HITL store isn't configured");
       return { status: 503, body: JSON.stringify({ error: "Input requests are not available" }) };
     }
-    if (!(await authorizeHitlResponse(hitlStore, msg.requestId, userId))) {
+    if (outcome === "conflict") {
+      context.warn(`[hitl] input_response for request ${msg.requestId}: already answered differently`);
+      return {
+        status: 409,
+        body: JSON.stringify({ error: "This form was already answered differently" }),
+      };
+    }
+    if (outcome === "direct") {
+      // The model's own form: the chat turn that carries the answer resumes it.
+      return {
+        status: 404,
+        body: JSON.stringify({ error: "Answer this form with a chat request (hitlInputResponse)" }),
+      };
+    }
+    if (outcome !== "resumed") {
       context.warn(`[hitl] input_response for request ${msg.requestId}: not this user's, or not pending`);
       return notFound;
     }
-
-    const raised = await raiseHitlInputResponse(context, orchestrationId, {
-      requestId: msg.requestId,
-      data: msg.data ?? {},
-      cancelled: msg.cancelled ?? false,
-    });
-    if (!raised) return notFound;
 
     context.log(
       `[hitl] Raised input_response for user=${redactId(userId)} request=${msg.requestId}`,
@@ -537,25 +555,4 @@ export function realtimeClientEvents(keepAlive?: (work: Promise<unknown>) => voi
       void opened.settle();
     }
   };
-}
-
-// ============================================================================
-// Durable work
-// ============================================================================
-//
-// A chat turn starts as a durable job (startChatTurn, chat-turn.ts); a HITL
-// answer is the event its wait is waiting for.
-
-/**
- * Delivers the HITL input response to the wait for it. False when that wait
- * isn't running (timed out, or never started).
- */
-async function raiseHitlInputResponse(
-  context: HandlerContext,
-  orchestrationId: string,
-  response: { requestId: string; data: Record<string, unknown>; cancelled: boolean },
-): Promise<boolean> {
-  const delivered = await durable().signal(orchestrationId, HITL_INPUT_EVENT, response);
-  if (!delivered) context.warn(`[hitl] Orchestration ${orchestrationId} not running`);
-  return delivered;
 }

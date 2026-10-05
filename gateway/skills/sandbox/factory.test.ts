@@ -11,6 +11,9 @@ import { AcaSandboxesClient, DynamicSessionsClient } from "@agentforeach/platfor
 import { createSandboxBackend } from "./factory.js";
 import { getSandboxProviders, registerSandboxProvider } from "./registry.js";
 import { containersSandboxOptions } from "./containers.js";
+import { agentcoreSandboxOptions } from "./agentcore.js";
+import type { AwsAgentCoreSandboxOptions } from "@agentforeach/platform-aws/sandbox";
+import { InMemoryStorage } from "@agentforeach/storage";
 import { clearWebSocketProviderCache, registerWebSocketProvider } from "../../websocket/providers/index.js";
 import { resetWebSocketConfig } from "../../websocket/config.js";
 import { loadSkillsConfig, resetSkillsConfig } from "../config.js";
@@ -25,6 +28,11 @@ const ENV_KEYS = [
   "ACA_SANDBOX_GROUP",
   "ACA_SANDBOX_REGION",
   "ACA_POOL_MANAGEMENT_ENDPOINT",
+  "AWS_SANDBOX_RUNTIME_ARN",
+  "AWS_SANDBOX_SERVER_TOKEN",
+  "AWS_SANDBOX_STORAGE_MODE",
+  "AWS_SANDBOX_WORKSPACE_BUCKET",
+  "AWS_SANDBOX_ARCHIVE_MAX_BYTES",
 ] as const;
 const saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
 
@@ -232,6 +240,52 @@ test("cloudflare-containers: its settings resolve with defaults and map to the b
     maxExportBytes: sandbox.maxExportBytes,
   });
   assert.throws(() => containersSandboxOptions(base()), /only for provider "cloudflare-containers"/);
+});
+
+test("aws-agentcore: its settings resolve from the IaC's env vars and map to the backend's options", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sandbox-agentcore-"));
+  writeFileSync(
+    join(dir, "c.json"),
+    JSON.stringify({
+      skills: {
+        sandbox: { enabled: true, provider: "aws-agentcore", identifierStrategy: "sessionId", aws: { serverToken: "$AFE_TEST_TOKEN", browser: true } },
+      },
+    }),
+  );
+  process.env.CONFIG_FILE_JSON = join(dir, "c.json");
+  delete process.env.SANDBOX_PROVIDER;
+  process.env.AWS_SANDBOX_RUNTIME_ARN = "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/afe_sandbox-abc123";
+  process.env.AWS_SANDBOX_STORAGE_MODE = "s3-checkpoint";
+  process.env.AWS_SANDBOX_WORKSPACE_BUCKET = "afe-workspaces";
+  process.env.AWS_SANDBOX_ARCHIVE_MAX_BYTES = "1048576";
+  process.env.AFE_TEST_TOKEN = "token-from-a-secret-0123456789";
+  resetConfigCache();
+  resetSkillsConfig();
+  try {
+    const sandbox = loadSkillsConfig().sandbox!;
+    assert.equal(sandbox.provider, "aws-agentcore");
+    assert.equal(sandbox.sandboxes, undefined, "no ACA settings resolved for AWS");
+    const options = agentcoreSandboxOptions(sandbox);
+    assert.deepEqual(options, {
+      runtimeArn: process.env.AWS_SANDBOX_RUNTIME_ARN,
+      serverToken: "token-from-a-secret-0123456789",
+      storageMode: "s3-checkpoint",
+      workspaceBucket: "afe-workspaces",
+      persistenceLimits: { maxBytes: 1048576, maxFiles: 10_000 },
+      browser: true,
+      defaultTimeoutSec: 60,
+      maxTimeoutSec: 200,
+      identifierStrategy: "sessionId",
+      maxOutputChars: sandbox.maxOutputChars,
+      maxExportBytes: sandbox.maxExportBytes,
+    });
+    // The pack takes these options as they are, plus the database (checked at compile time).
+    const forPack: AwsAgentCoreSandboxOptions = { ...options, storage: new InMemoryStorage() };
+    assert.ok(forPack);
+    assert.throws(() => agentcoreSandboxOptions(base()), /only for provider "aws-agentcore"/);
+  } finally {
+    delete process.env.AFE_TEST_TOKEN;
+  }
 });
 
 test("a backend that can't be built turns the sandbox off, with one error, instead of failing", () => {

@@ -43,10 +43,42 @@
       "extraInputs": []
     },
     {
+      "name": "apiChatRunStatus",
+      "route": "api/chat/runs/{runId}",
+      "methods": [
+        "GET",
+        "OPTIONS"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": [
+        "durableClient"
+      ]
+    },
+    {
       "name": "apiHealth",
       "route": "api/health",
       "methods": [
         "GET"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": []
+    },
+    {
+      "name": "apiHitlPending",
+      "route": "api/hitl/pending",
+      "methods": [
+        "GET",
+        "OPTIONS"
+      ],
+      "authLevel": "anonymous",
+      "extraInputs": []
+    },
+    {
+      "name": "apiHitlStatus",
+      "route": "api/hitl/{id}",
+      "methods": [
+        "GET",
+        "OPTIONS"
       ],
       "authLevel": "anonymous",
       "extraInputs": []

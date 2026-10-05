@@ -94,20 +94,30 @@
 </main>
 <script>
 // A minimal client for the AgentForEach gateway, no build step. The flow:
-//   1. GET /negotiate                 -> { url } for Web PubSub (per-user token)
-//   2. WebSocket to url, subprotocol json.webpubsub.azure.v1
+//   1. GET /negotiate                 -> { url } with a per-user token, plus a
+//                                        { descriptor } where the realtime service
+//                                        isn't protocol v1 (AWS AppSync Events)
+//   2. the portable realtime client (./realtime-client.js, generated from
+//      packages/platform/src/realtime/client) connects to either, and
+//      reconnects with a fresh token when the connection drops
 //   3. POST /api/chat                 -> 202 { runId, sessionId } (Azure), or
 //                                        200 with the reply (local, synchronous)
 //   4. the reply streams as { type: "event", event: "chat", payload } frames:
 //      payload.state "delta" (delta, offset), "final" (text), "error", ...
 //   5. a form (payload.state "input_request") is answered by POST /api/chat
-//      with hitlInputResponse { requestId, data | cancelled }; a "browser_handoff"
+//      with hitlInputResponse { requestId, data | cancelled }; a gated tool's form
+//      answers 202 { resumed: true } and the run continues; a "browser_handoff"
 //      form embeds the live view of the agent's browser (docs/Browser.md)
 //   6. a scheduled job's result (a reminder) arrives as event "cron"
+//   7. recovery, where the gateway serves it: GET /api/chat/runs/{runId} for an
+//      accepted turn, then the saved reply by run id from GET /api/sessions/{id};
+//      GET /api/hitl/pending for unanswered forms; GET /api/hitl/{requestId}
+//      after an accepted answer (resumed, or approvalAccepted), until it names the
+//      run that continued (resumedRunId). Without them (404) nothing changes.
 // See docs/Architecture.md, "Real-time protocol", and docs/HITL.md.
 
 const $ = (id) => document.getElementById(id);
-const state = { baseUrl: "", headers: {}, sessionId: undefined, ws: undefined, bubbles: new Map(), forms: new Map() };
+const state = { baseUrl: "", headers: {}, sessionId: undefined, ws: undefined, bubbles: new Map(), forms: new Map(), completed: new Set(), generation: 0 };
 
 function setStatus(text) { $("status").textContent = text; }
 
@@ -230,7 +240,12 @@ async function submitForm(p, card, response, summary) {
 function onChatEvent(p) {
   if (p.state === "input_request") return showForm(p);
   if (p.state === "input_expired") return closeForm(p.requestId, "This form timed out.");
-  if (!p.runId) return;
+  // A run ends once: a recovered reply and a late live one never both show.
+  if (!p.runId || state.completed.has(p.runId)) return;
+  if (["final", "error", "aborted"].includes(p.state)) {
+    state.completed.add(p.runId);
+    if (state.completed.size > 100) state.completed.delete(state.completed.values().next().value);
+  }
   let entry = state.bubbles.get(p.runId);
   if (!entry) {
     entry = { el: addBubble("agent", ""), text: "" };
@@ -262,45 +277,158 @@ function onChatEvent(p) {
   }
 }
 
+// A frame pushed to this user: a chat event, or a scheduled job's result.
+function onFrame(data) {
+  if (data?.type === "event" && data.event === "chat" && data.payload) onChatEvent(data.payload);
+  if (data?.type === "event" && data.event === "cron" && data.payload) {
+    const r = data.payload;
+    addBubble("agent reminder", `${r.jobName}${r.summary ? `\n${r.summary}` : ""}`);
+    setAwake(true); setTimeout(() => setAwake(false), 2500);
+  }
+}
+
 async function connect() {
-  state.baseUrl = $("baseUrl").value.trim().replace(/\/+$/, "");
-  state.headers = authHeaders();
+  const baseUrl = $("baseUrl").value.trim().replace(/\/+$/, "");
+  const headers = authHeaders();
+  // Another gateway or user starts over: recoveries in flight stop, and the
+  // previous user's conversation and forms go. Reconnecting as the same user keeps them.
+  if (baseUrl !== state.baseUrl || JSON.stringify(headers) !== JSON.stringify(state.headers)) {
+    state.generation++;
+    state.sessionId = undefined;
+    state.bubbles.clear(); state.completed.clear();
+    for (const requestId of [...state.forms.keys()]) closeForm(requestId);
+    $("log").replaceChildren();
+  }
+  const generation = state.generation;
+  state.baseUrl = baseUrl;
+  state.headers = headers;
   window.afeAvatar?.(avatarSeed());
   state.ws?.close();
   state.ws = undefined;
   setStatus("Connecting…");
+  // Local runs without real-time still work: /api/chat answers synchronously.
+  const noStream = (err) => setStatus(`No live stream (${err.message}). Replies will arrive when complete.`);
   try {
-    const res = await fetch(`${state.baseUrl}/negotiate`, { headers: state.headers });
-    if (res.status === 401) throw new Error("401: set up sign-in (auth.providers) or use a dev user id locally");
-    if (!res.ok) throw new Error(`negotiate returned ${res.status}`);
-    const { url } = await res.json();
-    const ws = new WebSocket(url, "json.webpubsub.azure.v1");
-    await new Promise((resolve, reject) => {
-      ws.addEventListener("open", resolve, { once: true });
-      ws.addEventListener("error", () => reject(new Error("socket error")), { once: true });
+    const { keepConnected } = await import("./realtime-client.js");
+    const { baseUrl: base, headers: auth } = state;
+    let live, opened = false;
+    live = keepConnected({
+      // Each attempt negotiates a fresh token.
+      access: async () => {
+        const res = await fetch(`${base}/negotiate`, { headers: auth });
+        if (res.status === 401) throw new Error("401: set up sign-in (auth.providers) or use a dev user id locally");
+        if (!res.ok) throw new Error(`negotiate returned ${res.status}`);
+        const body = await res.json();
+        return body.descriptor ?? { protocol: "v1", url: body.url };
+      },
+      onMessage: onFrame,
+      maxAttempts: 8,
+      onState(phase, { error }) {
+        if (phase === "connecting" || state.ws !== live) return;
+        if (phase === "open") {
+          opened = true;
+          setStatus("Connected. Replies stream live.");
+          void restorePendingForms(generation);
+        } else if (phase === "retrying" && !opened) {
+          // The first connection failed: no live stream here, so don't keep trying.
+          live.close();
+          state.ws = undefined;
+          noStream(error);
+        } else if (phase === "retrying") setStatus(`Live stream interrupted (${error.message}). Reconnecting…`);
+        else if (phase === "closed") { state.ws = undefined; setStatus("Disconnected. Connect again to stream replies."); }
+      },
     });
-    ws.addEventListener("message", (ev) => {
-      let frame;
-      try { frame = JSON.parse(String(ev.data)); } catch { return; }
-      let data = frame.type === "message" ? frame.data : frame;
-      if (typeof data === "string") { try { data = JSON.parse(data); } catch { return; } }
-      if (data?.type === "event" && data.event === "chat" && data.payload) onChatEvent(data.payload);
-      if (data?.type === "event" && data.event === "cron" && data.payload) {
-        const r = data.payload;
-        addBubble("agent reminder", `${r.jobName}${r.summary ? `\n${r.summary}` : ""}`);
-        setAwake(true); setTimeout(() => setAwake(false), 2500);
-      }
-    });
-    ws.addEventListener("close", () => { if (state.ws === ws) setStatus("Disconnected. Connect again to stream replies."); });
-    state.ws = ws;
-    setStatus("Connected. Replies stream over Web PubSub.");
+    state.ws = live;
   } catch (err) {
-    // Local runs without Web PubSub still work: /api/chat answers synchronously.
-    setStatus(`No live stream (${err.message}). Replies will arrive when complete.`);
+    noStream(err);
   }
   $("message").disabled = false;
   $("sendBtn").disabled = false;
   $("message").focus();
+}
+
+// Live delivery can drop a reply (a reconnect, a missed frame). Where the gateway
+// serves run status, the saved reply is authoritative: poll it, and show the reply
+// by run id. A gateway without the route answers 404 (or, cross-origin, fails like a
+// network error every time), and then the page carries on as before.
+async function recoverRun(runId, sessionId, generation, baseUrl, headers) {
+  let reachable = false, misses = 0;
+  try {
+    for (let attempt = 0; attempt < 220; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      if (generation !== state.generation || state.completed.has(runId)) return;
+      const response = await fetch(`${baseUrl}/api/chat/runs/${encodeURIComponent(runId)}`, { headers, signal: AbortSignal.timeout(10000) }).catch(() => null);
+      if (!response) { if (!reachable && ++misses >= 5) return; continue; }
+      reachable = true;
+      if (response.status === 404) return; // no run-status route on this gateway
+      if (response.status === 429 || response.status >= 500) continue;
+      if (!response.ok) throw new Error(`run status returned ${response.status}`);
+      const run = await response.json();
+      if (["accepted", "running"].includes(run.status)) continue;
+      if (generation !== state.generation || state.completed.has(runId)) return;
+      if (run.status === "completed") {
+        const saved = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}`, { headers, signal: AbortSignal.timeout(10000) }).catch(() => null);
+        if (!saved || saved.status === 429 || saved.status >= 500) continue;
+        if (!saved.ok) throw new Error("Could not recover the saved reply");
+        const session = await saved.json();
+        const reply = session.messages?.filter((message) => message.runId === runId && message.role === "assistant").at(-1);
+        if (generation !== state.generation || state.completed.has(runId)) return;
+        if (!reply) throw new Error("Run completed; reopen session history to view the reply");
+        onChatEvent({ state: "final", runId, sessionId, text: reply.content, model: "saved reply", durationMs: (run.finishedAtMs ?? 0) - (run.startedAtMs ?? 0) });
+      } else if (run.status === "aborted") onChatEvent({ state: "aborted", runId, sessionId });
+      else if (run.status === "awaiting_input") await restorePendingForms(generation);
+      else onChatEvent({ state: "error", runId, sessionId, error: run.error ?? "Run requires attention. Open session history." });
+      return;
+    }
+    throw new Error("Status check timed out. Open session history to check the reply.");
+  } catch (error) {
+    if (generation === state.generation && !state.completed.has(runId)) setStatus(error.message);
+  }
+}
+
+/** Show the forms still waiting for an answer (after a reconnect), each once. */
+async function restorePendingForms(generation) {
+  try {
+    const response = await fetch(`${state.baseUrl}/api/hitl/pending`, { headers: state.headers });
+    if (!response.ok || generation !== state.generation) return;
+    const body = await response.json();
+    if (generation !== state.generation) return;
+    for (const request of body.requests ?? []) if (!state.forms.has(request.requestId)) showForm(request);
+  } catch { /* a reconnect tries again */ }
+}
+
+/**
+ * Follow an accepted answer (resumed, or approvalAccepted) to the continuation's saved reply.
+ * GET /api/hitl/{requestId} names the run that continued after the answer (resumedRunId) once it has finished.
+ */
+async function recoverApproval(requestId, generation, baseUrl, headers) {
+  let reachable = false, misses = 0;
+  for (let attempt = 0; attempt < 220; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    if (generation !== state.generation) return;
+    try {
+      const response = await fetch(`${baseUrl}/api/hitl/${encodeURIComponent(requestId)}`, { headers, signal: AbortSignal.timeout(10000) }).catch(() => null);
+      // As in recoverRun: a gateway without the route answers 404, or (cross-origin) never answers.
+      if (!response) { if (!reachable && ++misses >= 5) return; continue; }
+      reachable = true;
+      if (response.status === 404) return;
+      if (!response.ok) { if (response.status >= 500 || response.status === 429) continue; throw new Error("Unable to check approval status"); }
+      const request = await response.json();
+      const runId = request.resumedRunId;
+      if (generation !== state.generation || (runId && state.completed.has(runId))) return;
+      if (runId) {
+        const saved = await fetch(`${baseUrl}/api/sessions/${encodeURIComponent(request.sessionId)}`, { headers });
+        if (!saved.ok) throw new Error("Unable to recover the saved reply");
+        const session = await saved.json();
+        const reply = session.messages?.filter((m) => m.runId === runId && m.role === "assistant").at(-1);
+        if (generation !== state.generation || state.completed.has(runId)) return;
+        if (reply) onChatEvent({ state: "final", runId, sessionId: request.sessionId, text: reply.content, model: "saved reply", durationMs: 0 });
+        await restorePendingForms(generation);
+      } else if (["pending", "responded", "cancelled"].includes(request.status)) continue;
+      else setStatus(request.status === "expired" ? "The input request expired." : "The continuation failed. Check session history before retrying an action.");
+      return;
+    } catch { if (attempt === 219) setStatus("Could not recover the continuation. Check session history."); }
+  }
 }
 
 async function send(text) {
@@ -309,17 +437,23 @@ async function send(text) {
 }
 
 async function post(fields) {
+  const generation = state.generation, baseUrl = state.baseUrl, headers = { ...state.headers };
   $("sendBtn").disabled = true;
   try {
-    const res = await fetch(`${state.baseUrl}/api/chat`, {
+    const res = await fetch(`${baseUrl}/api/chat`, {
       method: "POST",
-      headers: { "content-type": "application/json", ...state.headers },
+      headers: { "content-type": "application/json", ...headers },
       body: JSON.stringify({ ...fields, sessionId: state.sessionId, idempotencyKey: crypto.randomUUID() }),
     });
     const body = await res.json().catch(() => ({}));
-    if (res.status === 202) {
+    if (generation !== state.generation) return;
+    if (res.status === 202 && (body.approvalAccepted || body.resumed)) {
+      setStatus("Response accepted. Continuing…");
+      void recoverApproval(body.requestId, generation, baseUrl, headers);
+    } else if (res.status === 202) {
       state.sessionId = body.sessionId;
-      if (!state.ws) setStatus("Accepted, but there's no live stream to show the reply. Connect to Web PubSub.");
+      if (!state.ws) setStatus("Accepted, but there's no live stream to show the reply. Connect to real-time messaging.");
+      void recoverRun(body.runId, body.sessionId, generation, baseUrl, headers);
     } else if (res.ok && typeof body.text === "string") {
       state.sessionId = body.sessionId ?? state.sessionId;
       addBubble("agent", body.text);

@@ -48,6 +48,9 @@ export interface SandboxJsonConfig {
   /** Cloudflare Containers settings (provider "cloudflare-containers"). */
   containers?: ContainersSandboxJsonConfig;
 
+  /** Bedrock AgentCore Runtime settings (provider "aws-agentcore"). */
+  aws?: AgentCoreSandboxJsonConfig;
+
   /**
    * One sandbox per user ("userId", default) or per conversation
    * ("sessionId"). Applies to both backends; overrides aca.identifierStrategy.
@@ -179,6 +182,56 @@ export interface ContainersSandboxJsonConfig {
   maxTimeoutSec?: number;
 }
 
+/**
+ * Raw shape of agentforeach.json "skills.sandbox.aws" (Bedrock AgentCore
+ * Runtime, docs/AWS-Sandbox.md). Each field supports "$ENV_VAR", and falls
+ * back to the env var named beside it, so the IaC can inject it.
+ */
+export interface AgentCoreSandboxJsonConfig {
+  /** The runtime's ARN (AWS_SANDBOX_RUNTIME_ARN). */
+  runtimeArn?: string;
+  /** The runtime endpoint (AWS_SANDBOX_QUALIFIER; default DEFAULT). */
+  qualifier?: string;
+  /** Default: the ARN's region (AWS_SANDBOX_REGION). */
+  region?: string;
+  /** The runtime's SANDBOX_SERVER_TOKEN (AWS_SANDBOX_SERVER_TOKEN). A secret. */
+  serverToken?: string;
+  /**
+   * "ephemeral" (default): files live as long as the runtime session.
+   * "s3-checkpoint": /mnt/data is kept in S3 between sessions
+   * (AWS_SANDBOX_STORAGE_MODE).
+   */
+  storageMode?: "ephemeral" | "s3-checkpoint";
+  /** s3-checkpoint: the never-versioned bucket of checkpoints (AWS_SANDBOX_WORKSPACE_BUCKET). */
+  workspaceBucket?: string;
+  /**
+   * s3-checkpoint: what a checkpoint keeps; must equal the runtime's
+   * SANDBOX_ARCHIVE_MAX_BYTES / _FILES (AWS_SANDBOX_ARCHIVE_MAX_BYTES /
+   * AWS_SANDBOX_ARCHIVE_MAX_FILES). Default 32 MiB and 10,000 entries.
+   */
+  persistenceLimits?: { maxBytes?: number; maxFiles?: number };
+  /** The runtime's image was built with SANDBOX_IMAGE_BROWSER=1 (default false). */
+  browser?: boolean;
+  /** Default exec timeout in seconds (default 60). */
+  defaultTimeoutSec?: number;
+  /** Maximum exec timeout in seconds (default 200). */
+  maxTimeoutSec?: number;
+}
+
+/** Resolved Bedrock AgentCore Runtime settings. */
+export interface AgentCoreSandboxConfig {
+  runtimeArn: string;
+  qualifier?: string;
+  region?: string;
+  serverToken: string;
+  storageMode: "ephemeral" | "s3-checkpoint";
+  workspaceBucket?: string;
+  persistenceLimits?: { maxBytes: number; maxFiles: number };
+  browser: boolean;
+  defaultTimeoutSec: number;
+  maxTimeoutSec: number;
+}
+
 /** Resolved Cloudflare Containers settings. */
 export interface ContainersSandboxConfig {
   instance: string;
@@ -197,6 +250,8 @@ export interface SandboxConfig {
   sandboxes?: AcaSandboxesConfig;
   /** Present when provider is "cloudflare-containers". */
   containers?: ContainersSandboxConfig;
+  /** Present when provider is "aws-agentcore". */
+  aws?: AgentCoreSandboxConfig;
   /*
    * The remaining fields apply to Dynamic Sessions (and the timeouts to its
    * fallback use); ACA Sandboxes reads its own timeouts from `sandboxes`.

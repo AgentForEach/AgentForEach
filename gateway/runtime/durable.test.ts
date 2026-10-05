@@ -9,15 +9,20 @@ import { DurableRegistry, InMemoryDurable, type Durable } from "@agentforeach/pl
 import { LEGACY_KINDS } from "@agentforeach/platform-azure";
 import { setDurableForTests } from "./durable.js";
 import { workflows } from "../workflows.js";
-import { CHAT_TURN_KIND, startChatTurn, type ChatTurnRequest } from "../handlers/chat-turn.js";
+import { InMemoryStorage } from "@agentforeach/storage";
+import { CHAT_TURN_KIND, setChatTurnDepsForTests, startChatTurn, type ChatTurnRequest } from "../handlers/chat-turn.js";
+import { ChatRunStore } from "../sessions/chat-runs.js";
 import { CHANNEL_TURN_KIND } from "../handlers/channel-webhook.js";
-import { CRON_RUN_KIND, CRON_SCHEDULER_KIND, cronRunJob, executeAndRecordJob, renewClaimWhileRunning, schedulerTick, wakeOrStartScheduler } from "../cron/orchestrator.js";
+import { CRON_RUN_KIND, CRON_SCHEDULER_KIND, cronRunJob, executeAndRecordJob, renewClaimWhileRunning, schedulerTick, startForceRun, wakeOrStartScheduler } from "../cron/orchestrator.js";
 import { HITL_ORCHESTRATION_NAME } from "../hitl/types.js";
-import { setCronStore, type CronStore } from "../cron/store.js";
+import { CronStore, setCronStore } from "../cron/store.js";
 import { FALLBACK_WAKE_INTERVAL_MS, getMaxDueJobsPerTick, getSchedulerInstanceId, getSchedulerShardCount, normalizeSchedulerShardId } from "../cron/config.js";
-import type { CronJob } from "../cron/types.js";
+import type { CronJob, CronJobCreate } from "../cron/types.js";
 
-afterEach(() => setDurableForTests(undefined));
+afterEach(() => {
+  setDurableForTests(undefined);
+  setChatTurnDepsForTests();
+});
 
 async function until(check: () => boolean | Promise<boolean>): Promise<void> {
   for (let i = 0; i < 200; i++) {
@@ -52,14 +57,17 @@ test("a chat turn is a duplicate while a job with its id is running, and starts 
   });
   const durable = new InMemoryDurable(registry);
   setDurableForTests(durable);
+  const runs = new ChatRunStore(new InMemoryStorage());
+  setChatTurnDepsForTests({ runs: () => runs });
   const turn = (runId: string) => ({ userId: "u", message: "hi", runId }) as ChatTurnRequest;
+  const ctx = { invocationId: "i", log() {}, warn() {}, error() {}, trace() {} };
 
-  assert.deepEqual(await startChatTurn("chat-abc", turn("first")), { duplicate: false });
+  assert.deepEqual(await startChatTurn(ctx, "chat-abc", turn("first")), { duplicate: false });
   await until(() => ran.length === 1);
-  assert.deepEqual(await startChatTurn("chat-abc", turn("retry")), { duplicate: true });
+  assert.deepEqual(await startChatTurn(ctx, "chat-abc", turn("retry")), { duplicate: true });
   release();
   await until(async () => (await durable.status("chat-abc"))?.status === "completed");
-  assert.deepEqual(await startChatTurn("chat-abc", turn("again")), { duplicate: false });
+  assert.deepEqual(await startChatTurn(ctx, "chat-abc", turn("again")), { duplicate: false });
   await until(() => ran.length === 2);
   assert.deepEqual(ran, ["first", "again"]);
 });
@@ -187,19 +195,26 @@ test("a running cron job renews its claim on an interval until it stops", async 
 
 test("a chat turn re-run after an interruption asks the user to resend instead of running again", async () => {
   const { chatTurnJob } = await import("../handlers/chat-turn.js");
+  const runs = new ChatRunStore(new InMemoryStorage());
+  setChatTurnDepsForTests({ runs: () => runs, push: async () => {} });
+  await runs.prepare({ runId: "r-1", userId: "u", fingerprint: "f", instanceId: "chat-x" });
+  await runs.begin("u", "r-1");
   const warned: unknown[] = [];
   const ctx = { instanceId: "chat-x", invocationId: "i", attempt: 2, log() {}, warn: (...a: unknown[]) => warned.push(a), error() {}, trace() {} };
   // With attempt 2 the turn must not reach the agent client (which would need a whole gateway).
   await chatTurnJob.run({ userId: "u", message: "hi", runId: "r-1" } as ChatTurnRequest, ctx);
   assert.equal(warned.length, 1);
   assert.match(String((warned[0] as unknown[])[0]), /interrupted/);
+  const run = await runs.get("u", "r-1");
+  assert.equal(run?.status, "interrupted");
+  assert.equal(run?.retryable, true);
 });
 
 test("a cron run renews its claim for as long as it executes", async () => {
   const renewed: string[] = [];
   const job = { id: "job-1", userId: "u", state: { runningToken: "tok" } } as unknown as CronJob;
   setCronStore({
-    beginClaimedRun: async () => job,
+    beginClaimedRun: async () => ({ status: "started", job }),
     renewRunningClaim: async (id: string, _u: string, token: string) => (renewed.push(`${id}:${token}`), true),
     recordRun: async () => {},
     applyResult: async () => {},
@@ -216,4 +231,112 @@ test("a cron run renews its claim for as long as it executes", async () => {
   const after = renewed.length;
   await new Promise((r) => setTimeout(r, 40));
   assert.equal(renewed.length, after, "not after it ended");
+});
+
+// --- A run revalidates its job when it starts; a force-run is named by its claim ---
+
+/** A real cron store on in-memory storage, with one recurring job. */
+async function storeWithJob(overrides: Partial<CronJobCreate> = {}) {
+  const store = new CronStore(new InMemoryStorage());
+  await store.initialize();
+  setCronStore(store);
+  const job = await store.createJob({
+    userId: "u1",
+    name: "stretch",
+    enabled: true,
+    schedule: { kind: "every", everyMs: 3_600_000 },
+    sessionTarget: "isolated",
+    wakeMode: "now",
+    payload: { kind: "agentTurn", message: "stretch" },
+    ...overrides,
+  });
+  return { store, job };
+}
+
+/** As storeWithJob, with the job claimed for a run (as a force-run claims it). */
+async function claimedJob(overrides: Partial<CronJobCreate> = {}) {
+  const { store, job } = await storeWithJob(overrides);
+  return { store, claimed: (await store.claimJobForForceRun(job.id, job.userId))! };
+}
+
+/** Run a claimed job, counting how often it executes. */
+async function runCounting(job: CronJob) {
+  let executed = 0;
+  const result = await executeAndRecordJob(job, {
+    execute: async () => (executed++, { status: "ok", durationMs: 1 }),
+  });
+  return { result, executed };
+}
+
+test("a job turned off after its run was queued doesn't run; the claim is cleared and the skip recorded", async () => {
+  const { store, claimed } = await claimedJob();
+  await store.updateJob(claimed.id, "u1", { enabled: false });
+  const { result, executed } = await runCounting(claimed);
+  assert.equal(executed, 0);
+  assert.equal(result.status, "skipped");
+  assert.match(result.error ?? "", /turned off/);
+  assert.equal((await store.getJob(claimed.id, "u1"))?.state.runningToken, undefined);
+  assert.deepEqual((await store.getRuns(claimed.id, "u1")).map((r) => r.status), ["skipped"]);
+});
+
+test("a job that expired after its run was queued doesn't run", async () => {
+  const { store, claimed } = await claimedJob({ expiresAt: Date.now() + 20 });
+  await new Promise((r) => setTimeout(r, 30));
+  const { result, executed } = await runCounting(claimed);
+  assert.equal(executed, 0);
+  assert.match(result.error ?? "", /expired/);
+  assert.equal((await store.getJob(claimed.id, "u1"))?.enabled, false);
+});
+
+test("a job that reached maxRuns after its run was queued doesn't run", async () => {
+  const { store, claimed } = await claimedJob({ maxRuns: 3 });
+  await store.updateJob(claimed.id, "u1", { state: { runCount: 3 } });
+  const { result, executed } = await runCounting(claimed);
+  assert.equal(executed, 0);
+  assert.match(result.error ?? "", /maxRuns/);
+  assert.equal((await store.getJob(claimed.id, "u1"))?.enabled, false);
+});
+
+test("a run whose claim token is no longer the job's doesn't run, and records nothing", async () => {
+  const { store, claimed } = await claimedJob();
+  const stale = { ...claimed, state: { ...claimed.state, runningToken: "an-older-claim" } };
+  const { result, executed } = await runCounting(stale);
+  assert.equal(executed, 0);
+  assert.match(result.error ?? "", /duplicate-suppressed/);
+  assert.equal((await store.getJob(claimed.id, "u1"))?.state.runningToken, claimed.state.runningToken);
+  assert.deepEqual(await store.getRuns(claimed.id, "u1"), []);
+});
+
+test("a job edited after its run was queued runs as edited", async () => {
+  const { store, claimed } = await claimedJob();
+  await store.updateJob(claimed.id, "u1", { payload: { kind: "agentTurn", message: "drink water" } });
+  const seen: string[] = [];
+  const result = await executeAndRecordJob(claimed, {
+    execute: async (job) => (seen.push(job.payload.kind === "agentTurn" ? job.payload.message : ""), { status: "ok", durationMs: 1 }),
+  });
+  assert.equal(result.status, "ok");
+  assert.deepEqual(seen, ["drink water"]);
+});
+
+test("a retried force-run starts one run, named by its claim", async () => {
+  const { store, job } = await storeWithJob();
+  const started: Array<string | undefined> = [];
+  setDurableForTests({
+    startJob: async (_kind: string, _input: unknown, id?: string) => (started.push(id), { started: true, id: id ?? "x" }),
+  } as unknown as Durable);
+
+  const first = await startForceRun(job.id, "u1");
+  const retried = await startForceRun(job.id, "u1");
+  assert.ok(first);
+  assert.equal(retried, null, "the retry finds the run in flight");
+  const token = (await store.getJob(job.id, "u1"))?.state.runningToken;
+  assert.deepEqual(started, [`force-run-${job.id}-${token}`]);
+  assert.equal(first.instanceId, started[0]);
+});
+
+test("a force-run that can't be started releases its claim", async () => {
+  const { store, job } = await storeWithJob();
+  setDurableForTests({ startJob: async () => { throw new Error("throttled"); } } as unknown as Durable);
+  await assert.rejects(startForceRun(job.id, "u1"), /throttled/);
+  assert.equal((await store.getJob(job.id, "u1"))?.state.runningToken, undefined);
 });

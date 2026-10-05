@@ -14,8 +14,11 @@
  * - CORS: a route that handles OPTIONS answers its own preflight; for one
  *   that doesn't, the host answers it (where it does: Azure's host config,
  *   the Worker host);
- * - the invocation scope: handlers run in one, and background work goes on
- *   after the response and finishes.
+ * - the invocation scope: handlers run in one, and background work finishes:
+ *   after the response on a host that keeps running then
+ *   (`backgroundAfterResponse`), before it on one that freezes (Lambda);
+ * - `deadlineAt`: in the future when set, and always set on a host that
+ *   freezes, which waits for background work only until then.
  *
  *   import { hostConformanceTable, runHostConformance } from "@agentforeach/platform/host/conformance";
  */
@@ -37,12 +40,16 @@ export interface HostConformanceOptions {
   answersPreflights?: boolean;
   /** The host turns a handler that throws into a 500. Default true. */
   handlesErrors?: boolean;
+  /** As `HostInfo.backgroundAfterResponse`: false for a host that awaits background work before it answers. Default true. */
+  backgroundAfterResponse?: boolean;
 }
 
 export function runHostConformance(options: HostConformanceOptions): void {
   const base = (options.baseUrl ?? "https://host.test").replace(/\/$/, "");
   const send = (path: string, init?: RequestInit) => options.fetch(new Request(`${base}${path}`, init));
   const body = async (response: Response) => JSON.parse(await response.text()) as Record<string, unknown>;
+  const afterResponse = options.backgroundAfterResponse !== false;
+  const backgroundKey = () => `bg-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
   describe(`host conformance: ${options.name}`, () => {
     it("passes {name} and {*rest} params decoded, query values (repeated too), headers and the raw body", async () => {
@@ -122,8 +129,23 @@ export function runHostConformance(options: HostConformanceOptions): void {
       assert.deepEqual(await body(await send("/conformance/scope")), { inScope: true, kind: "http", sameId: true });
     });
 
-    it("keeps background work going after the response, to completion", async () => {
-      const key = `bg-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    it("gives handlers a deadlineAt in the future, or none where background work may outlive the response", async () => {
+      const sent = Date.now();
+      const { deadlineAt } = await body(await send("/conformance/deadline"));
+      if (!afterResponse) assert.equal(typeof deadlineAt, "number", "it bounds the wait for background work");
+      assert.ok(deadlineAt === null || (typeof deadlineAt === "number" && deadlineAt > sent), `deadlineAt ${deadlineAt}`);
+    });
+
+    it("finishes background work before it answers, on a host that runs nothing after", { skip: afterResponse }, async () => {
+      const key = backgroundKey();
+      const res = await send(`/conformance/background/${key}`, { method: "POST" });
+      assert.equal(res.status, 202);
+      assert.deepEqual(await body(res), { state: "started" }, "the handler answered before its work was done");
+      assert.equal((await body(await send(`/conformance/background/${key}`))).state, "done", "done by the time the response came");
+    });
+
+    it("keeps background work going after the response, to completion", { skip: !afterResponse }, async () => {
+      const key = backgroundKey();
       const res = await send(`/conformance/background/${key}`, { method: "POST" });
       assert.equal(res.status, 202);
       assert.deepEqual(await body(res), { state: "started" }, "the response didn't wait for it");

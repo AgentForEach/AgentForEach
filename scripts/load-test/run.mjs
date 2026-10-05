@@ -21,7 +21,8 @@
  * Needs Node 22+ (global WebSocket).
  */
 
-import { createHmac, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
+import { testToken } from "../lib/test-auth.mjs";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -100,14 +101,8 @@ function pickScenario(weights) {
 // Auth
 // ============================================================================
 
-const b64url = (v) => Buffer.from(typeof v === "string" ? v : JSON.stringify(v)).toString("base64url");
-
 function jwtFor(opts, userId) {
-  const now = Math.floor(Date.now() / 1000);
-  const header = b64url({ alg: "HS256", typ: "JWT" });
-  const payload = b64url({ sub: userId, iss: opts.jwtIssuer, aud: opts.jwtAudience, iat: now, exp: now + 6 * 3600 });
-  const sig = createHmac("sha256", opts.jwtSecret).update(`${header}.${payload}`).digest("base64url");
-  return `${header}.${payload}.${sig}`;
+  return testToken(opts.jwtSecret, userId, { ttlSeconds: 6 * 3600, issuer: opts.jwtIssuer, audience: opts.jwtAudience });
 }
 
 function authHeaders(opts, userId) {

@@ -31,6 +31,7 @@ export {
   type SandboxProviderFactory,
 } from "./registry.js";
 export { containersSandboxOptions, type ContainersSandboxOptions } from "./containers.js";
+export { agentcoreSandboxOptions, type AgentCoreSandboxOptions } from "./agentcore.js";
 export {
   SandboxToolHandler,
   getSandboxToolDefinitions,
@@ -50,6 +51,8 @@ export type {
   SandboxProvider,
   AcaSandboxesConfig,
   AcaSandboxesJsonConfig,
+  AgentCoreSandboxConfig,
+  AgentCoreSandboxJsonConfig,
   ContainersSandboxConfig,
   ContainersSandboxJsonConfig,
   SandboxExecArgs,

@@ -19,7 +19,8 @@
  * One-shot: the wait completes after the answer or the timeout.
  */
 
-import type { WaitDefinition } from "@agentforeach/platform";
+import { randomUUID } from "node:crypto";
+import { effectiveDeadline, type HandlerContext, type WaitDefinition } from "@agentforeach/platform";
 import type {
   InputRequest,
   InputResponse,
@@ -33,8 +34,10 @@ import { handleMcpToolCall } from "../mcp/index.js";
 import { REQUEST_USER_INPUT_TOOL_NAME } from "./tool.js";
 import type { SessionStore, SessionMessage } from "../sessions/index.js";
 import { getHitlStore } from "./authorize.js";
+import type { HitlStore } from "./store.js";
 import { redactId } from "../utils/redact.js";
 import { noteInterruptedTurn, turnExecutionId } from "../sessions/interrupted.js";
+import { DEFAULT_RUN_DEADLINE_MS } from "../client/runner.js";
 
 
 /** Waits between resume attempts while the session is busy (~2.5 min total). */
@@ -83,6 +86,8 @@ export async function resumeAfterInput(input: {
   response: InputResponse;
   /** The durable execution resuming (see `SendRequest.executionId`). */
   executionId?: string;
+  /** The invocation resuming it: the resumed turn ends by its `deadlineAt`. */
+  context?: Pick<HandlerContext, "deadlineAt">;
 }): Promise<{ success: boolean; error?: string }> {
   console.log(
     `[hitl] Resume STARTED — request=${input.requestId} user=${redactId(input.userId)} ` +
@@ -117,41 +122,50 @@ export async function resumeAfterInput(input: {
         `tool=${runState.pendingToolCall.name} session=${redactId(runState.sessionId)}`,
     );
 
-    if (runState.status !== "pending") {
-      console.error(`[hitl] Resume — wrong status: ${runState.status}`);
+    // The answer saved when the user sent it is the one that counts, not the
+    // event that delivered it (a re-delivered event can't change it).
+    const response = resumeAnswer(runState, input.response);
+
+    // Claim the request: only one resume moves it out of pending.
+    const claimed = await hitlStore.updateStatus(
+      input.requestId,
+      input.userId,
+      response.cancelled ? "cancelled" : "responded",
+    );
+    if (!claimed) {
+      console.error(`[hitl] Resume — request ${input.requestId} is no longer pending (status was ${runState.status})`);
       return {
         success: false,
-        error: `HITL request is ${runState.status}, not pending`,
+        error: `HITL request ${input.requestId} is not pending`,
       };
     }
+    console.log(`[hitl] Resume — marked as ${response.cancelled ? "cancelled" : "responded"}`);
 
-    // Mark as responded
-    await hitlStore.updateStatus(input.requestId, input.userId, "responded");
-    console.log(`[hitl] Resume — marked as responded`);
-
-    if (input.response.cancelled) {
+    let resumedRunId: string | undefined;
+    if (response.cancelled) {
       // User cancelled — tell the LLM the tool call was cancelled
       console.log(`[hitl] Resume — user cancelled, resuming with cancel message`);
-      await resumeRunWithResult(
+      resumedRunId = await resumeRunWithResult(
         client,
         runState,
         "User cancelled this action.",
         input.executionId,
+        input.context,
       );
     } else if (runState.pendingToolCall.name === REQUEST_USER_INPUT_TOOL_NAME) {
       // request_user_input: the user's response IS the tool result.
       // No MCP tool to execute — return the user's data directly to the LLM.
       const toolResult = JSON.stringify({
         ok: true,
-        userInput: input.response.data,
+        userInput: response.data,
       });
       console.log(`[hitl] Resume — request_user_input, toolResult=${toolResult}`);
-      await resumeRunWithResult(client, runState, toolResult, input.executionId);
+      resumedRunId = await resumeRunWithResult(client, runState, toolResult, input.executionId, input.context);
     } else {
       // Regular HITL-gated MCP tool: merge user data with LLM args, then execute
       const mergedArgs = {
         ...runState.pendingToolCall.arguments,
-        ...input.response.data,
+        ...response.data,
       };
 
       // Execute the actual MCP tool with the merged args
@@ -170,9 +184,10 @@ export async function resumeAfterInput(input: {
       }
 
       // Resume the run with the tool result
-      await resumeRunWithResult(client, runState, toolResult, input.executionId);
+      resumedRunId = await resumeRunWithResult(client, runState, toolResult, input.executionId, input.context);
     }
 
+    await recordContinuation(hitlStore, input.requestId, input.userId, resumedRunId);
     console.log(`[hitl] Resume COMPLETED — request=${input.requestId}`);
     return { success: true };
   } catch (err) {
@@ -181,6 +196,39 @@ export async function resumeAfterInput(input: {
     console.error(`[hitl] Resume FAILED: ${msg}`);
     if (stack) console.error(`[hitl] Resume stack:`, stack);
     return { success: false, error: msg };
+  }
+}
+
+/**
+ * The answer a resume acts on: the one saved on the request when the user
+ * sent it (hitl/answer.ts), or, for a request answered before answers were
+ * saved, the delivered event.
+ */
+export function resumeAnswer(runState: HitlRunState, delivered: InputResponse): InputResponse {
+  const saved = runState.answer;
+  return saved ? { requestId: runState.requestId, data: saved.data, cancelled: saved.cancelled } : delivered;
+}
+
+/**
+ * Record how the answer's continuation ended, for `GET /api/hitl/{id}`: the
+ * run that continued the conversation, or `failed` when there is none.
+ * Best effort; the run itself is unaffected.
+ */
+async function recordContinuation(
+  hitlStore: Pick<HitlStore, "transition">,
+  requestId: string,
+  userId: string,
+  resumedRunId: string | undefined,
+): Promise<void> {
+  try {
+    await hitlStore.transition(requestId, userId, (state) =>
+      state.resumedRunId ? undefined : resumedRunId ? { ...state, resumedRunId } : { ...state, status: "failed" },
+    );
+  } catch (err) {
+    console.warn(
+      `[hitl] Failed to record the continuation of request=${requestId}:`,
+      err instanceof Error ? err.message : err,
+    );
   }
 }
 
@@ -216,12 +264,14 @@ export function siblingResultMessages(runState: HitlRunState, timestamp: string)
   }));
 }
 
+/** Returns the continuation's run id, or undefined when it failed. */
 async function resumeRunWithResult(
   client: any,
   runState: HitlRunState,
   toolResult: string,
   executionId?: string,
-): Promise<void> {
+  context: Pick<HandlerContext, "deadlineAt"> = {},
+): Promise<string | undefined> {
   const { originalRequest, pendingToolCall } = runState;
   const sessionId = originalRequest.sessionId ?? runState.sessionId;
   const sessionStore = (client as any)._sessionStore as SessionStore | undefined;
@@ -284,30 +334,43 @@ async function resumeRunWithResult(
   try {
     // The user may have sent a new message after answering; the session is
     // then busy for that turn. Wait for it rather than dropping the answer.
-    const send = () => client.send(
-      {
-        userId: originalRequest.userId,
-        agentId: originalRequest.agentId,
-        message: "Continue the conversation naturally based on the tool execution result in the conversation history.",
-        sessionId,
-        providerId: originalRequest.providerId,
-        model: originalRequest.model,
-        reasoningEffort: originalRequest.reasoningEffort,
-        temperature: originalRequest.temperature,
-        channelName: originalRequest.channelName,
-        userTimezone: originalRequest.userTimezone,
-        idempotencyKey: `hitl-resume-${runState.requestId}`,
-        executionId,
-        metadata: {
-          ...originalRequest.metadata,
-          _hitlContinuation: "true",
-          _hitlRequestId: runState.requestId,
-        },
-        scheduled: true,
+    // Each attempt is a run of its own, with a status record (GET
+    // /api/chat/runs/{runId}): a fresh id per attempt, since a busy session
+    // refuses the attempt after its credits were reserved under that id.
+    // Loaded lazily: chat-turn reaches this module through the runner.
+    const { trackChatRun } = await import("../handlers/chat-turn.js");
+    const message = "Continue the conversation naturally based on the tool execution result in the conversation history.";
+    const request = {
+      userId: originalRequest.userId,
+      agentId: originalRequest.agentId,
+      message,
+      sessionId,
+      providerId: originalRequest.providerId,
+      model: originalRequest.model,
+      reasoningEffort: originalRequest.reasoningEffort,
+      temperature: originalRequest.temperature,
+      channelName: originalRequest.channelName,
+      userTimezone: originalRequest.userTimezone,
+      idempotencyKey: `hitl-resume-${runState.requestId}`,
+      executionId,
+      deadlineAt: effectiveDeadline(DEFAULT_RUN_DEADLINE_MS, context),
+      metadata: {
+        ...originalRequest.metadata,
+        _hitlContinuation: "true",
+        _hitlRequestId: runState.requestId,
       },
-      // No explicit stream callback — the runner auto-pushes to WebSocket
-      // via realtimeEnabled + sendEventToUser (shared websocket module).
-    );
+      scheduled: true,
+    };
+    const send = () => {
+      const runId = randomUUID();
+      return trackChatRun(
+        { runId, userId: request.userId, sessionId, message, instanceId: `hitl-${runState.requestId}` },
+        (m) => console.warn(m),
+        // No explicit stream callback — the runner auto-pushes to WebSocket
+        // via realtimeEnabled + sendEventToUser (shared websocket module).
+        () => client.send({ ...request, runId }),
+      );
+    };
     let response = await send();
     for (const waitMs of RESUME_BUSY_BACKOFF_MS) {
       if (response.error !== "SESSION_BUSY") break;
@@ -319,6 +382,7 @@ async function resumeRunWithResult(
       `[hitl] Resumed run=${runState.runId} session=${redactId(sessionId)} ` +
         `result_status=${response.status} textLen=${response.text?.length ?? 0}`,
     );
+    return response.status === "failed" ? undefined : response.runId;
   } catch (err) {
     console.error(
       `[hitl] Failed to resume run=${runState.runId}:`,
@@ -336,6 +400,7 @@ async function resumeRunWithResult(
     } catch {
       // Non-fatal
     }
+    return undefined;
   }
 }
 
@@ -360,7 +425,7 @@ async function resumeRunWithResult(
 export async function expireInputRequest(input: {
   requestId: string;
   userId: string;
-}): Promise<{ success: boolean; error?: string }> {
+}): Promise<{ success: boolean; error?: string; answered?: boolean }> {
   try {
     const client = await getAgentClient();
     const hitlStore = getHitlStore(client);
@@ -380,8 +445,15 @@ export async function expireInputRequest(input: {
       return { success: false, error: `No HITL request: ${input.requestId}` };
     }
 
-    // 1. Mark as timed_out in store
-    await hitlStore.updateStatus(input.requestId, input.userId, "timed_out");
+    // 1. Mark as timed_out in store: only a pending request nobody answered.
+    //    One no longer pending was resolved in time, and an answer saved
+    //    before the deadline wins (`answered`: the caller resumes with it).
+    const expired = await hitlStore.transition(input.requestId, input.userId, (state) =>
+      state.status === "pending" && !state.answer ? { ...state, status: "timed_out" } : undefined,
+    );
+    if (!expired?.updated) {
+      return { success: true, answered: expired?.state.status === "pending" && !!expired.state.answer };
+    }
 
     // 2. Persist a brief timeout note to the session so the user
     //    has context when they return. The original user message was
@@ -463,7 +535,9 @@ export const hitlWait: WaitDefinition<HitlWaitInput, InputResponse> = {
     // already marked responded and the tool may have run, so don't resume
     // a second time; tell the user instead (sessions/interrupted.ts).
     if ((context.attempt ?? 1) > 1) {
-      const runState = await getHitlStore(await getAgentClient())?.get(input.requestId, input.userId);
+      const hitlStore = getHitlStore(await getAgentClient());
+      const runState = await hitlStore?.get(input.requestId, input.userId);
+      if (hitlStore) await recordContinuation(hitlStore, input.requestId, input.userId, undefined);
       context.warn(`[hitl] resume of request=${input.requestId} was interrupted; asking the user to resend`);
       await noteInterruptedTurn(
         {
@@ -476,9 +550,27 @@ export const hitlWait: WaitDefinition<HitlWaitInput, InputResponse> = {
       );
       return;
     }
-    await resumeAfterInput({ requestId: input.requestId, userId: input.userId, response, executionId: turnExecutionId(context) });
+    // resumeAfterInput acts on the answer saved with the request, if there is
+    // one, rather than `response` (resumeAnswer).
+    await resumeAfterInput({
+      requestId: input.requestId,
+      userId: input.userId,
+      response,
+      executionId: turnExecutionId(context),
+      context,
+    });
   },
-  async onTimeout(input) {
-    await expireInputRequest({ requestId: input.requestId, userId: input.userId });
+  async onTimeout(input, context) {
+    const expired = await expireInputRequest({ requestId: input.requestId, userId: input.userId });
+    // The user answered before the deadline, but the signal lost the race
+    // with this timeout: the saved answer wins, resumed as onEvent would.
+    if (expired.answered) {
+      context.log(`[hitl] request=${input.requestId} timed out with a saved answer; resuming with it`);
+      await hitlWait.onEvent(
+        input,
+        { requestId: input.requestId, data: {}, cancelled: false }, // replaced by the saved answer (resumeAnswer)
+        context,
+      );
+    }
   },
 };

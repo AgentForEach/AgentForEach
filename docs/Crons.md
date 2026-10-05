@@ -35,7 +35,7 @@ How the alarm sleeps is the platform's detail: on Azure it is a `DurableAlarm` o
 
 Non-duplicacy guard:
 - Due jobs are first **claimed atomically** in Cosmos (running token + timestamp)
-- A run starts only if its claim is still valid (`beginClaimedRun`)
+- A run starts only if its claim is still valid and the job may still run (`beginClaimedRun`): it reads the job again, so a job edited while its run was queued runs as edited, and one turned off, deleted, expired or out of runs (`maxRuns`) since it was claimed doesn't run. Its claim is cleared (an expired or used-up job is also turned off) and a `skipped` run is recorded with the reason
 - Result application is token-guarded so stale/retried attempts are ignored
 - Stale claims are recoverable after a configurable timeout window
 - Jobs are deterministically assigned to scheduler shards via `shardId`
@@ -120,10 +120,11 @@ Wired in:
 
 `POST /cron/jobs/{id}/run`:
 
-1. Claims the job and starts a `CronRun` durable job (id `force-run-<jobId>-<ms>`), answering `202`
-2. The `CronRun` job executes it and records run history
-3. It applies normal result state transitions (`applyResult`) including next-run recomputation / one-shot cleanup
-4. The API wakes the owning shard as soon as the run is dispatched
+1. Refuses (`409`) a job that has expired or used up its `maxRuns`, or that a run already holds (a run in flight, or the same request retried); a paused job may be run
+2. Claims the job as the scheduler does and starts a `CronRun` durable job named by the claim (id `force-run-<jobId>-<claim token>`), answering `202`. A retried request can't start a second run: the claim is taken (`409`), and the same claim always names the same job. A run that can't be started releases its claim
+3. The `CronRun` job revalidates the job as a scheduled run does (claim, `enabled` unless it was paused when claimed, expiry, `maxRuns`), executes it and records run history
+4. It applies normal result state transitions (`applyResult`) including next-run recomputation / one-shot cleanup
+5. The API wakes the owning shard as soon as the run is dispatched
 
 A force-run is a real run, not only a recorded one.
 

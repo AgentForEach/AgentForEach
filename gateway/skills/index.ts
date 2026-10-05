@@ -108,6 +108,8 @@ export type {
 export {
   BrowserToolHandler,
   BROWSER_TOOL_NAME,
+  endBrowserHandoff,
+  BrowserHandoffNotEndedError,
   getBrowserToolDefinitions,
   handoffOutcome,
   isBrowserEnabled,

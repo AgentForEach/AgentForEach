@@ -19,6 +19,8 @@ export {
   isBrowserTool,
   parseDriverOutput,
 } from "./handler.js";
+export { handoffRelay } from "./relay.js";
+export { endBrowserHandoff, BrowserHandoffNotEndedError } from "./continuation.js";
 export { BROWSER_ACTIONS } from "./types.js";
 export type { BrowserGuards, BrowserLimiter, HandoffRelay } from "./handler.js";
 export { viewerBaseUrl, viewerHeaders, viewerHtml, viewerLink } from "./viewer.js";

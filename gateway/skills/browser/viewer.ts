@@ -4,20 +4,25 @@
  * The page a user opens to take over the browser for a login, a CAPTCHA, a
  * second factor or a payment. The gateway serves it (GET /api/browser/view);
  * what it needs arrives in the URL fragment, which browsers never send to a
- * server: the Web PubSub URL with a token that can only join this handoff's
- * group, the group, the driver's relay id, the deadline and the reason.
+ * server: the relay URL with a token that can only join this handoff's
+ * group (and, where the relay isn't protocol v1, its connection descriptor),
+ * the group, the driver's relay id, the deadline and the reason.
  *
  * It draws the frames the driver streams and sends the user's mouse, touch,
- * keyboard and paste input back through the same group. It only connects to
- * this deployment's Web PubSub host, and only believes messages the driver
- * sent. Web chat embeds it (…#…&embed=1) inside the handoff form, which has
- * its own Done and Cancel; opened on its own, it shows them.
+ * keyboard and paste input back through the same group. It connects with the
+ * portable realtime client, inlined before the page's own script and
+ * covered by the same CSP hash; only to this deployment's relay host; and
+ * only believes messages the driver sent. Web chat embeds it (…#…&embed=1)
+ * inside the handoff form, which has its own Done and Cancel; opened on its
+ * own, it shows them.
  */
 
 import { createHash } from "node:crypto";
+import type { ConnectionDescriptor } from "@agentforeach/platform";
 import { hostInfo } from "../../runtime/host.js";
+import { REALTIME_CLIENT_SCRIPT } from "./realtime-client-script.js";
 
-const SCRIPT = String.raw`
+const SCRIPT = REALTIME_CLIENT_SCRIPT + String.raw`
 (function () {
   "use strict";
   var KEY = "afe-handoff";
@@ -27,13 +32,15 @@ const SCRIPT = String.raw`
   else { try { raw = sessionStorage.getItem(KEY) || ""; } catch (e) {} }
   var q = new URLSearchParams(raw);
   var relayUrl = q.get("r"), group = q.get("g"), driverId = q.get("d"), expiresAt = Number(q.get("e")) || 0, reason = q.get("m") || "";
+  var descriptor = null;
+  try { descriptor = q.get("c") ? JSON.parse(q.get("c")) : { protocol: "v1", url: relayUrl }; } catch (e) {}
   var embed = q.get("embed") === "1";
   // The token has done its job once read: keep it out of the address bar, history and screenshots.
   history.replaceState(null, "", location.pathname);
   window.addEventListener("hashchange", function () { location.reload(); }); // a newer link opened in this tab
   var $ = function (id) { return document.getElementById(id); };
   var canvas = $("screen"), ctx = canvas.getContext("2d");
-  var frameW = 1280, frameH = 800, ws, ended = false, lastMove = 0, lastHeard = Date.now();
+  var frameW = 1280, frameH = 800, relay, ended = false, lastMove = 0, lastHeard = Date.now(), newestFrame = -1;
   var pressed = new Set();
   var isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
   if (embed) document.body.classList.add("embed");
@@ -46,15 +53,15 @@ const SCRIPT = String.raw`
     status(text);
     document.body.classList.add("ended");
     try { sessionStorage.removeItem(KEY); } catch (e) {}
-    try { ws && ws.close(); } catch (e) {}
+    try { relay && relay.close(); } catch (e) {}
   }
   function send(data) {
-    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "sendToGroup", group: group, dataType: "json", noEcho: true, data: data }));
+    if (relay) relay.send(data);
   }
-  if (!relayUrl || !group || !driverId) { finish("This link is incomplete. Ask the agent for a new one."); return; }
+  if (!relayUrl || !group || !driverId || !descriptor) { finish("This link is incomplete. Ask the agent for a new one."); return; }
   // Only this deployment's relay: a link pointing elsewhere is not ours.
   var relayHost = document.querySelector('meta[name="afe-relay-host"]').content;
-  try { if (new URL(relayUrl).host !== relayHost || new URL(relayUrl).protocol !== "wss:") throw 0; }
+  try { if (new URL(relayUrl).host !== relayHost || new URL(relayUrl).protocol !== "wss:" || descriptor.url !== relayUrl) throw 0; }
   catch (e) { finish("This link doesn't belong to this service. Don't use it."); return; }
 
   // Countdown to the deadline, and a check that the browser is still there.
@@ -70,15 +77,20 @@ const SCRIPT = String.raw`
   setInterval(tick, 1000); tick();
   setInterval(function () { send({ kind: "ping" }); }, 10000);
 
+  // Frames can arrive out of order (decoding takes a while): only a newer one is drawn, and every decoded image is freed.
   function draw(msg) {
+    if (typeof msg.seq !== "number" || msg.seq <= newestFrame) return;
+    newestFrame = msg.seq;
     var bin = atob(msg.jpeg), bytes = new Uint8Array(bin.length);
     for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     createImageBitmap(new Blob([bytes], { type: "image/jpeg" })).then(function (img) {
+      if (ended || msg.seq !== newestFrame) { img.close(); return; }
       if (canvas.width !== img.width || canvas.height !== img.height) { canvas.width = img.width; canvas.height = img.height; }
       frameW = msg.w || img.width; frameH = msg.h || img.height;
       ctx.drawImage(img, 0, 0);
+      img.close();
       document.body.classList.add("live");
-    });
+    }, function () {});
   }
   function showStatus(d) {
     var host = ""; try { host = new URL(d.url).host; } catch (e) {}
@@ -101,18 +113,24 @@ const SCRIPT = String.raw`
   $("dialogOk").addEventListener("click", function () { answerDialog(true); });
   $("dialogCancel").addEventListener("click", function () { answerDialog(false); });
 
-  ws = new WebSocket(relayUrl, "json.webpubsub.azure.v1");
-  ws.onopen = function () {
+  // A reload closes the connection too; keep the saved link so the page can reconnect.
+  var leaving = false;
+  addEventListener("pagehide", function () { leaving = true; });
+  afeRealtime.connectRelay(descriptor, {
+    group: group,
+    // Only the driver speaks for the browser: the client drops anything else in the group.
+    peerUserId: driverId,
+    onMessage: onRelayMessage,
+    onClose: function () { if (!leaving) finish("The live view has ended. Go back to the chat."); },
+  }).then(function (connected) {
+    if (ended) { connected.close(); return; }
+    relay = connected;
     status("Connecting to the browser…");
-    ws.send(JSON.stringify({ type: "joinGroup", group: group, ackId: 1 }));
     send({ kind: "hello" });
-  };
-  ws.onmessage = function (m) {
-    var msg; try { msg = JSON.parse(m.data); } catch (e) { return; }
-    // Only the driver speaks for the browser: anything else in the group is ignored.
-    if (msg.type !== "message" || !msg.data || msg.fromUserId !== driverId) return;
+  }, function () { finish("The live view could not connect. Ask the agent for a new link."); });
+  function onRelayMessage(d, fromUserId) {
+    if (!d || fromUserId !== driverId) return;
     lastHeard = Date.now();
-    var d = msg.data;
     if (d.kind === "frame") draw(d);
     else if (d.kind === "status") showStatus(d);
     else if (d.kind === "dialog") showDialog(d);
@@ -120,11 +138,7 @@ const SCRIPT = String.raw`
     else if (d.kind === "ended") finish(d.reason === "done" || d.reason === "agent_resumed"
       ? "Done. The agent has the browser again."
       : "The live view has ended. Go back to the chat.");
-  };
-  // A reload closes the socket too; keep the saved link so the page can reconnect.
-  var leaving = false;
-  addEventListener("pagehide", function () { leaving = true; });
-  ws.onclose = function () { if (!leaving) finish("The live view has ended. Go back to the chat."); };
+  }
 
   // Page coordinates from a point on the canvas, allowing for the letterbox around the drawn frame.
   function at(e) {
@@ -263,7 +277,7 @@ const SCRIPT_HASH = createHash("sha256").update(SCRIPT).digest("base64");
 
 const escapeAttr = (value: string) => value.replace(/[^a-zA-Z0-9.\-]/g, "");
 
-/** The live view page, for this deployment's Web PubSub host. */
+/** The live view page, for this deployment's relay host. */
 export function viewerHtml(relayHost: string): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer"><meta name="afe-relay-host" content="${escapeAttr(relayHost)}">
@@ -272,8 +286,9 @@ export function viewerHtml(relayHost: string): string {
 }
 
 /**
- * Headers for the page: only its own script runs, it only connects to this
- * deployment's Web PubSub, and it can be framed (by the chat that embeds it;
+ * Headers for the page: only its own script runs (the hash covers the
+ * inlined client too), it only connects to this deployment's relay, and it
+ * can be framed (by the chat that embeds it;
  * without a link's fragment it holds nothing worth framing).
  */
 export function viewerHeaders(relayHost: string): Record<string, string> {
@@ -304,7 +319,7 @@ export function viewerBaseUrl(configured: string | undefined): string | undefine
 /** The link for one handoff; everything sensitive rides in the fragment. */
 export function viewerLink(
   baseUrl: string,
-  h: { relayUrl: string; group: string; expiresAt: number; reason: string; driverUserId: string },
+  h: { relayUrl: string; relay?: ConnectionDescriptor; group: string; expiresAt: number; reason: string; driverUserId: string },
   embed = false,
 ): string {
   const fragment = new URLSearchParams({
@@ -314,6 +329,7 @@ export function viewerLink(
     e: String(h.expiresAt),
     m: h.reason,
   });
+  if (h.relay) fragment.set("c", JSON.stringify(h.relay));
   if (embed) fragment.set("embed", "1");
   return `${baseUrl}/api/browser/view#${fragment.toString()}`;
 }

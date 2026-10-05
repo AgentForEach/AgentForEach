@@ -53,6 +53,8 @@ Two kinds of hub:
   "error": { "name": "Forbidden" | "InternalServerError" | "Duplicate", "message": "<text>" } }
 ```
 
+A `disconnected` frame's `message` contains the reason the server gave, but a provider may wrap it in its own text: Azure Web PubSub sends `Application server closed the connection. Reason: <reason>`. Clients must not match the whole string.
+
 Gateway pushes always carry an event frame as `data`: `{ "type": "event", "event": "chat" | "cron" | "error", "payload": {...}, "seq": <n> }`.
 
 ## Client → service
@@ -92,7 +94,7 @@ Every provider keeps these. The conformance suite checks them.
    - There, the reply (if any) is sent before the ack.
    - A handler failure acks `InternalServerError`.
    - A relay hub never passes an event to gateway code.
-7. **A frame larger than 1 MiB closes the connection,** after a `disconnected` frame.
+7. **A frame larger than 1 MiB is never delivered, and closes the sender's connection.** Self-hosted providers (Cloudflare) send a `disconnected` frame first; Azure Web PubSub closes it without one.
 8. **Hubs are isolated.** The same group name on two hubs is two different groups.
 
 ## Tokens on self-hosted providers

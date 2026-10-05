@@ -13,25 +13,12 @@
  * reaches one without it.
  */
 
-function unavailable(name: string): never {
-  throw new Error(
-    `${name} is Azure-only and isn't available on Cloudflare Workers. ` +
-      "Choose a provider this platform supports (database: postgres; objects: s3 on R2; realtime: the Cloudflare provider).",
-  );
-}
+import { unavailableModule } from "../shared/unavailable.js";
 
-const stub: Record<string, unknown> = new Proxy(
-  {},
-  {
-    get(_target, property) {
-      if (property === "then" || typeof property === "symbol") return undefined; // so `await import()` resolves
-      return new Proxy(function () {}, {
-        apply: () => unavailable(String(property)),
-        construct: () => unavailable(String(property)),
-        get: () => unavailable(String(property)),
-      });
-    },
-  },
+const stub = unavailableModule(
+  (name) =>
+    `${name} is Azure-only and isn't available on Cloudflare Workers. ` +
+    "Choose a provider this platform supports (database: postgres; objects: s3 on R2; realtime: the Cloudflare provider).",
 );
 
 export default stub;

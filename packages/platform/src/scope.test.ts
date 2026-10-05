@@ -123,3 +123,29 @@ test("a cleanup that throws doesn't stop the others", async () => {
   await opened.settle();
   assert.deepEqual(order, ["second"]);
 });
+
+test("settleBy waits for background work and cleanups when they finish before the deadline", async () => {
+  const opened = openScope({ invocationId: "s", kind: "http" });
+  const done: string[] = [];
+  await opened.run(async () => {
+    background(tick(10).then(() => done.push("work")));
+    currentScope()!.onEnd(() => void done.push("cleanup"));
+  });
+  assert.deepEqual(await opened.settleBy(Date.now() + 1_000), { settled: true, pending: 0 });
+  assert.deepEqual(done, ["work", "cleanup"]);
+});
+
+test("settleBy stops waiting at the deadline and counts the work it cut off", async () => {
+  const opened = openScope({ invocationId: "t", kind: "http" });
+  let release!: () => void;
+  await opened.run(async () => {
+    background(new Promise<void>((resolve) => (release = resolve)));
+    background(new Promise<void>(() => {}));
+    background(tick(1));
+  });
+  const started = Date.now();
+  assert.deepEqual(await opened.settleBy(Date.now() + 30), { settled: false, pending: 2 });
+  assert.ok(Date.now() - started < 500, "returned at the deadline");
+  assert.deepEqual(await opened.settleBy(Date.now() - 1), { settled: false, pending: 2 }, "a past deadline doesn't wait");
+  release();
+});

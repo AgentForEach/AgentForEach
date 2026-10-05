@@ -26,6 +26,10 @@ One Pulumi program creates everything: the Function App (Flex Consumption), Cosm
 
 Set `llms.providers.openai.baseUrl` in [`gateway/config/agentforeach.json`](../gateway/config/agentforeach.json) to `https://<resource>.openai.azure.com/openai/v1/`, and use the deployment name as the model name.
 
+### Use Amazon Bedrock
+
+The `bedrock` provider calls models through the Bedrock Converse API. It has no API key: it signs requests with the AWS credentials the gateway runs with (an execution role, or the usual `AWS_*` environment variables), in `AWS_REGION`. Add `"bedrock": { "defaultModel": "amazon.nova-lite-v1:0" }` to `llms.providers` (and set `llms.defaultProvider` to `"bedrock"` to make it the default). The AWS SDK (`@aws-sdk/client-bedrock-runtime`) is a development dependency of the gateway, there for local runs and tests, and loaded only when Bedrock is used; to deploy with Bedrock, add it to the gateway's `dependencies`. For embeddings on Bedrock, set `llms.embedding` to `{ "provider": "bedrock", "model": "amazon.titan-embed-text-v2:0" }`: its vectors have 1,024 dimensions, so switching an existing deployment needs new memory and episode containers. Bedrock isn't available on Cloudflare Workers.
+
 ## Let users sign in
 
 Configure `auth.providers` in `agentforeach.json`: App Service authentication ([Easy Auth](EasyAuth.md)), JWT, API keys or a trusted proxy. Providers are tried in order and the first match wins.

@@ -1,0 +1,18 @@
+{
+  // The two Pulumi programs (infra/, foundation/) and the release migration, with their tests.
+  // The Lambda entry (lambda.ts, bootstrap.ts) has its own: tsconfig.lambda.json, bundled by
+  // `npm run build:aws`. migrate.ts is compiled here for its tests, and bundled into the entry.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "outDir": "dist",
+    "rootDir": ".",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["infra/**/*.ts", "foundation/**/*.ts", "migrate.ts", "migrate.test.ts"],
+  "exclude": ["node_modules", "dist"]
+}

@@ -44,8 +44,9 @@ test("sweepExpiredRows: storage that sweeps itself is left alone; one that can't
 
 test("collections not partitioned by user index userId, which account erasure finds documents by", async () => {
   const { recordCollectionSpecs: specs } = await import("./catalog.js");
-  // Their documents carry no userId (keyed counters and per-scope channel state that expire by TTL).
-  const withoutUserId = new Set(["rate-limits", "whatsapp-state"]);
+  // Their documents carry no userId: keyed counters and per-scope channel state that expire by TTL,
+  // synthetic AWS durable conformance records, and the aws-agentcore sandbox's records, keyed by an owner hash and erased by the backend itself.
+  const withoutUserId = new Set(["rate-limits", "whatsapp-state", "aws-durable-conformance", "aws-sandbox-sessions", "aws-sandbox-workspaces"]);
   const missing = (await specs())
     .filter((s) => s.partitionKey !== "userId" && !withoutUserId.has(s.name))
     .filter((s) => !(s.indexes ?? []).includes("userId"))

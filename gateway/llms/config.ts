@@ -246,10 +246,14 @@ export function resolveProviderConfig(providerId: string): {
     resolveEnvValue(entry?.apiKey) ||
     undefined;
 
-  if (!apiKey) return null;
+  // Bedrock has no API key (AWS credentials come from the execution role), so
+  // it needs only an entry in llms.providers.
+  const keyless = providerId === "bedrock" && entry !== undefined;
+  if (!apiKey && !keyless) return null;
 
   // Resolve default model: env var → config → provider defaults
   const defaultModelMap: Record<string, string> = {
+    bedrock: "amazon.nova-lite-v1:0",
     openai: "gpt-5.2",
     anthropic: "claude-sonnet-5",
   };
@@ -268,7 +272,7 @@ export function resolveProviderConfig(providerId: string): {
     undefined;
 
   return {
-    apiKey,
+    apiKey: apiKey ?? "",
     defaultModel,
     maxToolCalls: entry?.maxToolCalls,
     baseUrl,
@@ -355,6 +359,7 @@ export function getEnabledProviderIds(): ProviderId[] {
  * Resolve embedding configuration.
  */
 export function resolveEmbeddingConfig(): {
+  provider: string;
   apiKey: string | undefined;
   model: string;
   baseUrl: string | undefined;
@@ -381,7 +386,8 @@ export function resolveEmbeddingConfig(): {
     resolveEnvValue(providerEntry?.baseUrl) ||
     undefined;
 
-  return { apiKey, model, baseUrl };
+  // Bedrock embeddings authenticate with AWS credentials, never an API key.
+  return { provider: embeddingProvider, apiKey: embeddingProvider === "bedrock" ? undefined : apiKey, model, baseUrl };
 }
 
 /**

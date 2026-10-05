@@ -9,9 +9,12 @@
  * `azure-blob` (platform-azure). Every provider passes the conformance suite
  * in `./conformance.ts`.
  *
- * Keys are `/`-separated paths with no leading `/`. Missing objects and
- * oversize reads raise `ObjectStoreError` (see `./errors.ts`), never return
- * partial data.
+ * Keys are `/`-separated paths with no leading `/`, no empty, `.` or `..`
+ * segment, and no backslash or control character; spaces and Unicode are
+ * fine. Objects whose keys end in `/` are directory markers some tools
+ * create: `list` skips them and `deletePrefix` deletes them. Missing objects
+ * and oversize reads raise `ObjectStoreError` (see `./errors.ts`), never
+ * return partial data.
  */
 
 /** One object in a listing. */
@@ -45,14 +48,26 @@ export type SignedUrlOptions = {
   expiresAt: Date;
 };
 
+/** A signed link and when it really stops working. */
+export type SignedUrl = {
+  url: string;
+  /**
+   * The link's own expiry. It can be sooner than the one asked for: a link
+   * signed with temporary credentials, or with an Azure user delegation key,
+   * stops working when they do, so the provider signs it for no longer.
+   */
+  expiresAt: Date;
+};
+
 export interface ObjectStore {
   /** Provider name, for logs: `memory`, `s3`, `azure-blob`. */
   readonly provider: string;
 
   /**
    * Every object whose key starts with `prefix` (all objects when omitted),
-   * in key order. Pages are fetched lazily. Throws `not_found` when the
-   * bucket or container does not exist.
+   * in key order, without directory markers. Keys written before the
+   * current key rules are listed too. Pages are fetched lazily. Throws
+   * `not_found` when the bucket or container does not exist.
    */
   list(prefix?: string): AsyncIterable<ObjectInfo>;
 
@@ -68,9 +83,11 @@ export interface ObjectStore {
   put(key: string, body: Uint8Array | string, options?: PutObjectOptions): Promise<void>;
 
   /**
-   * Deletes every object under `prefix` and returns how many were deleted.
-   * A missing bucket or an object that disappears meanwhile is not an error.
-   * `prefix` must be non-empty, so a bug cannot empty the whole store.
+   * Deletes every object under `prefix`, directory markers and keys written
+   * before the current key rules included, and returns how many were
+   * deleted. A missing bucket or an object that disappears meanwhile is not
+   * an error. `prefix` must be non-empty, so a bug cannot empty the whole
+   * store.
    */
   deletePrefix(prefix: string): Promise<number>;
 
@@ -79,6 +96,13 @@ export interface ObjectStore {
    * the past, or further ahead than the provider can sign, is `invalid`.
    */
   signedUrl(key: string, options: SignedUrlOptions): Promise<string>;
+
+  /**
+   * `signedUrl`, plus when the link really expires (see `SignedUrl`). Every
+   * provider here implements it; callers outside the platform use
+   * `signLink`, which falls back to `signedUrl` for a store without it.
+   */
+  signedUrlWithExpiry?(key: string, options: SignedUrlOptions): Promise<SignedUrl>;
 }
 
 /**

@@ -586,6 +586,36 @@ export function hasActiveRunningClaim(
   return runningAtMs > nowMs - RUNNING_CLAIM_STALE_MS;
 }
 
+/** Why a job may not run now: off, past its expiry, or out of runs. */
+export type CronRunBlock = "disabled" | "expired" | "max-runs";
+
+/**
+ * Whether a job may run now (undefined) or why not. The force-run API checks
+ * it before claiming; a run checks it again on the current job when it
+ * starts, since the job may have changed while the run was queued.
+ * `requireEnabled: false` lets a paused job run (a force-run of a paused job).
+ */
+export function cronRunBlock(
+  job: Pick<CronJob, "enabled" | "expiresAt" | "maxRuns" | "state">,
+  nowMs: number,
+  opts: { requireEnabled: boolean },
+): CronRunBlock | undefined {
+  if (opts.requireEnabled && !job.enabled) return "disabled";
+  if (typeof job.expiresAt === "number" && job.expiresAt <= nowMs) return "expired";
+  if (typeof job.maxRuns === "number" && job.maxRuns > 0 && (job.state.runCount ?? 0) >= job.maxRuns) return "max-runs";
+  return undefined;
+}
+
+/**
+ * How `beginClaimedRun` went: the run started (with the current job), its
+ * claim is no longer this run's (`claim-lost`), or the job may no longer run
+ * (`job` is the job as it was left: claim cleared, off if it can never run).
+ */
+export type ClaimedRunStart =
+  | { status: "started"; job: CronJob }
+  | { status: "skipped"; reason: "claim-lost" }
+  | { status: "skipped"; reason: CronRunBlock; job: CronJob };
+
 /** A claim nobody holds: no running token, or one older than `staleBeforeMs`. */
 function claimable(staleBeforeMs: number): Filter {
   return or(missing("runningToken"), and(isDefined("runningAtMs"), lte("runningAtMs", staleBeforeMs)));
@@ -1182,39 +1212,80 @@ export class CronStore {
   }
 
   /**
-   * Mark a claimed job as started.
-   * Returns null when the claim is missing/stale/already started.
+   * Mark a claimed job as started, revalidating the current job first: the
+   * claim must still be this run's and not started, and the job must still
+   * be allowed to run (`cronRunBlock`), so a job edited, paused or deleted
+   * while its run was queued never runs an old copy.
+   *
+   * A job that may no longer run has its claim cleared; one that can never
+   * run again (expired, out of runs) is also turned off, as the scheduler
+   * does, so it isn't claimed again. `requireEnabled: false` is for a
+   * force-run claimed while the job was paused.
    */
   async beginClaimedRun(
     jobId: string,
     userId: string,
     runningToken: string,
-  ): Promise<CronJob | null> {
+    opts: { requireEnabled?: boolean } = {},
+  ): Promise<ClaimedRunStart> {
     await this.ensureInitialized();
+    const lost = { status: "skipped", reason: "claim-lost" } as const;
 
-    try {
-      const resource = await this.jobs.read(jobId, userId);
-      if (!resource) return null;
-      const etag = resource._etag;
+    // Retried only when clearing a blocked job's claim races another write.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const resource = await this.jobs.read(jobId, userId);
+        if (!resource) return lost;
+        const etag = resource._etag;
 
-      if (resource.state.runningToken !== runningToken) return null;
-      if (typeof resource.state.runningStartedAtMs === "number") return null;
+        if (resource.state.runningToken !== runningToken) return lost;
+        if (typeof resource.state.runningStartedAtMs === "number") return lost;
 
-      const updated: CronJob = {
-        ...resource,
-        version: nextJobVersion(resource),
-        state: {
-          ...resource.state,
-          runningStartedAtMs: Date.now(),
-        },
-      };
+        const nowMs = Date.now();
+        const block = cronRunBlock(resource, nowMs, { requireEnabled: opts.requireEnabled ?? true });
+        if (!block) {
+          const updated: CronJob = {
+            ...resource,
+            version: nextJobVersion(resource),
+            state: {
+              ...resource.state,
+              runningStartedAtMs: nowMs,
+            },
+          };
+          // A lost race here means another runner started it first.
+          try {
+            return { status: "started", job: await this.jobs.replace(jobId, userId, updated, { ifMatch: etag }) };
+          } catch (err) {
+            if (isPreconditionFailed(err)) return lost;
+            throw err;
+          }
+        }
 
-      return await this.jobs.replace(jobId, userId, updated, { ifMatch: etag });
-    } catch (err) {
-      if (isNotFound(err)) return null;
-      if (isPreconditionFailed(err)) return null;
-      throw err;
+        const finished = block !== "disabled";
+        const cleared: CronJob = {
+          ...resource,
+          version: nextJobVersion(resource),
+          enabled: finished ? false : resource.enabled,
+          state: {
+            ...resource.state,
+            ...(finished ? { nextRunAtMs: undefined } : {}),
+            ...(block === "expired" ? { lastStatus: "expired" as const } : {}),
+            runningAtMs: undefined,
+            runningToken: undefined,
+            runningStartedAtMs: undefined,
+          },
+        };
+        const replaced = await this.jobs.replace(jobId, userId, cleared, { ifMatch: etag });
+        await this.syncDueIndexFromJobBestEffort(replaced);
+        return { status: "skipped", reason: block, job: replaced };
+      } catch (err) {
+        if (isNotFound(err)) return lost;
+        if (isPreconditionFailed(err)) continue;
+        throw err;
+      }
     }
+    // Still racing: the claim is left to go stale (RUNNING_CLAIM_STALE_MS).
+    return lost;
   }
 
   /**

@@ -72,5 +72,6 @@ if [ "${SANDBOX_IMAGE_BROWSER:-0}" = "1" ]; then
   for b in afe-browser Xvfb certutil; do
     printf '%s=%s\n' "$b" "$(command -v "$b" || echo MISSING)"
   done
-  ls -d /opt/ms-playwright/chromium-*/chrome-linux64/chrome
+  # chrome-linux64 on amd64, chrome-linux-arm64 on arm64 (Playwright's own names).
+  ls -d /opt/ms-playwright/chromium-*/chrome-linux*/chrome
 fi

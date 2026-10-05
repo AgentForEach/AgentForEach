@@ -11,7 +11,8 @@
  *                   path) is answered the way web chat does, with a chat
  *                   request carrying hitlInputResponse; a gated tool's form
  *                   (the durable wait) with an input_response frame.
- *                   --answer-after-ms N waits N ms first, as a person would.
+ *                   --answer-after-ms N waits N ms first, as a person would;
+ *                   --answer-via chat|frame answers either form either way.
  *   --mode timeout  this doesn't answer; input_expired arrives once the
  *                   form's timeout (hitl.defaultTimeoutSeconds) passes.
  *
@@ -28,7 +29,8 @@
  * Node 22+ (global WebSocket).
  */
 
-import { createHmac, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
+import { testToken } from "./lib/test-auth.mjs";
 
 const opts = {
   baseUrl: "http://127.0.0.1:8812",
@@ -40,6 +42,8 @@ const opts = {
   answerAfterMs: 0,
   /** The MCP fixture's base URL, to check what the gated tool received. */
   fixtureUrl: "",
+  /** How to answer: "frame" (an input_response frame) or "chat" (a chat request with hitlInputResponse). Default: as web chat does for that form. */
+  answerVia: "",
 };
 for (let i = 2; i < process.argv.length; i += 2) {
   const key = process.argv[i].replace(/^--/, "").replace(/-([a-z])/g, (_, c) => c.toUpperCase());
@@ -49,16 +53,8 @@ for (let i = 2; i < process.argv.length; i += 2) {
 if (!opts.jwtSecret) throw new Error("--jwt-secret (or LOADTEST_JWT_SECRET) is required");
 if (!["answer", "timeout"].includes(opts.mode)) throw new Error("--mode is answer or timeout");
 
-const b64url = (o) => Buffer.from(JSON.stringify(o)).toString("base64url");
-function token(userId) {
-  const now = Math.floor(Date.now() / 1000);
-  const head = b64url({ alg: "HS256", typ: "JWT" });
-  const body = b64url({ sub: userId, iss: "agentforeach-loadtest", aud: "agentforeach", iat: now, exp: now + 3600 });
-  return `${head}.${body}.${createHmac("sha256", opts.jwtSecret).update(`${head}.${body}`).digest("base64url")}`;
-}
-
 const userId = `hitl-e2e-${Date.now().toString(36)}`;
-const auth = { authorization: `Bearer ${token(userId)}` };
+const auth = { authorization: `Bearer ${testToken(opts.jwtSecret, userId)}` };
 const started = Date.now();
 const elapsed = () => `${((Date.now() - started) / 1000).toFixed(1)}s`;
 const events = [];
@@ -76,6 +72,10 @@ const done = new Promise((r) => (resolveDone = r));
 const sessionId = randomUUID();
 /** Set once the form is answered: a final before that is the run parking on the wait. */
 let answered = false;
+/** The option picked on a choice form: the reply after the answer must name it. */
+let picked;
+/** The reply after the answer. */
+let finalText = "";
 
 ws.addEventListener("message", (ev) => {
   let frame;
@@ -103,7 +103,10 @@ ws.addEventListener("message", (ev) => {
     if (opts.mode === "timeout") resolveDone(true);
   } else if (p.state === "final") {
     console.log(`${elapsed()} final: ${String(p.text ?? p.message ?? "").slice(0, 80)}`);
-    if (opts.mode === "answer" && answered) resolveDone(true);
+    if (opts.mode === "answer" && answered) {
+      finalText = String(p.text ?? p.message ?? "");
+      resolveDone(true);
+    }
   } else if (p.state === "error") {
     console.log(`${elapsed()} error: ${p.code ?? ""} ${p.message ?? ""}`);
   }
@@ -111,12 +114,16 @@ ws.addEventListener("message", (ev) => {
 
 /** Answer a form: a direct form with a chat request, a gated tool's with an input_response frame. */
 async function answer(request) {
-  const data = { confirmed: true };
-  if (request.toolName === "request_user_input") {
+  // A choice form (a real model's request_user_input) gets its first option, as
+  // web chat sends it; anything else (the mock's confirmation, a gated tool) a yes.
+  const option = Array.isArray(request.options) ? request.options[0] : undefined;
+  if (option) picked = option.label ?? String(option.value);
+  const data = !option ? { confirmed: true } : request.formType === "multi_select" ? { values: [option.value] } : { value: option.value };
+  if (opts.answerVia === "chat" || (opts.answerVia !== "frame" && request.toolName === "request_user_input")) {
     const res = await fetch(`${opts.baseUrl}/api/chat`, {
       method: "POST",
       headers: { "content-type": "application/json", ...auth },
-      body: JSON.stringify({ message: "Yes, go ahead.", sessionId, idempotencyKey: randomUUID(), hitlInputResponse: { requestId: request.requestId, data } }),
+      body: JSON.stringify({ message: picked ?? "Yes, go ahead.", sessionId, idempotencyKey: randomUUID(), hitlInputResponse: { requestId: request.requestId, data } }),
     });
     return `chat request with hitlInputResponse, ${res.status}`;
   }
@@ -137,6 +144,12 @@ ws.close();
 console.log(`events: ${events.join(" → ") || "(none)"}`);
 if (!arrived) console.log(`✖ ${opts.mode}: the expected events didn't arrive within ${opts.waitMs / 1000}s`);
 let ok = arrived;
+if (arrived && picked) {
+  const named = finalText.toLowerCase().includes(picked.toLowerCase());
+  console.log(`reply after the answer: ${JSON.stringify(finalText.slice(0, 120))}`);
+  if (!named) console.log(`✖ answer: the reply doesn't name the picked option "${picked}"`);
+  ok &&= named;
+}
 if (opts.fixtureUrl) {
   const calls = await (await fetch(`${opts.fixtureUrl}/calls`)).json();
   const expected = opts.mode === "answer" ? 1 : 0;

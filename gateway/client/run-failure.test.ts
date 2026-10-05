@@ -79,3 +79,17 @@ test("classifier — messages stay free of internals", () => {
   const { message } = classifyRunFailure(leaky);
   assert.doesNotMatch(message, /gpt-|claude-|\/v1\/|\bat \w+\.\w+|\b500\b/);
 });
+
+test("classifier — a daily token quota is not the context window, and AWS throttling is a rate limit", () => {
+  const quota = classifyRunFailure(
+    Object.assign(new Error("Too many tokens per day, please wait before trying again."), {
+      name: "ThrottlingException",
+      $metadata: { httpStatusCode: 429 },
+    }),
+  );
+  assert.equal(quota.code, "quota_exhausted");
+  assert.equal(quota.retryable, false);
+  assert.doesNotMatch(quota.message, /new chat|conversation/i);
+  assert.equal(classifyRunFailure(Object.assign(new Error("capacity exhausted"), { $metadata: { httpStatusCode: 429 } })).code, "rate_limited");
+  assert.equal(classifyRunFailure(Object.assign(new Error("capacity exhausted"), { name: "ThrottlingException" })).code, "rate_limited");
+});

@@ -66,8 +66,10 @@ export type {
 } from "./types.js";
 
 // — Provider Registry —
+export type { RealtimeProviderRegistration, WebSocketProviderTraits } from "./providers/index.js";
 export {
   registerWebSocketProvider,
+  installRealtimeProvider,
   getActiveProvider,
   getRealtimeRelay,
   realtimeCapabilities,

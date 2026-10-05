@@ -76,7 +76,9 @@ async function wsConnect(
 
 /**
  * WebSocket negotiate endpoint — clients call this to get a Web PubSub
- * connection URL with an embedded access token.
+ * connection URL with an embedded access token, plus, on a provider that
+ * doesn't speak protocol v1 (AppSync Events), the connection descriptor the
+ * portable client (packages/platform/src/realtime/client) connects with.
  *
  * GET /negotiate
  */
@@ -121,7 +123,8 @@ async function negotiate(
         ...handleCorsHeaders(request),
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ url: token.url }),
+      // AppSync Events: how the portable client connects. Protocol v1 needs only the URL.
+      body: JSON.stringify({ url: token.url, ...(token.descriptor ? { descriptor: token.descriptor } : {}) }),
     };
   } catch (err) {
     context.error("negotiate error:", err);

@@ -83,7 +83,7 @@ The same steps without the scripts.
 ```bash
 npm ci
 npm run build:platform && npm run build --workspace @agentforeach/gateway
-npm run check:bundle      # fails if any Azure-only code would end up in the Worker
+npm run check:bundle      # fails if any Azure- or AWS-only code would end up in the Worker
 npx wrangler deploy --config deploy/cloudflare/wrangler.jsonc --dry-run --outdir /tmp/agentforeach-worker
 ```
 
@@ -200,7 +200,7 @@ As on Azure, configure `auth.providers` in `agentforeach.json`, and **until you 
 | Easy Auth | Never trusted | Use JWT, optionally with Cloudflare Access |
 | Knowledge (Azure AI Search) | Works, with the search service's API key | The library stays on Azure AI Search, called over HTTPS |
 
-Each Azure-only module is replaced in the Worker bundle by a stub that throws a clear error ([`deploy/cloudflare/azure-only.ts`](../deploy/cloudflare/azure-only.ts)), and `npm run check:bundle` fails if any other path reaches Azure code.
+Each Azure-only module is replaced in the Worker bundle by a stub that throws a clear error ([`deploy/cloudflare/azure-only.ts`](../deploy/cloudflare/azure-only.ts)), and so is the AWS SDK behind the `bedrock` model provider ([`aws-only.ts`](../deploy/cloudflare/aws-only.ts)). `npm run check:bundle` fails if any other path reaches Azure or AWS code.
 
 The port suites run against the Cloudflare pack in CI ([where each suite runs](Platforms.md#where-each-suite-runs)), on the Workers runtime itself, locally:
 
@@ -290,6 +290,7 @@ curl 'localhost:8787/__scheduled?cron=*/5+*+*+*+*'   # Cron Triggers don't fire 
 | `relation "…" does not exist` (first seen in the cron tick) | The schema wasn't applied: the Worker never runs DDL. Apply `infra/postgres-schema.sql`, or rerun the deploy script |
 | `[objects] … object storage is off`, then `[skills] no storage account configured` | `OBJECT_STORE_S3_ACCESS_KEY_ID` or `OBJECT_STORE_S3_SECRET_ACCESS_KEY` isn't set. Skills and sandboxes stay off until both are |
 | `… is Azure-only and isn't available on Cloudflare Workers` | `agentforeach.json` selects an Azure-only provider, such as Cosmos DB or an ACA sandbox. See [Limits and differences](#limits-and-differences-from-azure) |
+| `… is AWS-only and isn't available on Cloudflare Workers` | `agentforeach.json` selects the `bedrock` model provider or Bedrock embeddings. Use a provider with an API key |
 | `MCP server "…" uses the stdio transport, which runs a local process` | A Worker can't start processes. Use an MCP server over streamable HTTP (or SSE) |
 
 ## Next

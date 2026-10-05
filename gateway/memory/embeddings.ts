@@ -1,7 +1,9 @@
 /**
  * AgentForEach Memory Layer — Embeddings Client
  *
- * OpenAI embeddings wrapper for generating text vectors.
+ * OpenAI embeddings wrapper for generating text vectors, or Amazon Titan
+ * Text Embeddings V2 on Bedrock (llms.embedding.provider "bedrock", AWS
+ * credentials, the SDK loaded on first use).
  *
  * API key and model are resolved from the `llms.embedding` section
  * in agentforeach.json (via MemoryConfig). The memory module does NOT
@@ -10,23 +12,37 @@
  */
 
 import OpenAI from "openai";
+import { bedrockRuntime } from "../llms/index.js";
 import { DEFAULT_EMBEDDING_MODEL, vectorDimsForModel } from "./config.js";
+
+/** The one Bedrock embedding model supported: one input per call, dimensions chosen per call. */
+const BEDROCK_EMBEDDING_MODEL = "amazon.titan-embed-text-v2:0";
+const BEDROCK_TIMEOUT_MS = 30_000;
 
 // ============================================================================
 // Embeddings Client
 // ============================================================================
 
 export class EmbeddingsClient {
-  private client: OpenAI;
+  /** The OpenAI client; absent on Bedrock. */
+  private client?: OpenAI;
+  private bedrock: boolean;
   private model: string;
   private dimensions: number;
   private maxEmbeddingChars: number;
 
-  constructor(apiKey: string, model?: string, maxEmbeddingChars?: number, baseUrl?: string) {
-    this.client = new OpenAI({
-      apiKey,
-      ...(baseUrl && { baseURL: baseUrl }),
-    });
+  constructor(apiKey: string, model?: string, maxEmbeddingChars?: number, baseUrl?: string, provider = "openai") {
+    this.bedrock = provider === "bedrock";
+    if (this.bedrock) {
+      if (model !== BEDROCK_EMBEDDING_MODEL) {
+        throw new Error(`Bedrock embeddings currently require Titan Text Embeddings V2 (${BEDROCK_EMBEDDING_MODEL})`);
+      }
+    } else {
+      this.client = new OpenAI({
+        apiKey,
+        ...(baseUrl && { baseURL: baseUrl }),
+      });
+    }
     this.model = model ?? DEFAULT_EMBEDDING_MODEL;
     this.dimensions = vectorDimsForModel(this.model);
     this.maxEmbeddingChars = maxEmbeddingChars ?? 8000;
@@ -48,7 +64,9 @@ export class EmbeddingsClient {
       return new Array<number>(this.dimensions).fill(0);
     }
 
-    const response = await this.client.embeddings.create({
+    if (this.bedrock) return this.embedBedrock(sanitized);
+
+    const response = await this.client!.embeddings.create({
       model: this.model,
       input: sanitized,
       dimensions: this.dimensions,
@@ -64,6 +82,13 @@ export class EmbeddingsClient {
    * @returns Array of float arrays, one per input text.
    */
   async embedBatch(texts: string[]): Promise<number[][]> {
+    if (this.bedrock) {
+      // Titan takes one input per call; one at a time bounds the request pressure.
+      const results: number[][] = [];
+      for (const text of texts) results.push(await this.embed(text));
+      return results;
+    }
+
     const sanitized = texts.map((t) => sanitizeForEmbedding(t, this.maxEmbeddingChars));
     const nonEmptyIndices: number[] = [];
     const nonEmptyTexts: string[] = [];
@@ -79,7 +104,7 @@ export class EmbeddingsClient {
       return texts.map(() => new Array<number>(this.dimensions).fill(0));
     }
 
-    const response = await this.client.embeddings.create({
+    const response = await this.client!.embeddings.create({
       model: this.model,
       input: nonEmptyTexts,
       dimensions: this.dimensions,
@@ -93,6 +118,29 @@ export class EmbeddingsClient {
       results[nonEmptyIndices[i]] = response.data[i].embedding;
     }
     return results;
+  }
+
+  /** One Titan embedding, normalized, checked for length and finite values. */
+  private async embedBedrock(text: string): Promise<number[]> {
+    const { sdk, client } = await bedrockRuntime();
+    const response = await client.send(
+      new sdk.InvokeModelCommand({
+        modelId: this.model,
+        contentType: "application/json",
+        accept: "application/json",
+        body: JSON.stringify({ inputText: text, dimensions: this.dimensions, normalize: true }),
+      }),
+      { abortSignal: AbortSignal.timeout(BEDROCK_TIMEOUT_MS) },
+    );
+    const vector: unknown = JSON.parse(new TextDecoder().decode(response.body)).embedding;
+    if (
+      !Array.isArray(vector) ||
+      vector.length !== this.dimensions ||
+      vector.some((v: unknown) => typeof v !== "number" || !Number.isFinite(v))
+    ) {
+      throw new Error("Bedrock returned an invalid embedding");
+    }
+    return vector as number[];
   }
 
   /** Get the configured model name. */

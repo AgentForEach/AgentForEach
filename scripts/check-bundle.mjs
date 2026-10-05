@@ -5,25 +5,30 @@
  * 1. Bundles deploy/cloudflare/worker.ts as Wrangler does (its `main` and
  *    `alias` from wrangler.jsonc, Workers resolution conditions, Node
  *    built-ins left to nodejs_compat), and fails if the bundle contains
- *    Azure-only code: @azure/*, durable-functions, undici, the Azure pack,
- *    the Cosmos adapter, or an import of child_process. For each hit it
- *    prints the chain of imports from the entry, marking lazy ones.
+ *    Azure-only code (@azure/*, durable-functions, undici, the Azure pack,
+ *    the Cosmos adapter), AWS-only code (@aws-sdk/*, @smithy/*, the Lambda
+ *    durable execution SDK), or an import of child_process. For each hit it
+ *    prints the chain of imports from the entry, marking lazy ones
+ *    (lib/bundle-guard.mjs, shared with the Lambda guard).
  *
- *    The gateway reaches Azure-only code only through `await import()`, and
- *    wrangler.jsonc aliases each such module to deploy/cloudflare/azure-only.ts
- *    (which throws if used), so none of it is bundled. A new path to Azure
- *    code, static or lazy, fails here until it is lazy and aliased.
+ *    The gateway reaches Azure- and AWS-only code only through `await
+ *    import()`, and wrangler.jsonc aliases each such module to
+ *    deploy/cloudflare/azure-only.ts or aws-only.ts (which throw if used), so
+ *    none of it is bundled. A new path to such code, static or lazy, fails
+ *    here until it is lazy and aliased.
  *
  * 2. Checks wrangler.jsonc's cron triggers against the schedules the Worker
  *    serves (the gateway's table plus the database sweep): one trigger per
  *    distinct schedule, nothing missing, nothing extra.
  *
  * Needs the workspace packages built (npm run build:platform, and the
- * gateway's build for step 2).
+ * gateway's build for step 2). `npm run check:bundle` runs the Lambda guard
+ * (check-lambda-bundle.mjs) after it.
  */
 
 import { build } from "esbuild";
 import { readJsonc } from "./cloudflare-config.mjs";
+import { checkForbidden } from "./lib/bundle-guard.mjs";
 import { builtinModules } from "node:module";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -39,6 +44,9 @@ const FORBIDDEN_INPUTS = [
   [/node_modules\/undici\//, "undici (use safeFetch's fetch transport)"],
   [/packages\/platform-azure\//, "the Azure platform pack"],
   [/packages\/storage-cosmos\/(?!(src|dist)\/definition\.)/, "the Cosmos adapter"],
+  [/node_modules\/@aws-sdk\//, "an AWS SDK"],
+  [/node_modules\/@smithy\//, "the AWS SDK's Smithy runtime"],
+  [/node_modules\/@aws\/durable-execution-sdk-js/, "the Lambda durable execution SDK"],
 ];
 /**
  * Imports left external that must never be reached. `thirdPartyLazy`: also
@@ -54,6 +62,9 @@ const FORBIDDEN_EXTERNALS = [
   [/^undici$/, "undici (use safeFetch's fetch transport)"],
   [/^@agentforeach\/platform-azure(\/|$)/, "the Azure platform pack"],
   [/^@agentforeach\/storage-cosmos(\/adapter)?$/, "the Cosmos adapter"],
+  [/^@aws-sdk\//, "an AWS SDK"],
+  [/^@smithy\//, "the AWS SDK's Smithy runtime"],
+  [/^@aws\/durable-execution-sdk-js/, "the Lambda durable execution SDK"],
 ];
 
 /**
@@ -61,7 +72,7 @@ const FORBIDDEN_EXTERNALS = [
  * bundle for Workers at all) and a path to one is reported with its chain.
  * Aliases are resolved first, so an aliased module still goes to the stub.
  */
-const AZURE_EXTERNALS = [
+const CLOUD_ONLY_EXTERNALS = [
   "@azure/*",
   "durable-functions",
   "undici",
@@ -69,6 +80,9 @@ const AZURE_EXTERNALS = [
   "@agentforeach/platform-azure/*",
   "@agentforeach/storage-cosmos",
   "@agentforeach/storage-cosmos/adapter",
+  "@aws-sdk/*",
+  "@smithy/*",
+  "@aws/durable-execution-sdk-js*",
 ];
 
 /** wrangler.jsonc, comments and trailing commas removed (shared with cloudflare-config.mjs). */
@@ -96,84 +110,22 @@ async function bundleReport(config) {
     conditions: ["workerd", "worker", "browser"],
     mainFields: ["module", "main"],
     alias: aliasesOf(config),
-    external: ["node:*", "cloudflare:*", ...builtins, ...AZURE_EXTERNALS],
+    external: ["node:*", "cloudflare:*", ...builtins, ...CLOUD_ONLY_EXTERNALS],
     loader: { ".json": "json" },
     logLevel: "silent",
   });
   return result.metafile;
 }
 
-/** Each input's importer and how it was imported, breadth-first from the entry. */
-function parents(metafile, entry) {
-  const parent = new Map([[entry, null]]);
-  const queue = [entry];
-  while (queue.length) {
-    const file = queue.shift();
-    for (const imp of metafile.inputs[file]?.imports ?? []) {
-      if (!parent.has(imp.path)) {
-        parent.set(imp.path, { from: file, kind: imp.kind });
-        if (!imp.external) queue.push(imp.path);
-      }
-    }
-  }
-  return parent;
-}
-
-/** Whether the path to `target` takes a lazy import made inside node_modules. */
-function viaThirdPartyLazy(parent, target) {
-  for (let at = target; at; ) {
-    const p = parent.get(at);
-    if (p?.kind === "dynamic-import" && p.from.includes("node_modules/")) return true;
-    at = p?.from;
-  }
-  return false;
-}
-
-function chain(parent, target) {
-  const steps = [];
-  for (let at = target; at; ) {
-    const p = parent.get(at);
-    steps.unshift(p ? `${at}${p.kind === "dynamic-import" ? "  (lazy)" : ""}` : at);
-    at = p?.from;
-  }
-  return steps.map((s, i) => `${"  ".repeat(i)}${i ? "└ " : ""}${s}`).join("\n");
-}
-
 async function checkBundle(config) {
   const metafile = await bundleReport(config);
-  const entry = relative(root, join(deployDir, config.main));
-  const parent = parents(metafile, entry);
-  const hits = [];
-  const notes = new Set();
-  for (const file of Object.keys(metafile.inputs)) {
-    const rule = FORBIDDEN_INPUTS.find(([pattern]) => pattern.test(file));
-    if (rule && parent.has(file)) hits.push({ target: file, why: rule[1] });
-    for (const imp of metafile.inputs[file].imports) {
-      const ext = imp.external && FORBIDDEN_EXTERNALS.find(([pattern]) => pattern.test(imp.path));
-      if (!ext || !parent.has(file)) continue;
-      if (ext[2]?.thirdPartyLazy && viaThirdPartyLazy(parent, file)) {
-        notes.add(`${imp.path}, behind a dependency's own lazy import in ${file.replace(/.*node_modules\//, "")}`);
-      } else hits.push({ target: imp.path, via: file, why: ext[1] });
-    }
-  }
-  for (const note of notes) console.log(`note: allowed: ${note}`);
-  const bytes = Object.values(metafile.outputs).reduce((n, o) => n + o.bytes, 0);
-  console.log(`bundle: ${Object.keys(metafile.inputs).length} modules, ${(bytes / 1e6).toFixed(1)} MB unminified`);
-  // One report per offending package, not per file.
-  const seen = new Set();
-  const reported = hits.filter(({ target }) => {
-    const key = target.replace(/(node_modules\/(@[^/]+\/)?[^/]+|packages\/[^/]+).*/, "$1");
-    return seen.has(key) ? false : (seen.add(key), true);
+  return checkForbidden(metafile, {
+    entry: relative(root, join(deployDir, config.main)),
+    forbiddenInputs: FORBIDDEN_INPUTS,
+    forbiddenExternals: FORBIDDEN_EXTERNALS,
+    bundleName: "the Worker bundle",
+    fix: "Reach Azure- or AWS-only code only through `await import()`, and alias that module to ./azure-only.ts or ./aws-only.ts in deploy/cloudflare/wrangler.jsonc.",
   });
-  for (const { target, why } of reported) {
-    console.error(`\n✖ ${why} is in the Worker bundle:\n${chain(parent, target)}`);
-  }
-  if (reported.length) {
-    console.error(
-      "\nReach Azure-only code only through `await import()`, and alias that module to ./azure-only.ts in deploy/cloudflare/wrangler.jsonc.",
-    );
-  }
-  return reported.length === 0;
 }
 
 async function checkTriggers(config) {
@@ -203,4 +155,4 @@ const config = readWranglerConfig();
 const bundleOk = await checkBundle(config);
 const triggersOk = await checkTriggers(config);
 if (!bundleOk || !triggersOk) process.exit(1);
-console.log("✔ the Worker bundle is free of Azure-only code");
+console.log("✔ the Worker bundle is free of Azure- and AWS-only code");

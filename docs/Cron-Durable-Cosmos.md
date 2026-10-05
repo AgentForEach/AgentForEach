@@ -124,7 +124,7 @@ For each `DurableAlarm` iteration (the tick, `schedulerTick`, runs in the `Durab
 
 Each `CronRun` job (`executeAndRecordJob`):
 
-1. Re-validates the claim (`beginClaimedRun`) and executes the job
+1. Re-validates the claim and the current job (`beginClaimedRun`: claim token, `enabled`, `expiresAt`, `maxRuns`) and executes the job as it is now; a job that may no longer run is skipped, its claim cleared and a `skipped` run recorded
 2. Records the run in `cron-runs`
 3. Applies result/state transitions in `cron-jobs`
 
@@ -265,10 +265,10 @@ Key protections:
 
 1. Due query filters for eligible, non-running/stale-running jobs
 2. Claim step sets `runningToken` + `runningAtMs` with optimistic concurrency
-3. Start step (`beginClaimedRun`) re-validates token before execution
+3. Start step (`beginClaimedRun`) re-validates the token, and that the job is still enabled, unexpired and under `maxRuns`, before execution
 4. Apply-result can enforce token ownership and return `stale` when superseded
 5. Stale claim recovery after `RUNNING_CLAIM_STALE_MS`
-6. Force-run endpoint acquires an atomic running claim before execution
+6. Force-run endpoint acquires an atomic running claim before execution, and names its run by the claim, so a retried request can't start a second run
 7. If result persistence fails, runtime attempts explicit claim release to avoid long stale blocks
 8. Heartbeat queue events use claim tokens (`runningToken`) and stale-claim recovery, same anti-duplication pattern as jobs
 9. Due-job fetch is bounded per tick (`CRON_MAX_DUE_JOBS_PER_TICK`) to bound how many `CronRun` jobs one tick starts
@@ -330,7 +330,7 @@ Main endpoints:
 
 Functional notes:
 
-- `/cron/jobs/{id}/run` claims the job and starts a `CronRun` durable job (id `force-run-<jobId>-<ms>`) that performs real execution, records the run and applies state transitions; the API wakes the scheduler when it dispatches the run
+- `/cron/jobs/{id}/run` claims the job and starts a `CronRun` durable job (id `force-run-<jobId>-<claim token>`) that performs real execution, records the run and applies state transitions; the API wakes the scheduler when it dispatches the run
 - `/cron/status` supports per-shard inspection (`?shardId=`); **admin role required**
 - `/cron/start` can ensure one or all shard schedulers; **admin role required** (the `CronSchedulerHealthCheck` timer normally does this)
 

@@ -1,0 +1,20 @@
+{
+  "name": "@agentforeach/deploy-aws",
+  "version": "0.1.0",
+  "description": "AgentForEach on AWS: the Pulumi programs (application and evaluation foundation) and the release migration",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && node --test \"dist/**/*.test.js\""
+  },
+  "dependencies": {
+    "@pulumi/aws": "7.48.0",
+    "@pulumi/pulumi": "^3.265.0",
+    "@pulumi/random": "^4.21.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.4",
+    "typescript": "^5.7.0"
+  }
+}

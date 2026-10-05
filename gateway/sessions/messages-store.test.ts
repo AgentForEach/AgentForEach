@@ -40,6 +40,7 @@ interface SessionConfig {
   messagesContainerId: string;
   ttlSeconds: number;
   messageTtlSeconds: number;
+  runStatusTtlSeconds: number;
   maxHistoryMessages: number;
   defaultAgentId: string;
   compactionThreshold: number;
@@ -58,6 +59,7 @@ async function setup(overrides?: Partial<SessionConfig>): Promise<MessageStore> 
     messagesContainerId: "session-messages",
     ttlSeconds: 86400,
     messageTtlSeconds: 604800,
+    runStatusTtlSeconds: 604800,
     maxHistoryMessages: 100,
     defaultAgentId: "default",
     compactionThreshold: 60,
@@ -408,6 +410,7 @@ test("a messages container partitioned on the wrong key fails startup with the u
     messagesContainerId: "session-messages",
     ttlSeconds: 86400,
     messageTtlSeconds: 604800,
+    runStatusTtlSeconds: 604800,
     maxHistoryMessages: 100,
     defaultAgentId: "default",
     compactionThreshold: 60,

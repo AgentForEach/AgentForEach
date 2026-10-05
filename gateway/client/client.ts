@@ -241,9 +241,9 @@ export function createAgentClient(config: AgentClientConfig = {}): AgentClient {
     const embApiKey = resolveEmbeddingApiKey();
     const embModel = resolveEmbeddingModel();
     const embBaseUrl = resolveEmbeddingBaseUrl();
-    if (embApiKey) {
-      const memCfg = loadMemoryConfig();
-      sharedEmbeddings = new EmbeddingsClient(embApiKey, embModel, memCfg.maxEmbeddingChars, embBaseUrl);
+    const memCfg = loadMemoryConfig();
+    if (embApiKey || memCfg.embeddingProvider === "bedrock") {
+      sharedEmbeddings = new EmbeddingsClient(embApiKey, embModel, memCfg.maxEmbeddingChars, embBaseUrl, memCfg.embeddingProvider);
     }
   } catch {
     // Non-fatal — episodes will work without vectors
@@ -268,9 +268,11 @@ export function createAgentClient(config: AgentClientConfig = {}): AgentClient {
     }
   }
 
-  // Validate that the default provider has an API key
+  // Validate that the default provider has an API key (Bedrock has none: a
+  // configured entry is enough, see resolveProviderConfig)
+  const keyless = (id: string) => id === "bedrock" && resolveProviderConfig(id) !== null;
   const defaultApiKey = providerApiKeys.get(providerId);
-  if (!defaultApiKey) {
+  if (!defaultApiKey && !keyless(providerId)) {
     throw new Error(
       `agentforeach: no API key for default provider "${providerId}". ` +
         `Configure it in agentforeach.json "llms.providers" or pass provider.apiKey.`,
@@ -319,7 +321,7 @@ export function createAgentClient(config: AgentClientConfig = {}): AgentClient {
     if (cached) return cached;
 
     const apiKey = providerApiKeys.get(effectiveId) ?? defaultApiKey;
-    if (!apiKey) {
+    if (!apiKey && !keyless(effectiveId)) {
       throw new Error(`agentforeach: missing API key for provider "${effectiveId}"`);
     }
     const resolved = resolveProviderConfig(effectiveId);
@@ -330,7 +332,7 @@ export function createAgentClient(config: AgentClientConfig = {}): AgentClient {
     const factoryId = resolveFactoryId(effectiveId);
 
     const next = getProvider(factoryId, {
-      apiKey,
+      apiKey: apiKey ?? "",
       defaultModel: resolveDefaultModel(effectiveId),
       baseUrl: config.provider?.baseUrl ?? resolved?.baseUrl,
       ...(resolved?.timeoutMs && { timeoutMs: resolved.timeoutMs }),

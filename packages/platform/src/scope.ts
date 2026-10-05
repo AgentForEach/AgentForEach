@@ -15,7 +15,9 @@
  * `settle()` is the host's: it waits for the background work (including work
  * that work starts), then runs the cleanups. A host that must keep its
  * response timing (Azure) calls it without awaiting it, off the response
- * path; a durable job step awaits it before the step returns.
+ * path; a durable job step awaits it before the step returns. A host that
+ * freezes once the invocation returns (Lambda) awaits `settleBy(deadlineAt)`,
+ * which stops waiting at the invocation's deadline and says what was left.
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -67,6 +69,11 @@ class Scope implements InvocationScope {
     this.cleanups.push(cleanup);
   }
 
+  /** Background work still running. */
+  get pendingCount(): number {
+    return this.pending.size;
+  }
+
   /** Background work (and what it starts), then cleanups, newest first. Idempotent. */
   settle(): Promise<void> {
     this.settling ??= (async () => {
@@ -112,6 +119,17 @@ export interface OpenedScope {
   run<T>(fn: () => Promise<T>): Promise<T>;
   /** Wait for background work, then run cleanups. See the module docs for when to await it. */
   settle(): Promise<void>;
+  /**
+   * `settle()`, but stop waiting at `deadlineAt` (epoch ms). `settled` is
+   * false when the deadline came first; `pending` is the background work
+   * still running then, for the host to log as cut off.
+   */
+  settleBy(deadlineAt: number): Promise<SettleOutcome>;
+}
+
+export interface SettleOutcome {
+  settled: boolean;
+  pending: number;
 }
 
 /** For hosts: open the scope for one invocation. */
@@ -121,5 +139,17 @@ export function openScope(options: OpenScopeOptions): OpenedScope {
     scope,
     run: (fn) => active.run(scope, fn),
     settle: () => scope.settle(),
+    async settleBy(deadlineAt) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const deadline = new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), Math.max(0, deadlineAt - Date.now()));
+      });
+      try {
+        const settled = await Promise.race([scope.settle().then(() => true), deadline]);
+        return { settled, pending: settled ? 0 : scope.pendingCount };
+      } finally {
+        clearTimeout(timer);
+      }
+    },
   };
 }

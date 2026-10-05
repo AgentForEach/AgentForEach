@@ -4,7 +4,9 @@ import {
   clearWebSocketProviderCache,
   getActiveProvider,
   getRealtimeRelay,
+  installRealtimeProvider,
   realtimeCapabilities,
+  realtimeUpstreamWebhooks,
   registerWebSocketProvider,
   relayEgressEntry,
   relayHost,
@@ -31,7 +33,7 @@ function withEnv(vars: Record<string, string | undefined>, fn: () => Promise<voi
 
 test("Web PubSub: pushes and the relay exist exactly when a connection string is configured", () =>
   withEnv({ WEBSOCKET_PROVIDER: "azure-webpubsub", WEBPUBSUB_CONNECTION_STRING: CONNECTION }, async () => {
-    assert.deepEqual(realtimeCapabilities(), { push: true, relay: true });
+    assert.deepEqual(realtimeCapabilities(), { push: true, relay: true, protocol: "v1", inbound: "websocket", presence: true, disconnect: true });
     assert.equal(isWebSocketEnabled(), true);
     assert.equal(relayHost(), "afe-wps.webpubsub.azure.com");
     assert.equal(relayEgressEntry(), "afe-wps.webpubsub.azure.com", "Web PubSub: the whole host, as before");
@@ -42,7 +44,7 @@ test("Web PubSub: pushes and the relay exist exactly when a connection string is
     assert.equal(relay?.host, "afe-wps.webpubsub.azure.com");
   }).then(() =>
     withEnv({ WEBSOCKET_PROVIDER: "azure-webpubsub", WEBPUBSUB_CONNECTION_STRING: undefined }, async () => {
-      assert.deepEqual(realtimeCapabilities(), { push: false, relay: false });
+      assert.deepEqual(realtimeCapabilities(), { push: false, relay: false, protocol: "v1", inbound: "websocket", presence: true, disconnect: true });
       assert.equal(relayHost(), undefined);
       assert.equal(await getRealtimeRelay(), undefined);
     }),
@@ -97,7 +99,7 @@ test("the Cloudflare provider: pushes and a relay on the Worker's own host", () 
   };
   installCloudflareRealtime({ userSockets: ns, relays: ns, signingKey: "k", publicBaseUrl: "https://gw.example.workers.dev" });
   return withEnv({ WEBSOCKET_PROVIDER: "cloudflare", WEBPUBSUB_CONNECTION_STRING: undefined }, async () => {
-    assert.deepEqual(realtimeCapabilities(), { push: true, relay: true });
+    assert.deepEqual(realtimeCapabilities(), { push: true, relay: true, protocol: "v1", inbound: "websocket", presence: true, disconnect: true });
     assert.equal(relayHost(), "gw.example.workers.dev");
     assert.equal(relayEgressEntry(), "gw.example.workers.dev/realtime/relay", "only the relay path on the Worker's host");
     const provider = await getActiveProvider();
@@ -107,5 +109,25 @@ test("the Cloudflare provider: pushes and a relay on the Worker's own host", () 
     const access = await provider.clientAccess("u1", { ttlMinutes: 5 });
     assert.match(access.url, /^wss:\/\/gw\.example\.workers\.dev\/realtime\/client\?access_token=/);
     assert.equal((await getRealtimeRelay())?.host, "gw.example.workers.dev");
+  });
+});
+
+test("a pack's own registration (AppSync Events): its capabilities, relay host and no webhooks", () => {
+  installRealtimeProvider({
+    id: "test-appsync",
+    factory: () => ({ id: "test-appsync", sendToUser: async () => {} }) as never,
+    traits: {
+      capabilities: () => ({ push: true, relay: true, protocol: "appsync-events", inbound: "http", presence: false, disconnect: false }),
+      relayHost: () => "realtime.example",
+      upstreamWebhooks: false,
+    },
+  });
+  return withEnv({ WEBSOCKET_PROVIDER: "test-appsync", WEBPUBSUB_CONNECTION_STRING: undefined }, async () => {
+    assert.deepEqual(realtimeCapabilities(), { push: true, relay: true, protocol: "appsync-events", inbound: "http", presence: false, disconnect: false });
+    assert.equal(isWebSocketEnabled(), true);
+    assert.equal(relayHost(), "realtime.example");
+    assert.equal(relayEgressEntry(), "realtime.example");
+    assert.equal(realtimeUpstreamWebhooks(), false);
+    assert.equal((await getActiveProvider()).id, "test-appsync");
   });
 });

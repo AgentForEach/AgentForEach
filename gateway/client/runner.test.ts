@@ -597,7 +597,8 @@ test("compaction after a turn is background work of the invocation, so a host ca
 // A browser handoff answered through the API closes the live view
 // ============================================================================
 
-test("answering a browser handoff's form, from any client, closes the live view in the sandbox (live run)", async () => {
+/** A run waiting on a browser handoff, and a sandbox whose driver answers `handoff_stop` with `stopReply`. */
+async function pausedOnHandoff(stopReply: { stdout: string; exitCode: number }) {
   const provider = scriptedProvider([() => textResponse("Thanks, carrying on.")]);
   const hitlStore = memoryHitlStore();
   const commands: string[] = [];
@@ -609,7 +610,7 @@ test("answering a browser handoff's form, from any client, closes the live view 
       resolveIdentifier: (userId: string, sessionId?: string) => `${userId}/${sessionId}`,
       exec: async (args: { command: string }) => {
         commands.push(args.command);
-        return { stdout: "", stderr: "", exitCode: 0, timedOut: false, truncated: false, sessionId: "u1/s1" };
+        return { stderr: "", timedOut: false, truncated: false, sessionId: "u1/s1", ...stopReply };
       },
     } as Record<string, unknown>,
     { get: (target, key) => (key in target ? target[key as string] : async () => undefined) },
@@ -628,10 +629,22 @@ test("answering a browser handoff's form, from any client, closes the live view 
     createdAt: Date.now(),
     timeoutSeconds: 600,
   } as never);
+  return { provider, hitlStore, commands, deps };
+}
 
+test("answering a browser handoff's form, from any client, ends the live view before the run resumes", async () => {
+  const { provider, commands, deps } = await pausedOnHandoff({ stdout: '{"ok":true,"action":"handoff_stop","handoff":"stopped"}', exitCode: 0 });
   await send(deps, "", { hitlInputResponse: { requestId: "req-handoff", data: { done: true } } });
-  await new Promise((resolve) => setTimeout(resolve, 10));
   assert.deepEqual(commands.filter((c) => c.includes("handoff_stop")), ["afe-browser handoff_stop"]);
   const outputs = provider.requests.at(-1)!.input as Array<{ type: string; callId: string; output: string }>;
   assert.equal(outputs[0]?.callId, "call_handoff", "the run resumed the handoff's call");
+});
+
+test("a handoff the driver can't confirm ended doesn't resume the agent, and can be answered again", async () => {
+  const { provider, hitlStore, deps } = await pausedOnHandoff({ stdout: "", exitCode: 1 });
+  const res = await send(deps, "", { hitlInputResponse: { requestId: "req-handoff", data: { done: true } } });
+  assert.notEqual(res.status, "completed");
+  assert.match(String(res.error), /handed back to the agent/, "the user is told why, and to answer again");
+  assert.equal(provider.requests.length, 0, "the model never ran while the user may still have the browser");
+  assert.equal(hitlStore.states.get("req-handoff")?.status, "pending");
 });

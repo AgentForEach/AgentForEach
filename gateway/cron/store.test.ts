@@ -569,10 +569,129 @@ test("beginClaimedRun starts a claimed run once, and only for the current token"
   clock.set(now);
   const claimed = await claim(store, job, now);
 
-  assert.equal(await store.beginClaimedRun(job.id, "alice", "not-the-token"), null);
+  const lost = { status: "skipped", reason: "claim-lost" };
+  assert.deepEqual(await store.beginClaimedRun(job.id, "alice", "not-the-token"), lost);
   const started = await store.beginClaimedRun(job.id, "alice", claimed.state.runningToken!);
-  assert.equal(started?.state.runningStartedAtMs, now);
-  assert.equal(await store.beginClaimedRun(job.id, "alice", claimed.state.runningToken!), null);
+  assert.equal(started.status, "started");
+  assert.equal(started.status === "started" && started.job.state.runningStartedAtMs, now);
+  assert.deepEqual(await store.beginClaimedRun(job.id, "alice", claimed.state.runningToken!), lost);
+});
+
+test("a run doesn't start for a job turned off after it was claimed; its claim is cleared", async (t) => {
+  const clock = useClock(t);
+  const { store, dueRow } = await setup();
+  const job = await store.createJob(everyJob("alice"));
+  const now = T0 + 5 * MIN;
+  clock.set(now);
+  const claimed = await claim(store, job, now);
+  await store.updateJob(job.id, "alice", { enabled: false });
+
+  const start = await store.beginClaimedRun(job.id, "alice", claimed.state.runningToken!);
+  assert.equal(start.status, "skipped");
+  assert.equal(start.status === "skipped" && start.reason, "disabled");
+  const after = (await store.getJob(job.id, "alice"))!;
+  assert.equal(after.state.runningToken, undefined);
+  assert.equal(after.state.runningStartedAtMs, undefined);
+  assert.equal(dueRow(job)?.runningToken, undefined);
+  // Paused, not finished: turning it back on schedules it again.
+  const resumed = await store.updateJob(job.id, "alice", { enabled: true });
+  assert.ok(resumed?.state.nextRunAtMs);
+});
+
+test("a force-run claimed while the job was paused still runs it", async (t) => {
+  const clock = useClock(t);
+  const { store } = await setup();
+  const job = await store.createJob(everyJob("alice", { enabled: false }));
+  clock.set(T0 + MIN);
+  const forced = await store.claimJobForForceRun(job.id, "alice");
+  assert.equal(forced?.enabled, false);
+  const start = await store.beginClaimedRun(job.id, "alice", forced!.state.runningToken!, { requireEnabled: forced!.enabled });
+  assert.equal(start.status, "started");
+});
+
+test("a run doesn't start for a job that expired after it was claimed; the job is turned off", async (t) => {
+  const clock = useClock(t);
+  const { store, dueRow } = await setup();
+  const job = await store.createJob(everyJob("alice", { expiresAt: T0 + 6 * MIN }));
+  const now = T0 + 5 * MIN;
+  clock.set(now);
+  const claimed = await claim(store, job, now);
+  clock.set(T0 + 7 * MIN); // the run starts late, past the expiry
+
+  const start = await store.beginClaimedRun(job.id, "alice", claimed.state.runningToken!);
+  assert.equal(start.status === "skipped" && start.reason, "expired");
+  const after = (await store.getJob(job.id, "alice"))!;
+  assert.equal(after.enabled, false);
+  assert.equal(after.state.lastStatus, "expired");
+  assert.equal(after.state.runningToken, undefined);
+  assert.equal(after.state.nextRunAtMs, undefined);
+  assert.equal(dueRow(job)?.runningToken, undefined);
+});
+
+test("a run doesn't start for a job whose maxRuns was reached after it was claimed", async (t) => {
+  const clock = useClock(t);
+  const { store } = await setup();
+  const job = await store.createJob(everyJob("alice", { maxRuns: 5 }));
+  const now = T0 + 5 * MIN;
+  clock.set(now);
+  const claimed = await claim(store, job, now);
+  // Another run finished meanwhile, or the owner lowered maxRuns.
+  await store.updateJob(job.id, "alice", { maxRuns: 1, state: { runCount: 1 } });
+
+  const start = await store.beginClaimedRun(job.id, "alice", claimed.state.runningToken!);
+  assert.equal(start.status === "skipped" && start.reason, "max-runs");
+  const after = (await store.getJob(job.id, "alice"))!;
+  assert.equal(after.enabled, false, "turned off, so it isn't claimed again");
+  assert.equal(after.state.runningToken, undefined);
+  assert.deepEqual(await store.getDueJobs(T0 + 60 * MIN, getSchedulerShardForUser("alice")), []);
+});
+
+test("a run with a stale claim token doesn't start, and leaves the newer claim alone", async (t) => {
+  const clock = useClock(t);
+  const { store } = await setup();
+  const job = await store.createJob(everyJob("alice"));
+  const now = T0 + 5 * MIN;
+  clock.set(now);
+  const first = await claim(store, job, now);
+  // The first run never started; its claim went stale and was claimed again.
+  const later = now + RUNNING_CLAIM_STALE_MS + MIN;
+  clock.set(later);
+  const second = await claim(store, job, later);
+  assert.notEqual(second.state.runningToken, first.state.runningToken);
+
+  assert.deepEqual(await store.beginClaimedRun(job.id, "alice", first.state.runningToken!), {
+    status: "skipped",
+    reason: "claim-lost",
+  });
+  assert.equal((await store.getJob(job.id, "alice"))?.state.runningToken, second.state.runningToken);
+});
+
+test("a run doesn't start for a job deleted after it was claimed", async (t) => {
+  const clock = useClock(t);
+  const { store } = await setup();
+  const job = await store.createJob(everyJob("alice"));
+  const now = T0 + 5 * MIN;
+  clock.set(now);
+  const claimed = await claim(store, job, now);
+  await store.deleteJob(job.id, "alice");
+  assert.deepEqual(await store.beginClaimedRun(job.id, "alice", claimed.state.runningToken!), {
+    status: "skipped",
+    reason: "claim-lost",
+  });
+});
+
+test("a run starts with the job as edited after it was claimed, not the claimed copy", async (t) => {
+  const clock = useClock(t);
+  const { store } = await setup();
+  const job = await store.createJob(everyJob("alice"));
+  const now = T0 + 5 * MIN;
+  clock.set(now);
+  const claimed = await claim(store, job, now);
+  await store.updateJob(job.id, "alice", { payload: { kind: "agentTurn", message: "drink water" } });
+
+  const start = await store.beginClaimedRun(job.id, "alice", claimed.state.runningToken!);
+  assert.equal(start.status, "started");
+  assert.equal(start.status === "started" && start.job.payload.kind === "agentTurn" && start.job.payload.message, "drink water");
 });
 
 test("countInFlightRuns counts a shard's live claims, and getDueJobs claims only up to its limit", async (t) => {
@@ -1153,7 +1272,10 @@ test("beginClaimedRun loses to another runner that started first (etag)", async 
   beforeNext(t, jobs, "replace", () =>
     jobs.upsert({ ...current, state: { ...current.state, runningStartedAtMs: now - 1 } }),
   );
-  assert.equal(await store.beginClaimedRun(job.id, "alice", claimed.state.runningToken!), null);
+  assert.deepEqual(await store.beginClaimedRun(job.id, "alice", claimed.state.runningToken!), {
+    status: "skipped",
+    reason: "claim-lost",
+  });
   assert.equal(jobs.peek<CronJob>(job.id, "alice")?.state.runningStartedAtMs, now - 1);
 });
 

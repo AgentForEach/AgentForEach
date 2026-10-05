@@ -1,0 +1,7 @@
+name: agentforeach-aws
+runtime:
+  name: nodejs
+  options:
+    typescript: false
+description: AgentForEach on AWS (docs/AWS.md). Uses your VPC and PostgreSQL; build first (npm run build --workspace @agentforeach/deploy-aws).
+main: ../dist/infra/index.js

@@ -20,6 +20,11 @@ export type AwsCredentials = {
   secretAccessKey: string;
   /** Temporary-credential session token, sent as `x-amz-security-token`. */
   sessionToken?: string;
+  /**
+   * When temporary credentials stop working. Links presigned with them stop
+   * then too, so the `s3` provider signs links to end 60 s before.
+   */
+  expiration?: Date;
 };
 
 export type SigningScope = {
@@ -176,4 +181,14 @@ export async function presignUrl(scope: SigningScope, input: PresignInput): Prom
   const { signature: sig } = await signature(scope, stamp, canonicalRequest);
   url.searchParams.set("X-Amz-Signature", sig);
   return url;
+}
+
+/** When a presigned URL stops working: its `X-Amz-Date` plus `X-Amz-Expires` seconds. */
+export function presignedUrlExpiry(url: string | URL): Date {
+  const params = new URL(url).searchParams;
+  const stamp = params.get("X-Amz-Date") ?? "";
+  const match = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/.exec(stamp);
+  if (!match) throw new RangeError(`Not a presigned URL: X-Amz-Date is "${stamp}"`);
+  const [, y, mo, d, h, mi, s] = match.map(Number);
+  return new Date(Date.UTC(y, mo - 1, d, h, mi, s) + Number(params.get("X-Amz-Expires")) * 1000);
 }

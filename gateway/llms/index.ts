@@ -97,6 +97,7 @@ export {
   OpenAICompletionsProvider,
   createOpenAICompletionsProvider,
 } from "./providers/openai-completions.js";
+export { BedrockProvider, createBedrockProvider, bedrockRuntime } from "./providers/bedrock.js";
 
 // ============================================================================
 // Auto-register built-in providers
@@ -106,7 +107,9 @@ import { registerProvider } from "./registry.js";
 import { createOpenAIProvider } from "./providers/openai.js";
 import { createAnthropicProvider } from "./providers/anthropic.js";
 import { createOpenAICompletionsProvider } from "./providers/openai-completions.js";
+import { createBedrockProvider } from "./providers/bedrock.js";
 
 registerProvider("openai", createOpenAIProvider);
 registerProvider("anthropic", createAnthropicProvider);
 registerProvider("openai-completions", createOpenAICompletionsProvider);
+registerProvider("bedrock", createBedrockProvider);

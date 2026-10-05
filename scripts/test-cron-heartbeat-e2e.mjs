@@ -13,11 +13,13 @@
  * Usage:
  *   node scripts/test-cron-heartbeat-e2e.mjs --base https://<your-app>.azurewebsites.net
  *   AGENTFOREACH_BASE_URL=https://<your-app>.azurewebsites.net node scripts/test-cron-heartbeat-e2e.mjs --users 5 --due-users 3
+ *   On a cloud stack, also set LOADTEST_JWT_SECRET (scripts/load-test/make-config.mjs)
  *
  * The base URL is required (--base or AGENTFOREACH_BASE_URL).
  */
 
 import process from "node:process";
+import { userHeaders } from "./lib/test-auth.mjs";
 
 const DEFAULT_BASE_URL = process.env.AGENTFOREACH_BASE_URL?.trim() || "";
 const USAGE =
@@ -87,8 +89,7 @@ async function requestJson({
   body,
   expected = [200],
 }) {
-  const headers = {};
-  if (userId) headers["x-user-id"] = userId;
+  const headers = userHeaders(userId);
   if (body !== undefined) headers["content-type"] = "application/json";
 
   const res = await fetch(`${baseUrl}${path}`, {
@@ -215,14 +216,21 @@ async function createMainJob({
   return res.json;
 }
 
+/** Force-run a job and wait for its run record: the run is dispatched (202) and recorded when it finishes. */
 async function runJobNow(baseUrl, userId, jobId) {
-  return await requestJson({
+  await requestJson({
     baseUrl,
     method: "POST",
     path: `/cron/jobs/${jobId}/run`,
     userId,
-    expected: [200],
+    expected: [202],
   });
+  let runs = [];
+  await waitFor(
+    async () => (runs = await getRuns(baseUrl, userId, jobId)).length > 0,
+    { timeoutMs: 120_000, intervalMs: 2_000, label: `force-run record for ${jobId}` },
+  );
+  return { json: runs[0] };
 }
 
 async function getRuns(baseUrl, userId, jobId) {
@@ -333,7 +341,7 @@ async function main() {
       ]),
     );
     for (const res of runResults) {
-      assert(res.json?.status === "ok", "Force-run returned non-ok status", res.json);
+      assert(res.json?.status === "ok", "Force-run recorded a non-ok run", res.json);
     }
     console.log("[PASS] Force-run succeeded for all wakeMode jobs");
 

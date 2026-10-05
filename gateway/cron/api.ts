@@ -18,9 +18,9 @@
 
 import type { HandlerContext, HttpRequestLike, HttpResult, RouteDef } from "@agentforeach/platform";
 import { durable } from "../runtime/durable.js";
-import { CRON_RUN_KIND, CRON_SCHEDULER_KIND, wakeOrStartScheduler } from "./orchestrator.js";
+import { CRON_SCHEDULER_KIND, startForceRun, wakeOrStartScheduler } from "./orchestrator.js";
 import type { DurableStatus, InstanceInfo } from "@agentforeach/platform";
-import { getCronStore, hasActiveRunningClaim } from "./store.js";
+import { cronRunBlock, getCronStore, hasActiveRunningClaim } from "./store.js";
 import {
   getSchedulerInstanceId,
   getSchedulerShardCount,
@@ -311,13 +311,16 @@ routes.push({
     const job = await store.getJob(jobId, userId);
     if (!job) return errorResponse("Job not found", 404);
 
-    // "Run now" still respects the job's own limits.
-    if (typeof job.expiresAt === "number" && job.expiresAt <= Date.now()) {
-      return errorResponse("Job has expired", 409);
-    }
-    if (typeof job.maxRuns === "number" && job.maxRuns > 0 && (job.state.runCount ?? 0) >= job.maxRuns) {
-      return errorResponse("Job has reached its maxRuns", 409);
-    }
+    // "Run now" still respects the job's own limits (a paused job may run).
+    // The run checks them again when it starts.
+    const block = cronRunBlock(job, Date.now(), { requireEnabled: false });
+    if (block === "expired") return errorResponse("Job has expired", 409);
+    if (block === "max-runs") return errorResponse("Job has reached its maxRuns", 409);
+
+    // A run in flight (or this request retried): no new run, and no charge
+    // against the force-run limit.
+    const alreadyRunning = errorResponse("Job is already running. Try again later.", 409);
+    if (hasActiveRunningClaim(job)) return alreadyRunning;
 
     const limit = await getScopedRateLimiter("forceRun").check(userId);
     if (!limit.allowed) {
@@ -325,17 +328,13 @@ routes.push({
       return { ...refused, headers: { ...(refused.headers as Record<string, string>), "Retry-After": String(limit.retryAfterSeconds) } };
     }
 
-    const claimed = await store.claimJobForForceRun(jobId, userId);
-    if (!claimed || !claimed.state.runningToken) {
-      return errorResponse("Job is already running. Try again later.", 409);
-    }
-
-    // Dispatch execution to a durable job.
+    // Claim it and dispatch execution to a durable job named by the claim.
     // Returns 202 immediately — the caller polls GET /cron/runs/{id}
     // to check the result. No HTTP request has to stay open for a
     // long-running job.
-    const instanceId = `force-run-${claimed.id}-${Date.now()}`;
-    await durable().startJob(CRON_RUN_KIND, claimed, instanceId);
+    const started = await startForceRun(jobId, userId);
+    if (!started) return alreadyRunning;
+    const { job: claimed, instanceId } = started;
 
     // Signal scheduler early so it recomputes wake times.
     await signalJobsChanged(ctx, { userId });

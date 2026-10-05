@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { hostInfo, installHost, resetHostForTests } from "./host.js";
 import { isCloudRuntime } from "../utils/env.js";
 
-const KEYS = ["WEBSITE_SITE_NAME", "WEBSITE_HOSTNAME"] as const;
+const KEYS = ["WEBSITE_SITE_NAME", "WEBSITE_HOSTNAME", "AWS_LAMBDA_FUNCTION_NAME"] as const;
 const saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
 
 afterEach(() => {
@@ -33,6 +33,16 @@ test("without an installed host or Azure variables, the host is local", () => {
   assert.equal(h.publicBaseUrl, undefined);
   assert.equal(h.label, "local");
   assert.equal(isCloudRuntime(), false);
+});
+
+test("without an installed host, Lambda's function name identifies a production AWS host", () => {
+  for (const k of KEYS) delete process.env[k];
+  process.env.AWS_LAMBDA_FUNCTION_NAME = "afe-http";
+  const h = hostInfo();
+  assert.equal(h.platform, "aws");
+  assert.equal(h.isProductionHost, true, "an entry point that forgot installHost still fails closed");
+  assert.equal(h.label, "aws:afe-http");
+  assert.equal(isCloudRuntime(), true);
 });
 
 test("a localhost WEBSITE_HOSTNAME (Core Tools) is served over http", () => {

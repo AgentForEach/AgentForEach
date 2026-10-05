@@ -24,6 +24,18 @@
  *   (scripts/test-fixtures/cloudflare-sandbox-worker, see its README).
  *   CF_SANDBOX_TEST_URL (the Worker's URL), CF_SANDBOX_TEST_TOKEN (its API_TOKEN secret).
  *
+ * aws-agentcore: a Bedrock AgentCore Runtime running the sandbox image
+ *   (docs/AWS-Sandbox.md), through the AWS credential chain (it needs
+ *   bedrock-agentcore:InvokeAgentRuntime and StopRuntimeSession, and in
+ *   s3-checkpoint mode the workspace bucket's s3:GetBucketVersioning,
+ *   GetObject and PutObject). AWS_SANDBOX_RUNTIME_ARN, AWS_SANDBOX_SERVER_TOKEN;
+ *   optional AWS_SANDBOX_QUALIFIER, AWS_SANDBOX_STORAGE_MODE (ephemeral, the
+ *   default, or s3-checkpoint with AWS_SANDBOX_WORKSPACE_BUCKET and
+ *   AWS_SANDBOX_ARCHIVE_MAX_BYTES / _FILES equal to the runtime's). Session
+ *   records are kept in memory. In s3-checkpoint mode, sleep stops the
+ *   sessions, so the next call restores from S3; no egress proxy, so those
+ *   checks skip. Billable: run it only when you mean to.
+ *
  * Common: SANDBOX_ECHO_HOST (default postman-echo.com; must echo
  * /headers and be unreachable until a credential names it),
  * SANDBOX_BLOCKED_URL (default https://example.com), SANDBOX_TIMEOUT_MS.
@@ -173,7 +185,59 @@ async function cloudflareContainers() {
   };
 }
 
-const backends = { "aca-sandboxes": acaSandboxes, "aca-sessions": acaSessions, "cloudflare-containers": cloudflareContainers };
+async function awsAgentCore() {
+  const { InMemoryStorage } = await import("../packages/storage/dist/index.js");
+  const { BedrockAgentCoreClient } = await import("@aws-sdk/client-bedrock-agentcore");
+  const { AgentCoreTransport, AwsAgentCoreSandbox, AwsSessionStore, sandboxKey } = await import(
+    "../packages/platform-aws/dist/sandbox/index.js"
+  );
+  const runtimeArn = env("AWS_SANDBOX_RUNTIME_ARN");
+  const serverToken = env("AWS_SANDBOX_SERVER_TOKEN");
+  const qualifier = process.env.AWS_SANDBOX_QUALIFIER || undefined;
+  const storageMode = process.env.AWS_SANDBOX_STORAGE_MODE || "ephemeral";
+  const checkpoint = storageMode === "s3-checkpoint";
+  const storage = new InMemoryStorage();
+  // No SDK retries: an ambiguous failure must not run a command twice.
+  const agentCore = new BedrockAgentCoreClient({ region: runtimeArn.split(":")[3], maxAttempts: 1 });
+  const backend = new AwsAgentCoreSandbox({
+    runtimeArn,
+    qualifier,
+    serverToken,
+    storageMode,
+    storage,
+    agentCore,
+    ...(checkpoint
+      ? {
+          workspaceBucket: env("AWS_SANDBOX_WORKSPACE_BUCKET"),
+          persistenceLimits: {
+            maxBytes: Number(env("AWS_SANDBOX_ARCHIVE_MAX_BYTES")),
+            maxFiles: Number(env("AWS_SANDBOX_ARCHIVE_MAX_FILES")),
+          },
+        }
+      : {}),
+  });
+  const sessions = new AwsSessionStore(storage);
+  const stopper = new AgentCoreTransport({ client: agentCore, runtimeArn, qualifier, token: serverToken, maxResponseBytes: 1 });
+  return {
+    createBackend: () => backend,
+    // Checkpoint mode: end the runtime sessions, as an idle timeout does; the next call restores from S3.
+    ...(checkpoint
+      ? {
+          sleep: async (_backend, identifier) => {
+            for (const record of await sessions.list(sandboxKey(identifier).owner)) await stopper.stop(record.sessionId, record.qualifier);
+          },
+        }
+      : {}),
+    egress,
+  };
+}
+
+const backends = {
+  "aca-sandboxes": acaSandboxes,
+  "aca-sessions": acaSessions,
+  "cloudflare-containers": cloudflareContainers,
+  "aws-agentcore": awsAgentCore,
+};
 if (!backends[backendName]) {
   console.error(`Usage: node scripts/test-sandbox-conformance-live.mjs <${Object.keys(backends).join("|")}>`);
   process.exit(2);

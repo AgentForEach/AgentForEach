@@ -35,12 +35,10 @@ import type { ExportBlobStore } from "./sandbox/export-store.js";
 import {
   BrowserToolHandler,
   getBrowserToolDefinitions,
-  handoffDriverUserId,
+  handoffRelay,
   isBrowserEnabled,
   isBrowserTool,
-  type HandoffRelay,
 } from "./browser/index.js";
-import { getRealtimeRelay } from "../websocket/providers/index.js";
 import type { DirectInputForm } from "../hitl/types.js";
 import { getScopedRateLimiter } from "../ratelimit/index.js";
 import type { ToolResultImage } from "../llms/types.js";
@@ -711,23 +709,4 @@ export class SkillToolHandler {
         .every((c) => !!config.credentials[c.key]?.trim()),
     });
   }
-}
-
-/**
- * Handoff tokens from the realtime relay, on the live-view hub (which has no
- * event handlers), each limited to the one handoff group: the driver joins
- * as a hashed id, the viewer as the user.
- */
-function handoffRelay(hub: string): HandoffRelay {
-  return {
-    async issue(viewerUserId, group, ttlMinutes) {
-      const relay = await getRealtimeRelay();
-      if (!relay) throw new Error("real-time messaging (Web PubSub) isn't configured");
-      const [driver, viewer] = await Promise.all([
-        relay.groupAccess({ hub, userId: handoffDriverUserId(viewerUserId), group, ttlMinutes }),
-        relay.groupAccess({ hub, userId: viewerUserId, group, ttlMinutes }),
-      ]);
-      return { driverUrl: driver.url, viewerUrl: viewer.url };
-    },
-  };
 }

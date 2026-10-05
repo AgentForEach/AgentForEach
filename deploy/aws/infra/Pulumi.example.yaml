@@ -1,0 +1,61 @@
+# Example stack configuration for deploy/aws/infra. Copy to Pulumi.<stack>.yaml (git-ignored)
+# or set values with `pulumi config set`; deploy/aws/deploy.sh sets the phase, the package,
+# the image digest and the foundation's outputs for you. See docs/AWS.md.
+config:
+  aws:region: us-west-2                    # a region with Lambda durable functions, AppSync Events and AgentCore Runtime
+  agentforeach-aws:prefix: afe-dev         # every resource name starts with it (3-25 characters)
+  agentforeach-aws:phase: bootstrap        # bootstrap, then migrate, then application (only ever forward)
+
+  # --- Set by deploy.sh ---------------------------------------------------------
+  agentforeach-aws:artifactPath: /absolute/path/to/agentforeach-lambda.zip   # deploy/aws/package.sh
+  agentforeach-aws:sandboxImageDigest: sha256:REPLACE_WITH_THE_PUSHED_IMAGE_DIGEST
+
+  # --- Your network and database (or the foundation's outputs) ------------------
+  agentforeach-aws:vpcId: vpc-REPLACE
+  agentforeach-aws:privateSubnetIds:
+    - subnet-REPLACE_A
+    - subnet-REPLACE_B
+  agentforeach-aws:databaseSecurityGroupId: sg-REPLACE
+  # The runtime's PostgreSQL URL (TLS on): the whole SecretString, or the JSON field below.
+  agentforeach-aws:databaseSecretArn: arn:aws:secretsmanager:us-west-2:123456789012:secret:agentforeach-postgres-REPLACE
+  agentforeach-aws:databaseSecretJsonKey: DATABASE_URL
+  # Optional: an owner role for the migration (JSON with username and password, as RDS keeps
+  # its master user's secret). Without it, the runtime's role must own the schema.
+  # agentforeach-aws:migrationSecretArn: arn:aws:secretsmanager:us-west-2:123456789012:secret:rds!db-REPLACE
+  # agentforeach-aws:secretKmsKeyArns: []  # customer-managed keys encrypting these secrets
+
+  # --- Sign-in: the jwt provider (RS256 with a JWKS) ------------------------------
+  agentforeach-aws:jwtIssuer: https://YOUR_IDENTITY_PROVIDER
+  agentforeach-aws:jwtAudience: YOUR_AUDIENCE
+  agentforeach-aws:jwtJwksUri: https://YOUR_IDENTITY_PROVIDER/.well-known/jwks.json
+  agentforeach-aws:allowedOrigins:
+    - https://YOUR_CHAT_FRONTEND
+
+  # --- Model and tool keys: Secrets Manager, by the name agentforeach.json uses ----
+  agentforeach-aws:providerSecrets:
+    OPENAI_API_KEY:
+      arn: arn:aws:secretsmanager:us-west-2:123456789012:secret:agentforeach-openai-REPLACE
+      jsonKey: OPENAI_API_KEY
+  # With the bedrock provider, the exact models the gateway may invoke:
+  # agentforeach-aws:bedrockModelArns:
+  #   - arn:aws:bedrock:us-west-2::foundation-model/amazon.nova-lite-v1:0
+
+  # --- Sandboxes -----------------------------------------------------------------
+  agentforeach-aws:sandboxEnabled: true        # false: no AgentCore runtime and no image
+  agentforeach-aws:workspacePersistence: false # true: /mnt/data kept in S3 checkpoints
+  agentforeach-aws:browserEnabled: false       # true: an image built with the browser, and:
+  # agentforeach-aws:browserEgressCidrs:
+  #   - 203.0.113.10/32                        # each HTTPS destination, AppSync's included
+
+  # --- Scale and operations -------------------------------------------------------
+  agentforeach-aws:schedulerEnabled: true
+  # agentforeach-aws:schedulerShards: 8      # only to match an existing deployment
+  agentforeach-aws:poolSize: 2                 # PostgreSQL connections per function instance
+  agentforeach-aws:reservedConcurrency: -1     # -1: unreserved; never 0
+  agentforeach-aws:durableExecutionTimeoutSeconds: 28800   # executions hand over every 6 hours
+  agentforeach-aws:conformanceKinds: false     # true on stacks that run the durable conformance suite
+  agentforeach-aws:apiThrottleRate: 50
+  agentforeach-aws:apiThrottleBurst: 100
+  agentforeach-aws:logRetentionDays: 30
+  agentforeach-aws:protectData: true
+  # agentforeach-aws:applicationConfigPath: /absolute/path/to/agentforeach.json

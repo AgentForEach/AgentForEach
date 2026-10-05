@@ -11,8 +11,9 @@
  * Lifecycle:
  *   1. Runner hits HITL gate → `create()` persists state
  *   2. Durable orchestrator waits for event → function sleeps (zero cost)
- *   3. User responds → ws-message handler raises Durable event
- *   4. Orchestrator wakes → activity reads state with `get()`
+ *   3. User responds → the answer is saved on the state (`transition()`),
+ *      then the ws-message or chat handler raises the Durable event
+ *   4. Orchestrator wakes → activity reads state (and the saved answer) with `get()`
  *   5. Activity resumes runner → `updateStatus("responded")` or "cancelled"
  *   6. Cleanup: TTL (24h) on completed/timed_out documents
  *
@@ -115,22 +116,48 @@ export class HitlStore {
   }
 
   /**
-   * Update the status of a HITL request (e.g., responded, cancelled, timed_out).
-   * Extends TTL for resolved states so they're available for debugging.
+   * Apply `update` to a request's state as one guarded write: `update` sees
+   * the latest state (it may run more than once) and returns the next state,
+   * or undefined to write nothing. An etag keeps two writers from undoing
+   * each other, so answers, resumes and timeouts can't race. Returns the
+   * state now stored and whether this call changed it, or null when there is
+   * no such request. A request leaving `pending` keeps its document for 24
+   * hours.
+   */
+  async transition(
+    requestId: string,
+    userId: string,
+    update: (state: HitlRunState) => HitlRunState | undefined,
+  ): Promise<{ state: HitlRunState; updated: boolean } | null> {
+    const result = await mutate(this.container, requestId, userId, (doc) => {
+      const state = update(doc.state);
+      if (!state) return undefined;
+      const resolved = state.status !== "pending";
+      return { ...doc, state, updatedAt: new Date().toISOString(), ttl: resolved ? RESOLVED_TTL_SECONDS : doc.ttl };
+    });
+    if (result.status === "updated") return { state: result.document.state, updated: true };
+    if (result.status === "skipped") return { state: result.document.state, updated: false };
+    if (result.status === "notFound") return null;
+    throw new Error(`HITL request ${requestId} is being changed by another writer; try again`);
+  }
+
+  /**
+   * Move a pending request to `status` (responded, cancelled, timed_out),
+   * with any other fields to record. Only a pending request changes, so a
+   * late timeout can't undo an answer, nor a second resume repeat one.
+   * Returns whether this call made the change. Extends the TTL for
+   * debugging.
    */
   async updateStatus(
     requestId: string,
     userId: string,
     status: HitlRunState["status"],
-  ): Promise<void> {
-    const doc = await this.container.read(requestId, userId);
-    if (!doc) return;
-
-    doc.state.status = status;
-    doc.updatedAt = new Date().toISOString();
-    doc.ttl = RESOLVED_TTL_SECONDS;
-
-    await this.container.replace(requestId, userId, doc);
+    fields: Pick<HitlRunState, "resumedRunId"> = {},
+  ): Promise<boolean> {
+    const result = await this.transition(requestId, userId, (state) =>
+      state.status === "pending" ? { ...state, ...fields, status } : undefined,
+    );
+    return result?.updated ?? false;
   }
 
   /**

@@ -11,10 +11,11 @@ Done: a [one-command quickstart](scripts/quickstart.sh) (with a Codespaces butto
 
 ## Run on more clouds
 
-Done: the [platform layer](docs/Platforms.md). The gateway talks to six cloud-neutral contracts, each with a conformance suite, and a cloud is a pack that implements them. Azure was the first pack and [Cloudflare](docs/Cloudflare.md) is the second. Next:
+Done: the [platform layer](docs/Platforms.md). The gateway talks to six cloud-neutral contracts, each with a conformance suite, and a cloud is a pack that implements them. Azure was the first pack, [Cloudflare](docs/Cloudflare.md) is the second and [AWS](docs/AWS.md) the third (in preview). Next:
 
-- AWS and Google Cloud packs, each with its own deploy program ([Adding a cloud](docs/Platforms.md#adding-a-cloud))
-- Production deployments on Cloudflare, and the fixes they turn up
+- AWS validated live on a fresh deployment, with what was never tested there: an interrupted worker, a deploy during a pending form, reconnects and long browser handoffs
+- A Google Cloud pack, with its own deploy program ([Adding a cloud](docs/Platforms.md#adding-a-cloud))
+- Production deployments on Cloudflare and AWS, and the fixes they turn up
 
 ## Measure more of the platform
 

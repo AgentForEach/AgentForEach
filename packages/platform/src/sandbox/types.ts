@@ -20,10 +20,27 @@ export interface SandboxCapabilities {
   /**
    * What survives while the sandbox is idle:
    *   - "none": nothing; the session is destroyed after a cooldown;
+   *   - "data": the files under /mnt/data only (copied out and back, so
+   *     packages installed elsewhere and running processes are gone);
    *   - "disk": files (on /mnt/data and elsewhere on its disk);
    *   - "memory": files, and running processes and memory too.
    */
-  persistence: "none" | "disk" | "memory";
+  persistence: "none" | "data" | "disk" | "memory";
+  /**
+   * How much of /mnt/data persistence keeps, when it is bounded (an archive
+   * of /mnt/data stored outside the sandbox). A call that leaves /mnt/data
+   * over either bound fails with SandboxPersistenceLimitError and the last
+   * saved files stay; nothing is saved cut short. Absent: no bound.
+   */
+  persistenceLimits?: SandboxPersistenceLimits;
+}
+
+/** The bounds on what `persistence` keeps (see SandboxCapabilities.persistenceLimits). */
+export interface SandboxPersistenceLimits {
+  /** Total bytes of the regular files under /mnt/data. */
+  maxBytes: number;
+  /** Files, directories and links under /mnt/data. */
+  maxFiles: number;
 }
 
 /** Arguments for running a shell command (the `sandbox_exec` tool). */
@@ -166,5 +183,17 @@ export class SandboxUnsupportedError extends Error {
   constructor(operation: string, backend: string) {
     super(`${backend}: ${operation} is not supported by this sandbox backend`);
     this.name = "SandboxUnsupportedError";
+  }
+}
+
+/**
+ * The error a backend throws when a call leaves /mnt/data over its
+ * persistence limits (SandboxCapabilities.persistenceLimits): the call's
+ * changes were not saved, and the sandbox keeps its last saved files.
+ */
+export class SandboxPersistenceLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SandboxPersistenceLimitError";
   }
 }

@@ -46,10 +46,26 @@ export interface HttpResult {
 export interface HandlerContext {
   /** Unique per invocation; used to correlate logs. */
   readonly invocationId: string;
+  /**
+   * When the host stops this invocation (epoch ms), if it imposes a limit a
+   * handler must finish under: Lambda's remaining time, or the front door's
+   * request timeout. Unset where the handler's own budget is the only limit.
+   * Read it through `effectiveDeadline`.
+   */
+  readonly deadlineAt?: number;
   log(...args: unknown[]): void;
   warn(...args: unknown[]): void;
   error(...args: unknown[]): void;
   trace(...args: unknown[]): void;
+}
+
+/**
+ * The deadline for work with its own budget of `ownMs` from now, cut short to
+ * the invocation's `deadlineAt` when that comes first. Every budget a
+ * handler sets (a chat turn's, a job step's) goes through here.
+ */
+export function effectiveDeadline(ownMs: number, context: Pick<HandlerContext, "deadlineAt">): number {
+  return Math.min(Date.now() + ownMs, context.deadlineAt ?? Infinity);
 }
 
 export type HttpHandler = (request: HttpRequestLike, context: HandlerContext) => Promise<HttpResult>;
@@ -114,11 +130,28 @@ export interface HostInfo {
   readonly label: string;
   /**
    * The process outlives invocations, so pools, sockets and module-level
-   * timers can be kept between them (Azure, Node). False on hosts that run
-   * each invocation in a short-lived isolate (Cloudflare Workers), where
-   * anything doing I/O must live in the invocation scope. Default true.
+   * timers can be kept between them (Azure, Node, Lambda). False on hosts
+   * that run each invocation in a short-lived isolate (Cloudflare Workers),
+   * where anything doing I/O must live in the invocation scope. Default true.
    */
   readonly persistent?: boolean;
+  /**
+   * Background work keeps running after the response is sent (Azure: the
+   * process does; Cloudflare: `waitUntil`). False where the host freezes the
+   * process as soon as the invocation returns (Lambda): there the host awaits
+   * the scope's background work before it returns, bounded by `deadlineAt`.
+   * Independent of `persistent`: a Lambda process is persistent (pools and
+   * sockets survive between invocations) but runs nothing between them.
+   * Default true.
+   */
+  readonly backgroundAfterResponse?: boolean;
+  /**
+   * The longest an HTTP request may take, in ms, when the front door cuts it
+   * off sooner than a chat turn can run (API Gateway: 30 s). On such a host
+   * chat always runs in the background, and `POST /api/chat` with
+   * `"wait": true` is refused. Unset: no such limit.
+   */
+  readonly maxRequestMs?: number;
   /** Child processes can be spawned (MCP `stdio` servers need this). Default true. */
   readonly subprocesses?: boolean;
 }
@@ -149,6 +182,8 @@ export interface InvocationScope {
    * - Azure: nothing; the process does, as today.
    * - Cloudflare HTTP: `ctx.waitUntil` (at most 30 s after the response).
    * - Cloudflare durable job: the step awaits it before it returns.
+   * - Lambda (`backgroundAfterResponse: false`): the host awaits it before
+   *   the invocation returns, until `deadlineAt`.
    */
   background(work: Promise<unknown>): void;
   /**

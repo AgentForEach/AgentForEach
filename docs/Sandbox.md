@@ -37,16 +37,19 @@ Output is truncated to `maxOutputChars` (50,000 by default). With the default `i
 2. With `aca-sandboxes`, the client needs a subscription, resource group and sandbox group (the `ACA_SANDBOX_*` settings). If they're missing but a session pool endpoint (`ACA_POOL_MANAGEMENT_ENDPOINT`) is set, AgentForEach logs a warning and falls back to Dynamic Sessions with the `aca` timeouts. If neither is set, the sandbox tools are disabled.
 3. With `aca-sessions`, the Dynamic Sessions client is used.
 4. With `cloudflare-containers`, the Worker's `SANDBOX` Durable Object binding is used.
+5. With `aws-agentcore`, a Bedrock AgentCore Runtime runs the sandboxes ([AWS sandbox](AWS-Sandbox.md)); the AWS entry point registers it.
 
 The two ACA backends authenticate with the Function App's managed identity (audience `https://dynamicsessions.io`), or your `az login` locally.
 
 What a backend can do is in its `capabilities`, which callers check instead of the backend's type:
 
-| Capability | ACA Sandboxes | Dynamic Sessions | Cloudflare Containers |
-|---|---|---|---|
-| `browser`: the [browser](Browser.md) can run in it | Yes | No | When the image is built with the browser (`containers.browser: true`) |
-| `egressCredentials`: secrets injected outside the sandbox | Yes | No: environment variables instead | Yes |
-| `persistence`: what survives idle | `disk` (`memory` with `suspendMode: "Memory"`) | `none` | `disk` |
+| Capability | ACA Sandboxes | Dynamic Sessions | Cloudflare Containers | AWS AgentCore |
+|---|---|---|---|---|
+| `browser`: the [browser](Browser.md) can run in it | Yes | No | When the image is built with the browser (`containers.browser: true`) | When the image is built with the browser (`aws.browser: true`) |
+| `egressCredentials`: secrets injected outside the sandbox | Yes | No: environment variables instead | Yes | No: environment variables instead |
+| `persistence`: what survives idle | `disk` (`memory` with `suspendMode: "Memory"`) | `none` | `disk` | `disk` while the session lives (`ephemeral`); `data`, bounded by `persistenceLimits` (`s3-checkpoint`) |
+
+`data` means only `/mnt/data` survives, copied out of the sandbox and back; with `persistenceLimits`, a call that leaves `/mnt/data` over a limit fails with `SandboxPersistenceLimitError` and the last saved files stay. Every backend takes concurrent calls on one sandbox (the runner calls tools in parallel), and after `deleteUserSandboxes` the user's next call gets a new, empty sandbox.
 
 ## ACA Sandboxes
 
@@ -190,7 +193,8 @@ Start times, restore times and what we observed about start reliability are in [
 
 [`gateway/sandbox-container/Dockerfile`](../gateway/sandbox-container/Dockerfile) is the sandbox image for every container backend: Cloudflare Containers, Dynamic Sessions custom containers and plain Docker.
 - **Tools.** It runs [`provision-aca.sh`](../gateway/sandbox-container/provision-aca.sh), the script ACA Sandboxes builds its disk image with, so every backend has the same tools: Python, Node, git, jq, build tools, and with `SANDBOX_IMAGE_FULL=1` (the default in the image) Java, PHP, Ruby and Go.
-- **The sandbox server.** It adds the server (`server.mjs`, port 8080: `/exec`, `/files`, `/env`, `/health`) that the container backends talk to.
+- **The sandbox server.** It adds the server (`server.mjs`, port 8080: `/exec`, `/files`, `/env`, `/health`) that the container backends talk to. With `SANDBOX_SERVER_TOKEN` set, every route needs it (in `x-sandbox-token`), and `/archive` moves `/mnt/data` as a gzipped tar; with `SANDBOX_ARCHIVE_MAX_BYTES` / `SANDBOX_ARCHIVE_MAX_FILES` set too, `/archive` is checked and bounded (413 `archive_limit` over a bound, never a truncated archive), and replaces `/mnt/data` on restore. Bedrock AgentCore Runtime calls the same server through `GET /ping` and `POST /invocations` (a JSON envelope carrying the token; 401 without it). Before an archive is made, a running browser saves its cookies, localStorage and IndexedDB, which its next start after a restore loads.
+- **Architectures.** It builds for `linux/amd64` and `linux/arm64` (CI builds and smoke-tests the browser image on both: `scripts/smoke-sandbox-image.sh`).
 - **The browser.** `SANDBOX_IMAGE_BROWSER=1` adds Chromium and the browser driver.
 
 ## Conformance
@@ -200,10 +204,11 @@ Every backend passes the same suite, `@agentforeach/platform/sandbox/conformance
 - files;
 - environment;
 - egress denied by default, with credentials added outside the sandbox and cleared;
-- persistence across sleep;
-- deleting a user's sandboxes.
+- concurrent calls on one sandbox;
+- persistence across sleep, and its limits where a backend declares them;
+- deleting a user's sandboxes, after which the next call gets a new, empty sandbox.
 
-Checks a backend can't support are skipped by its capabilities. `npm test` runs it against the sandbox server locally (`gateway/skills/sandbox/server-conformance.test.ts`), which has no egress proxy and no sleep, so those checks skip there. `scripts/test-sandbox-conformance-live.mjs <aca-sandboxes|aca-sessions|cloudflare-containers>` runs the whole suite against a real backend (its header lists the settings; Cloudflare uses the test Worker in `scripts/test-fixtures/cloudflare-sandbox-worker`).
+Checks a backend can't support are skipped by its capabilities. `npm test` runs it against the sandbox server locally (`gateway/skills/sandbox/server-conformance.test.ts`), which has no egress proxy and no sleep, so those checks skip there. `scripts/test-sandbox-conformance-live.mjs <aca-sandboxes|aca-sessions|cloudflare-containers|aws-agentcore>` runs the whole suite against a real backend (its header lists the settings; Cloudflare uses the test Worker in `scripts/test-fixtures/cloudflare-sandbox-worker`).
 
 ## Code
 
@@ -214,5 +219,6 @@ Checks a backend can't support are skipped by its capabilities. `npm test` runs 
   - `export-store.ts`: download links.
 - Azure: `packages/platform-azure/src/sandbox/`: `aca-sandboxes-client.ts` (ACA Sandboxes, the primary backend) and `dynamic-sessions-client.ts` (Dynamic Sessions).
 - Cloudflare: `packages/platform-cloudflare/src/sandbox/`.
+- AWS: `packages/platform-aws/src/sandbox/`, and `gateway/skills/sandbox/agentcore.ts` (its options).
 - Infrastructure: `infra/sandbox.ts`.
 - Live test against a real ACA group: `scripts/test-aca-sandboxes-live.mjs`.

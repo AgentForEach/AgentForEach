@@ -77,6 +77,7 @@ export function createMemoryLayer(
     resolved.embeddingModel,
     resolved.maxEmbeddingChars,
     resolved.embeddingBaseUrl,
+    resolved.embeddingProvider,
   );
 
   // Middleware

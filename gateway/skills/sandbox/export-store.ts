@@ -15,10 +15,12 @@
  *   4. LLM presents download link to user
  *
  * Signed URLs are read-only, with a 24-hour expiry by default (Azure SAS
- * links are also HTTPS-only).
+ * links are also HTTPS-only). A link signed with temporary credentials (S3
+ * on AWS) or an Azure user delegation key ends when they do, which can be
+ * sooner; `expiresAt` is when the link really stops working.
  */
 
-import type { ObjectStore } from "@agentforeach/platform";
+import { signLink, type ObjectStore } from "@agentforeach/platform";
 import { createHash, randomUUID } from "node:crypto";
 import { loadSkillsConfig } from "../config.js";
 import { DEFAULT_MAX_EXPORT_BYTES, exportTooLargeError } from "@agentforeach/platform/sandbox/shared";
@@ -48,8 +50,41 @@ export interface ExportUploadResult {
   blobPath: string;
   /** File size in bytes. */
   sizeBytes: number;
-  /** SAS URL expiry (ISO timestamp). */
+  /** When the download URL stops working (ISO timestamp). */
   expiresAt: string;
+}
+
+// ============================================================================
+// Download headers
+// ============================================================================
+
+/** Longest file name kept in a blob path, in UTF-8 bytes (a file system's usual limit). */
+const MAX_FILENAME_BYTES = 255;
+
+/** `filename` cut to MAX_FILENAME_BYTES at a character boundary, keeping a short extension. */
+function truncateFilename(filename: string): string {
+  const encoder = new TextEncoder();
+  if (encoder.encode(filename).length <= MAX_FILENAME_BYTES) return filename;
+  const dot = filename.lastIndexOf(".");
+  const ext = dot > 0 && filename.length - dot <= 16 ? filename.slice(dot) : "";
+  let stem = "";
+  for (const char of filename.slice(0, filename.length - ext.length)) {
+    if (encoder.encode(stem + char + ext).length > MAX_FILENAME_BYTES) break;
+    stem += char;
+  }
+  return stem + ext;
+}
+
+/**
+ * `Content-Disposition` for a download of `filename` (already sanitized: no
+ * quotes, backslashes or control characters): an ASCII `filename` for old
+ * clients, and the exact name as RFC 5987 `filename*`. Header values must be
+ * ASCII, so nothing else is sent raw.
+ */
+export function contentDisposition(filename: string): string {
+  const ascii = filename.replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
+  const encoded = encodeURIComponent(filename).replace(/[!'()*]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase());
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
 }
 
 // ============================================================================
@@ -108,21 +143,21 @@ export class ExportBlobStore {
     const safeFilename = this.sanitizeFilename(filename);
     const blobPath = `${this.userFolder(userId)}/${randomUUID()}_${safeFilename}`;
 
-    await this.objects.put(blobPath, content, {
-      contentType: this.inferContentType(safeFilename),
-      contentDisposition: `attachment; filename="${safeFilename}"`,
-    });
-
-    // Read-only download link
+    // Read-only download link, signed first so a signing failure leaves no orphan upload
     const expiresOn = new Date();
     expiresOn.setHours(expiresOn.getHours() + expiryHours);
-    const downloadUrl = await this.objects.signedUrl(blobPath, { expiresAt: expiresOn });
+    const link = await signLink(this.objects, blobPath, { expiresAt: expiresOn });
+
+    await this.objects.put(blobPath, content, {
+      contentType: this.inferContentType(safeFilename),
+      contentDisposition: contentDisposition(safeFilename),
+    });
 
     return {
-      downloadUrl,
+      downloadUrl: link.url,
       blobPath,
       sizeBytes: content.length,
-      expiresAt: expiresOn.toISOString(),
+      expiresAt: link.expiresAt.toISOString(),
     };
   }
 
@@ -135,10 +170,14 @@ export class ExportBlobStore {
   // Internals
   // --------------------------------------------------------------------------
 
-  /** Sanitize filename for safe blob path. */
+  /**
+   * Sanitize filename for a safe blob path and download header. Spaces and
+   * Unicode stay; control characters, quotes and backslashes (which object
+   * keys and header values can't carry) become "_".
+   */
   private sanitizeFilename(filename: string): string {
     // Remove null bytes, path traversal, leading slashes
-    let safe = filename.replace(/\0/g, "");
+    let safe = filename.replace(/\0/g, "").replace(/[\x00-\x1f\x7f"\\]/g, "_");
     let prev = "";
     while (safe !== prev) {
       prev = safe;
@@ -148,7 +187,7 @@ export class ExportBlobStore {
     // Keep only the basename (no subdirs)
     const lastSlash = safe.lastIndexOf("/");
     if (lastSlash >= 0) safe = safe.slice(lastSlash + 1);
-    return safe || "exported-file";
+    return truncateFilename(safe) || "exported-file";
   }
 
   /**

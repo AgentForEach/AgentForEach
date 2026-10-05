@@ -1,0 +1,7 @@
+name: agentforeach-aws-foundation
+runtime:
+  name: nodejs
+  options:
+    typescript: false
+description: AgentForEach on AWS, evaluation foundation (a VPC, RDS PostgreSQL and Cognito test users). Billable; not a production design.
+main: ../dist/foundation/index.js

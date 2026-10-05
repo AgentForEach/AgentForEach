@@ -1,0 +1,7 @@
+# Example stack configuration for deploy/aws/foundation (copy to Pulumi.<stack>.yaml, git-ignored).
+# Billable while it exists (RDS, a NAT gateway and its address); a single-AZ evaluation design.
+config:
+  aws:region: us-west-2
+  agentforeach-aws-foundation:prefix: afe-eval
+  agentforeach-aws-foundation:engineVersion: "17.11"       # PostgreSQL with pgvector
+  agentforeach-aws-foundation:instanceClass: db.t4g.small

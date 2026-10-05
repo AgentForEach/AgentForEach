@@ -30,6 +30,12 @@ export const DEFAULT_MESSAGES_CONTAINER_ID = "session-messages-v2";
  */
 export const DEFAULT_MESSAGE_TTL_SECONDS = 604_800;
 
+/**
+ * Default chat-run status record TTL: 7 days. Long enough for a client to
+ * ask how a turn went after a day offline; the record holds no message text.
+ */
+export const DEFAULT_RUN_STATUS_TTL_SECONDS = 604_800;
+
 /** Default session inactivity TTL: 24 hours. */
 export const DEFAULT_TTL_SECONDS = 86400;
 
@@ -64,6 +70,7 @@ export interface SessionConfig {
   messagesContainerId: string;
   ttlSeconds: number;
   messageTtlSeconds: number;
+  runStatusTtlSeconds: number;
   maxHistoryMessages: number;
   defaultAgentId: string;
   compactionThreshold: number;
@@ -102,6 +109,7 @@ export function loadSessionConfig(): SessionConfig {
     messagesContainerId: json.messagesContainerId ?? DEFAULT_MESSAGES_CONTAINER_ID,
     ttlSeconds: json.ttlSeconds ?? DEFAULT_TTL_SECONDS,
     messageTtlSeconds: json.messageTtlSeconds ?? DEFAULT_MESSAGE_TTL_SECONDS,
+    runStatusTtlSeconds: json.runStatusTtlSeconds ?? DEFAULT_RUN_STATUS_TTL_SECONDS,
     maxHistoryMessages: json.maxHistoryMessages ?? DEFAULT_MAX_HISTORY,
     defaultAgentId: json.defaultAgentId ?? DEFAULT_AGENT_ID,
     compactionThreshold: json.compactionThreshold ?? DEFAULT_COMPACTION_THRESHOLD,

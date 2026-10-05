@@ -13,6 +13,12 @@
 #     back to the stack's sandboxDiskImageId, so update that too.
 #   SANDBOX_IMAGE_BROWSER (optional) — "1" to include Chromium and the
 #     afe-browser driver for the `browser` tool (docs/Browser.md)
+#
+# The container image (gateway/sandbox-container/Dockerfile) is built here
+# too, for linux/amd64 and linux/arm64 (Bedrock AgentCore Runtime runs
+# arm64), with the browser, and smoke-tested on each: the `container` job,
+# on demand and weekly, needs no variables. arm64 builds under emulation,
+# which is slow; CI (ci.yml) builds amd64 on every change.
 name: Sandbox image
 
 on:
@@ -25,6 +31,25 @@ permissions:
   contents: read
 
 jobs:
+  container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux/amd64, linux/arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the browser image (${{ matrix.platform }})
+        run: >-
+          docker buildx build --platform ${{ matrix.platform }} --load
+          --build-arg SANDBOX_IMAGE_BROWSER=1
+          -t agentforeach-sandbox:ci gateway/sandbox-container
+      - name: Smoke-test it
+        run: BROWSER=1 scripts/smoke-sandbox-image.sh agentforeach-sandbox:ci ${{ matrix.platform }}
+
   build:
     if: vars.ACA_SANDBOX_GROUP != ''
     runs-on: ubuntu-latest

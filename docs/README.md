@@ -6,6 +6,7 @@
 |---|---|
 | [Getting started](getting-started.md) | Deploy to Azure, sign users in, run locally |
 | [Cloudflare](Cloudflare.md) | Deploy on Cloudflare Workers: Hyperdrive to your Postgres, R2, Durable Objects, limits, running locally |
+| [AWS](AWS.md) | Deploy on AWS (preview): Lambda, durable functions, AppSync Events, S3, AgentCore sandboxes, your PostgreSQL; IAM, network, costs, what was validated |
 | [What it costs](costs.md) | Monthly cost at 10,000 to 1,000,000 users, the assumptions, and a script to run your own |
 | [Benchmarks](Benchmarks.md) | Load-test method, results and how to measure your own stack |
 | [Upgrading](UPGRADING.md) | Behaviour changes an operator needs to know about, newest first |
@@ -16,7 +17,7 @@
 | Doc | What it covers |
 |---|---|
 | [Architecture](Architecture.md) | The stateless Function App, how a turn flows, the real-time protocol, how far it scales |
-| [Platforms](Platforms.md) | The six cloud-neutral ports, the Azure and Cloudflare packs, and how to add a cloud |
+| [Platforms](Platforms.md) | The six cloud-neutral ports, the Azure, Cloudflare and AWS packs, and how to add a cloud |
 | [Realtime protocol](Realtime-Protocol.md) | The WebSocket protocol every realtime provider speaks: frames, acks, groups, relay |
 | [Comparisons](Comparisons.md) | A machine per user, agent frameworks, Cloudflare Agents and Letta |
 | [Database](Database.md) | Cosmos DB or PostgreSQL behind the storage SDK: settings, migrations, what differs |
@@ -40,6 +41,7 @@
 | [Sandboxes on Cloudflare](Cloudflare_Evaluation.md) | Cloudflare Containers tested as an alternative to ACA Sandboxes: starts, snapshots, egress and feedback for the Containers team |
 | [Sandboxes on AWS](AWS_Evaluation.md) | AWS Bedrock AgentCore Runtime tested as an alternative to ACA Sandboxes: sessions, session storage, egress and a five-platform comparison |
 | [D1 on Cloudflare](D1_Evaluation.md) | Why the coming Cloudflare deployment will use PostgreSQL through Hyperdrive, not D1 or Vectorize: vector search measured, throughput, transactions |
+| [DynamoDB on AWS](DynamoDB_Evaluation.md) | Shared storage SDK compatibility against Cosmos DB and PostgreSQL: queries, TTL, patches and search; why PostgreSQL is recommended and what remains untested |
 | [Browser](Browser.md) | A real browser for the agent, inside each user's sandbox |
 | [Knowledge](Knowledge.md) | The optional, deployment-wide Azure AI Search library |
 

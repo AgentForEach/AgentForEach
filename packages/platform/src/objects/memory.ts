@@ -3,11 +3,12 @@
  *
  * For tests and local runs without a cloud. It passes the same conformance
  * suite as the cloud providers; its signed URLs are well-formed but point at
- * a reserved `.invalid` host, so nothing can fetch them.
+ * a reserved `.invalid` host, so nothing can fetch them. A link's `expires`
+ * parameter is when it would stop working.
  */
 
-import { assertValidKey, ObjectStoreError, signedUrlSeconds } from "./errors.js";
-import type { GetObjectOptions, ObjectInfo, ObjectStore, PutObjectOptions, SignedUrlOptions } from "./types.js";
+import { assertValidKey, isDirectoryMarker, ObjectStoreError, signedUrlLifetime } from "./errors.js";
+import type { GetObjectOptions, ObjectInfo, ObjectStore, PutObjectOptions, SignedUrl, SignedUrlOptions } from "./types.js";
 
 type StoredObject = {
   bytes: Uint8Array;
@@ -19,6 +20,11 @@ type StoredObject = {
 export type MemoryObjectStoreOptions = {
   /** Bucket name used in signed URLs. Default "memory". */
   bucket?: string;
+  /**
+   * When the (pretend) signing credentials expire, if they do: links are
+   * cut short to end 60 s before, as the s3 provider's are.
+   */
+  credentialsExpireAt?: () => Date | undefined;
   now?: () => Date;
 };
 
@@ -26,15 +32,17 @@ export class MemoryObjectStore implements ObjectStore {
   readonly provider = "memory";
   private readonly objects = new Map<string, StoredObject>();
   private readonly bucket: string;
+  private readonly credentialsExpireAt: () => Date | undefined;
   private readonly now: () => Date;
 
   constructor(options: MemoryObjectStoreOptions = {}) {
     this.bucket = options.bucket ?? "memory";
+    this.credentialsExpireAt = options.credentialsExpireAt ?? (() => undefined);
     this.now = options.now ?? (() => new Date());
   }
 
   async *list(prefix = ""): AsyncIterable<ObjectInfo> {
-    const keys = [...this.objects.keys()].filter((k) => k.startsWith(prefix)).sort();
+    const keys = [...this.objects.keys()].filter((k) => k.startsWith(prefix) && !isDirectoryMarker(k)).sort();
     for (const key of keys) {
       const object = this.objects.get(key);
       if (object) yield { key, size: object.bytes.byteLength, lastModified: object.lastModified };
@@ -72,9 +80,13 @@ export class MemoryObjectStore implements ObjectStore {
   }
 
   async signedUrl(key: string, options: SignedUrlOptions): Promise<string> {
+    return (await this.signedUrlWithExpiry(key, options)).url;
+  }
+
+  async signedUrlWithExpiry(key: string, options: SignedUrlOptions): Promise<SignedUrl> {
     assertValidKey(key);
-    signedUrlSeconds(options.expiresAt, this.now());
+    const { expiresAt } = signedUrlLifetime(options.expiresAt, this.now(), { credentialsExpireAt: this.credentialsExpireAt() });
     const path = key.split("/").map(encodeURIComponent).join("/");
-    return `https://objects.memory.invalid/${encodeURIComponent(this.bucket)}/${path}?expires=${options.expiresAt.toISOString()}`;
+    return { url: `https://objects.memory.invalid/${encodeURIComponent(this.bucket)}/${path}?expires=${expiresAt.toISOString()}`, expiresAt };
   }
 }

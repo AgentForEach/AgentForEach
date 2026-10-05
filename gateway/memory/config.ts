@@ -35,6 +35,7 @@ export type MemoryCategory = (typeof MEMORY_CATEGORIES)[number];
 
 /** Supported embedding models and their vector dimensions. */
 export const EMBEDDING_DIMENSIONS: Record<string, number> = {
+  "amazon.titan-embed-text-v2:0": 1024,
   "text-embedding-3-small": 1536,
   "text-embedding-3-large": 3072,
 };
@@ -189,6 +190,9 @@ export type MemoryConfig = {
   /** Embedding API key (resolved from llms config). */
   embeddingApiKey: string;
 
+  /** Embedding provider (llms.embedding.provider); "bedrock" needs no API key. */
+  embeddingProvider?: string;
+
   /** Embedding model (resolved from llms config). */
   embeddingModel: string;
 
@@ -317,6 +321,7 @@ export function loadMemoryConfig(): MemoryConfig {
     storeProvider: json.provider ?? "storage",
     containerId: json.containerId ?? DEFAULT_CONTAINER_ID,
     embeddingApiKey,
+    embeddingProvider: embedding.provider,
     embeddingModel,
     embeddingBaseUrl,
     autoCapture: enabled && (json.autoCapture ?? false),
@@ -381,7 +386,7 @@ export function resolveEmbeddingBaseUrl(): string | undefined {
  * Used when callers provide explicit config (bypassing agentforeach.json).
  */
 export function validateConfig(config: MemoryConfig): MemoryConfig {
-  if (!config.embeddingApiKey) {
+  if (!config.embeddingApiKey && config.embeddingProvider !== "bedrock") {
     throw new Error("memory: embedding API key is required");
   }
   vectorDimsForModel(config.embeddingModel);

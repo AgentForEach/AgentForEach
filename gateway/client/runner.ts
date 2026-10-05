@@ -121,6 +121,8 @@ import {
   type ResolvedSkills,
   SkillToolHandler,
   getSkillToolDefinitions,
+  endBrowserHandoff,
+  BrowserHandoffNotEndedError,
   handoffOutcome,
   isBrowserEnabled,
   isBrowserHandoffCall,
@@ -162,6 +164,7 @@ import {
   getChannelRequestUserInputToolDefinitions,
   REQUEST_USER_INPUT_TOOL_NAME,
 } from "../hitl/index.js";
+import { isDirectInputCall } from "../hitl/answer.js";
 import type {
   SendRequest,
   SendResponse,
@@ -452,7 +455,7 @@ async function settleToolCall(
 }
 
 /** Default run budget: under the 10-minute functionTimeout in host.json. */
-const DEFAULT_RUN_DEADLINE_MS = (() => {
+export const DEFAULT_RUN_DEADLINE_MS = (() => {
   const v = Number.parseInt(process.env.AGENTFOREACH_RUN_DEADLINE_MS ?? "", 10);
   return v > 0 ? v : 540_000;
 })();
@@ -714,10 +717,6 @@ export async function runAgentTurn(
           runState.conversationState.previousResponseId
         ) {
           directHitlRunState = runState;
-          // The user answered a browser handoff (Done or Cancel, from any
-          // client): close the live view now. The driver ends it on the
-          // viewer's own Done, but an answer through the API doesn't reach it.
-          if (isBrowserHandoffCall(runState.pendingToolCall)) stopBrowserLiveView(deps, request.userId, session.sessionId);
         } else if (runState) {
           console.warn(
             `[runner] hitl_input_response_ignored requestId=${request.hitlInputResponse.requestId} ` +
@@ -731,6 +730,14 @@ export async function runAgentTurn(
             `${err instanceof Error ? err.message : String(err)}`,
         );
       }
+    }
+    // The user answered a browser handoff (Done or Cancel, from any client):
+    // the live view ends before the agent continues, and if the driver can't
+    // confirm it has, the run doesn't continue (the form stays open to answer
+    // again). The driver ends it on the viewer's own Done, but an answer
+    // through the API doesn't reach it.
+    if (directHitlRunState && isBrowserHandoffCall(directHitlRunState.pendingToolCall) && deps.sandboxClient) {
+      await endBrowserHandoff(deps.sandboxClient, request.userId, session.sessionId);
     }
 
     // A form the user answered with a new message instead: cancel it, so a late
@@ -765,8 +772,10 @@ export async function runAgentTurn(
           }
 
           // A browser handoff the user never finished: close its live view now, not at the deadline.
-          if (pendingInputRequests.some((state) => isBrowserHandoffCall(state.pendingToolCall))) {
-            stopBrowserLiveView(deps, request.userId, session.sessionId);
+          if (pendingInputRequests.some((state) => isBrowserHandoffCall(state.pendingToolCall)) && deps.sandboxClient) {
+            await endBrowserHandoff(deps.sandboxClient, request.userId, session.sessionId).catch((err) =>
+              console.warn(`[runner] stale_handoff_stop_failed session=${redactId(session.sessionId)}: ${err.message}`),
+            );
           }
 
           await Promise.allSettled(
@@ -2003,6 +2012,8 @@ export async function runAgentTurn(
                 createdAt: Date.now(),
                 status: "pending",
                 timeoutSeconds: form.timeoutSeconds,
+                // Shown again to a client that reconnects (GET /api/hitl/pending).
+                inputRequest: (({ state: _state, ...shown }) => shown)(inputPayload),
               };
               await deps.hitlStore.create(runState);
             }
@@ -2264,6 +2275,8 @@ export async function runAgentTurn(
                 createdAt: Date.now(),
                 status: "pending",
                 timeoutSeconds: hitlTimeoutSeconds,
+                // Shown again to a client that reconnects (GET /api/hitl/pending).
+                inputRequest: (({ userId: _userId, ...shown }) => shown)(inputRequest),
               };
 
               await deps.hitlStore.create(runState);
@@ -2690,10 +2703,12 @@ export async function runAgentTurn(
     });
 
     if (directHitlRunState && deps.hitlStore) {
+      // This turn is the answer's continuation (GET /api/hitl/{id} reports it).
       await deps.hitlStore.updateStatus(
         directHitlRunState.requestId,
         request.userId,
         request.hitlInputResponse?.cancelled ? "cancelled" : "responded",
+        { resumedRunId: runId },
       );
     }
 
@@ -3044,19 +3059,6 @@ export async function runAgentTurn(
  * the UI acts on: offering "try again" for a failure that will fail the same
  * way every time is worse than saying so plainly.
  */
-/** A paused call the user answers through a form, resuming this exact response (request_user_input, a browser handoff). */
-function isDirectInputCall(call: { name: string; arguments?: Record<string, unknown> }): boolean {
-  return call.name === REQUEST_USER_INPUT_TOOL_NAME || isBrowserHandoffCall(call);
-}
-
-/** Close a browser handoff's live view in the user's sandbox, in the background (nothing if there's none). */
-function stopBrowserLiveView(deps: { sandboxClient?: SandboxBackend }, userId: string, sessionId: string): void {
-  const sandbox = deps.sandboxClient;
-  if (!sandbox) return;
-  void sandbox
-    .exec({ command: "afe-browser handoff_stop", timeout: 30 }, sandbox.resolveIdentifier(userId, sessionId))
-    .catch(() => {});
-}
 
 /** Whether a buffered form is a browser handoff's. */
 function isBrowserHandoffForm(payload: { ws: Record<string, unknown> } | null): boolean {
@@ -3112,12 +3114,32 @@ export function classifyRunFailure(err: unknown): {
   const status = Number(
     (err as { status?: unknown })?.status ??
       (err as { statusCode?: unknown })?.statusCode ??
+      // AWS SDK errors (Bedrock) carry the status here.
+      (err as { $metadata?: { httpStatusCode?: unknown } })?.$metadata?.httpStatusCode ??
       0,
   );
   const raw = (err instanceof Error ? err.message : String(err)).toLowerCase();
   const has = (...needles: string[]) => needles.some((n) => raw.includes(n));
 
-  if (status === 429 || has("rate limit", "rate_limit", "too many requests")) {
+  // The user still has the browser: answering the handoff again retries (gateway/skills/browser/continuation.ts).
+  if (err instanceof BrowserHandoffNotEndedError) {
+    return { code: "browser_handoff", message: err.message, retryable: true };
+  }
+
+  // A daily token quota is used up: retrying soon won't help, and it isn't the
+  // context window ("too many tokens" below), so it must not say "new chat".
+  if (has("too many tokens per day", "daily token quota", "daily token limit")) {
+    return {
+      code: "quota_exhausted",
+      message: "The AI service has reached its daily usage limit. Try again later.",
+      retryable: false,
+    };
+  }
+  if (
+    status === 429 ||
+    (err as { name?: unknown })?.name === "ThrottlingException" ||
+    has("rate limit", "rate_limit", "too many requests")
+  ) {
     return {
       code: "rate_limited",
       message:

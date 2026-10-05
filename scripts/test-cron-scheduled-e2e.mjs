@@ -13,6 +13,7 @@
  * Usage:
  *   node scripts/test-cron-scheduled-e2e.mjs
  *   AGENTFOREACH_BASE_URL=http://localhost:7071 node scripts/test-cron-scheduled-e2e.mjs
+ *   On a cloud stack, also set LOADTEST_JWT_SECRET (scripts/load-test/make-config.mjs)
  *
  * Prerequisites:
  *   - func host running locally (or deployed function accessible)
@@ -21,6 +22,7 @@
  */
 
 import process from "node:process";
+import { userHeaders } from "./lib/test-auth.mjs";
 
 // ============================================================================
 // Config
@@ -109,7 +111,7 @@ function fmtDuration(ms) {
 }
 
 async function request({ method = "GET", path, body, expected = [200] }) {
-  const headers = { "x-user-id": USER_ID };
+  const headers = userHeaders(USER_ID);
   if (body !== undefined) headers["content-type"] = "application/json";
 
   const url = `${BASE_URL}${path}`;

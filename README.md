@@ -12,7 +12,7 @@
   <a href="https://github.com/agentforeach/agentforeach/releases"><img alt="Release" src="https://img.shields.io/github/v/release/agentforeach/agentforeach?include_prereleases&label=release&color=F29A1F"></a>
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-151827"></a>
   <img alt="1,200+ tests" src="https://img.shields.io/badge/tests-1%2C200%2B-151827">
-  <img alt="Azure and Cloudflare today; AWS and Google Cloud next" src="https://img.shields.io/badge/cloud-Azure%20%C2%B7%20Cloudflare%20%C2%B7%20AWS%20and%20GCP%20next-151827">
+  <img alt="Azure and Cloudflare today, AWS in preview; Google Cloud next" src="https://img.shields.io/badge/cloud-Azure%20%C2%B7%20Cloudflare%20%C2%B7%20AWS%20preview%20%C2%B7%20GCP%20next-151827">
 </p>
 
 <p align="center">
@@ -39,7 +39,7 @@
 - **Sep 30 · A full backend review.** Fixes across the scheduler, billing, sessions, human in the loop and how credentials bind to skills. Every behaviour change is in [UPGRADING.md](docs/UPGRADING.md).
 - **Sep 29 · Open source**, Apache-2.0, in preview.
 
-**Next:** local development without an Azure account, a starter app you can rebrand, then AWS and Google Cloud as platform packs. See the [roadmap](ROADMAP.md).
+**Next:** local development without an Azure account, a starter app you can rebrand, AWS validated on a fresh deployment (its pack and deployment are in preview: [AWS](docs/AWS.md)), then Google Cloud. See the [roadmap](ROADMAP.md).
 
 ## Hyperscale by design
 
@@ -160,7 +160,7 @@ Memory, the reminder at 7pm, the tool loop, approvals and the per-user sandbox c
 
 <table>
   <tr>
-    <td width="33%" valign="top"><img src="docs/assets/icons/runtime.svg" width="32" alt=""><br><b>Agent runtime</b><br>Tool loop on OpenAI (Responses API), Azure OpenAI, Anthropic and OpenAI-compatible providers, with failover, streaming, deadlines and per-tool error isolation.</td>
+    <td width="33%" valign="top"><img src="docs/assets/icons/runtime.svg" width="32" alt=""><br><b>Agent runtime</b><br>Tool loop on OpenAI (Responses API), Azure OpenAI, Anthropic, Amazon Bedrock and OpenAI-compatible providers, with failover, streaming, deadlines and per-tool error isolation.</td>
     <td width="33%" valign="top"><img src="docs/assets/icons/memory.svg" width="32" alt=""><br><b>Memory</b><br>Long-term memories with hybrid vector and full-text search, episodes, session digests and compaction.</td>
     <td width="33%" valign="top"><img src="docs/assets/icons/schedule.svg" width="32" alt=""><br><b>Scheduled work</b><br>Reminders, recurring jobs and heartbeats on a sharded Durable Functions scheduler.</td>
   </tr>
@@ -216,7 +216,7 @@ Open the repo in GitHub Codespaces, which has every tool installed, and run one 
 
 The trial signs users in with tokens the script makes; `pulumi destroy` removes everything.
 
-On Cloudflare, `./scripts/quickstart-cloudflare.sh` does the same with Wrangler and a PostgreSQL database of your own; see [Cloudflare](docs/Cloudflare.md).
+On Cloudflare, `./scripts/quickstart-cloudflare.sh` does the same with Wrangler and a PostgreSQL database of your own; see [Cloudflare](docs/Cloudflare.md). On AWS (preview), `deploy/aws/deploy.sh` deploys with Pulumi, on your PostgreSQL or a new RDS one; see [AWS](docs/AWS.md).
 
 <details>
 <summary><b>Deploy step by step, or with real sign-in</b></summary>

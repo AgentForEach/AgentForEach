@@ -36,6 +36,7 @@ const defaultConfig: SessionConfig = {
   messagesContainerId: "session-messages",
   ttlSeconds: 86400,
   messageTtlSeconds: 7776000,
+  runStatusTtlSeconds: 604800,
   maxHistoryMessages: 100,
   defaultAgentId: "default",
   compactionThreshold: 60,

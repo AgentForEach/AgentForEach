@@ -10,8 +10,11 @@
  *   - SAS links are read-only and HTTPS-only, with no start time. A key
  *     account signs them with its key, for any expiry; an account reached
  *     with a managed identity signs them with a user delegation key, cached
- *     while it outlives the link, and the key itself lasts at most 7 days.
- *   - `deletePrefix` deletes blobs with their snapshots, ignores blobs that
+ *     while it outlives the link. The key itself lasts at most 7 days, and a
+ *     link it signs ends no later than the key does (`signedUrlWithExpiry`
+ *     reports when).
+ *   - `list` skips directory markers (blobs named `…/`); `deletePrefix`
+ *     deletes them too, and blobs with their snapshots, ignores blobs that
  *     vanish meanwhile, and returns 0 when the container does not exist.
  */
 
@@ -28,6 +31,7 @@ import type { TokenCredential } from "@azure/core-auth";
 import {
   assertValidKey,
   codeForStatus,
+  isDirectoryMarker,
   ObjectStoreError,
   readCapped,
   signedUrlSeconds,
@@ -35,6 +39,7 @@ import {
   type ObjectInfo,
   type ObjectStore,
   type PutObjectOptions,
+  type SignedUrl,
   type SignedUrlOptions,
 } from "@agentforeach/platform";
 
@@ -85,6 +90,7 @@ export class AzureBlobObjectStore implements ObjectStore {
   async *list(prefix?: string): AsyncIterable<ObjectInfo> {
     try {
       for await (const blob of this.container.listBlobsFlat(prefix ? { prefix } : undefined)) {
+        if (isDirectoryMarker(blob.name)) continue;
         yield {
           key: blob.name,
           size: blob.properties.contentLength ?? 0,
@@ -163,37 +169,48 @@ export class AzureBlobObjectStore implements ObjectStore {
   }
 
   async signedUrl(key: string, options: SignedUrlOptions): Promise<string> {
+    return (await this.signedUrlWithExpiry(key, options)).url;
+  }
+
+  async signedUrlWithExpiry(key: string, options: SignedUrlOptions): Promise<SignedUrl> {
     assertValidKey(key);
     // No upper limit: a key-signed SAS has none, and a delegation-signed one
-    // is issued as before even though its key stops at 7 days.
+    // ends when its key does, at most 7 days ahead.
     signedUrlSeconds(options.expiresAt, this.now(), Number.POSITIVE_INFINITY);
     const blob = this.container.getBlobClient(key);
-    const values = {
-      containerName: this.container.containerName,
-      blobName: key,
-      permissions: BlobSASPermissions.parse("r"),
-      expiresOn: options.expiresAt,
-      protocol: SASProtocol.Https,
-    };
     try {
-      const sas = this.sharedKey
-        ? generateBlobSASQueryParameters(values, this.sharedKey)
-        : generateBlobSASQueryParameters(values, await this.userDelegationKey(options.expiresAt), this.accountName);
-      return `${blob.url}?${sas.toString()}`;
+      const delegation = this.sharedKey ? undefined : await this.userDelegationKey(options.expiresAt);
+      // A SAS expiry is whole seconds.
+      const expiresAt = new Date(Math.floor(Math.min(options.expiresAt.getTime(), delegation?.expiresAt ?? Infinity) / 1000) * 1000);
+      const values = {
+        containerName: this.container.containerName,
+        blobName: key,
+        permissions: BlobSASPermissions.parse("r"),
+        expiresOn: expiresAt,
+        protocol: SASProtocol.Https,
+      };
+      const sas = delegation
+        ? generateBlobSASQueryParameters(values, delegation.key, this.accountName)
+        : generateBlobSASQueryParameters(values, this.sharedKey!);
+      return { url: `${blob.url}?${sas.toString()}`, expiresAt };
     } catch (err) {
       throw mapError(err, "signedUrl", key);
     }
   }
 
-  /** A user delegation key valid past `until`. Keys last up to 7 days; take a day past the link's expiry. */
-  private async userDelegationKey(until: Date): Promise<UserDelegationKey> {
-    if (this.delegationKey && this.delegationKey.expiresAt > until.getTime()) return this.delegationKey.key;
+  /**
+   * A user delegation key, and when it expires: the cached one while it
+   * outlives `until`, else a new one valid until a day past `until`. Keys
+   * last at most 7 days, so for a link further out the key ends first.
+   */
+  private async userDelegationKey(until: Date): Promise<{ key: UserDelegationKey; expiresAt: number }> {
+    if (this.delegationKey && this.delegationKey.expiresAt > until.getTime()) return this.delegationKey;
     const now = this.now().getTime();
     const startsOn = new Date(now - 5 * 60_000);
     const expiresOn = new Date(Math.min(until.getTime() + DAY_MS, now + 7 * DAY_MS - 60_000));
     const key = await this.service.getUserDelegationKey(startsOn, expiresOn);
     this.delegationKey = { key, expiresAt: expiresOn.getTime() };
-    return key;
+    return this.delegationKey;
   }
 }
 

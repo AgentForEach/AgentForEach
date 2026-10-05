@@ -373,9 +373,47 @@ export interface HitlRunState {
   /** Timestamp when the HITL request was created. */
   createdAt: number;
 
-  /** Status of the HITL request. */
-  status: "pending" | "responded" | "cancelled" | "timed_out";
+  /**
+   * Status of the HITL request. `failed`: the user answered, but the run
+   * didn't continue (the resume was cut off, or its turn failed).
+   */
+  status: "pending" | "responded" | "cancelled" | "timed_out" | "failed";
+
+  /**
+   * The form as the client received it (the input_request event), so a
+   * client that reconnects can show it again (`GET /api/hitl/pending`).
+   * Absent on requests saved before it was recorded.
+   */
+  inputRequest?: InputRequestPayload;
+
+  /**
+   * The user's answer, saved before it is delivered. The first answer is the
+   * one that counts: the same answer again is accepted, a different one is
+   * refused, and the resume reads this rather than the delivered event.
+   */
+  answer?: HitlAnswer;
+
+  /** The run that continued the conversation after the answer, once it has finished. */
+  resumedRunId?: string;
 }
+
+/** A user's answer to an input request, as saved on its HitlRunState. */
+export interface HitlAnswer {
+  data: Record<string, unknown>;
+  cancelled: boolean;
+  /** ISO 8601 time the answer was accepted. */
+  answeredAt: string;
+}
+
+/**
+ * An input_request event's form, as the client receives it (without the
+ * event's `state`). A gated tool's form carries a schema; a form the model
+ * raised may not.
+ */
+export type InputRequestPayload = Omit<InputRequest, "userId" | "schema" | "uiHints"> & {
+  schema?: Record<string, unknown>;
+  uiHints?: HitlUiHints | Record<string, unknown>;
+};
 
 /**
  * SendRequest with non-serializable fields removed.

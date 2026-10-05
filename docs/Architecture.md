@@ -31,6 +31,18 @@ The Pulumi program in `infra` creates all of it.
 
 Channels (Telegram, WhatsApp) take the same path from their webhooks: they acknowledge first, then run the turn as a `ChannelInboundTurn` durable job.
 
+### Run status
+
+A client that missed the live events (a dropped socket, an app sent to the background) asks how its turn went with `GET /api/chat/runs/{runId}`, using the `runId` from the `202`:
+
+```json
+{ "runId": "…", "status": "completed", "sessionId": "…", "createdAt": "…", "startedAt": "…", "finishedAt": "…" }
+```
+
+`status` is `accepted` (waiting to start), `running`, `completed`, `awaiting_input` (paused for a form, [HITL](HITL.md)), `failed` (with `error`, a code such as `rate_limited` or `queued_too_long`, and `retryable`), `aborted` (stopped), or `interrupted` (cut off by a restart or a deploy; send it again). Each turn writes its record in the `chat-runs` collection, in the user's partition: another user's run id gets `404`. The record keeps a fingerprint of the message, session and attachments, not the text, so an `idempotencyKey` reused for a different message is refused with `409`. A record left `accepted` or `running` after its last write was lost is reported from its durable job instead (failed, stopped, or ended without a status) once a minute has passed since the turn started or was accepted. A turn run in the request (`"wait": true`) writes the same record.
+
+Two guards run before the model is called. A background turn that waited more than 5 minutes to start is refused with a retryable `queued_too_long` error, and a Stop pressed while it waited stops it. The Stop marker lasts 10 minutes, so the marker is still there when the turn starts.
+
 ### Real-time protocol
 
 A client calls `GET /negotiate` (authenticated like any API call) and gets `{ url }`: a Web PubSub URL with an access token for that user. It then opens a WebSocket to that URL. What the client sends reaches `/ws/message` as a Web PubSub event, verified by its signature:
@@ -72,6 +84,7 @@ Every container is defined by the code that uses it and recorded in `infra/cosmo
 | `usage-records` | `/userId` | 90 days | Tokens and cost per run |
 | `rate-limits` | `/id` | per document | Per-user message counters |
 | `abort-requests` | `/userId` | 10 min | Stop-button markers that reach any instance |
+| `chat-runs` | `/userId` | 7 days | Each chat turn's status and request fingerprint (no message text) |
 | `user-skills`, `whatsapp-state` | `/userId`, `/scope` | none, per document | Skill settings, WhatsApp delivery state |
 
 Almost everything is partitioned by user, so a turn's reads and writes are point reads or single-partition queries.

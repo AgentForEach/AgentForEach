@@ -19,7 +19,7 @@
 import type { AlarmDefinition, HandlerContext, JobDefinition, ScheduleDef } from "@agentforeach/platform";
 import { durable } from "../runtime/durable.js";
 import type { CronJob, JobResult } from "./types.js";
-import { getCronStore, type CronStore } from "./store.js";
+import { getCronStore, type CronRunBlock, type CronStore } from "./store.js";
 import { executeJob, getExecutorConfig, processHeartbeatQueue } from "./executor.js";
 import {
   FALLBACK_WAKE_INTERVAL_MS,
@@ -49,6 +49,22 @@ type SchedulerShardInput = {
 // ============================================================================
 // Cron runs
 // ============================================================================
+
+/**
+ * The durable job id of a claimed job's run: one per claim, so starting it
+ * again for the same claim (a repeated tick, a retried force-run request) is
+ * a duplicate, not a second run.
+ */
+export function cronRunInstanceId(job: Pick<CronJob, "id" | "state">, prefix: "cron-run" | "force-run" = "cron-run"): string {
+  return `${prefix}-${job.id}-${job.state.runningToken ?? "unclaimed"}`;
+}
+
+/** Why a run didn't start, for its run record and log line. */
+const RUN_BLOCK_MESSAGES: Record<CronRunBlock, string> = {
+  disabled: "not run: the job was turned off after this run was queued",
+  expired: "not run: the job had expired",
+  "max-runs": "not run: the job had used up its maxRuns",
+};
 
 /** Renew a run's claim every `intervalMs` until the returned function is called. */
 export function renewClaimWhileRunning(
@@ -85,14 +101,31 @@ export async function executeAndRecordJob(
     };
   }
 
-  const started = await store.beginClaimedRun(job.id, job.userId, runningToken);
-  if (!started) {
-    return {
+  // Revalidated on the current job, not this snapshot: the job may have been
+  // edited, paused or deleted while the run was queued. A paused job only
+  // runs if it was already paused when claimed (a force-run of a paused job).
+  const start = await store.beginClaimedRun(job.id, job.userId, runningToken, { requireEnabled: job.enabled });
+  if (start.status === "skipped") {
+    if (start.reason === "claim-lost") {
+      return {
+        status: "skipped",
+        error: "duplicate-suppressed: claim no longer valid",
+        durationMs: Date.now() - startMs,
+      };
+    }
+    const skipped: JobResult = {
       status: "skipped",
-      error: "duplicate-suppressed: claim no longer valid",
+      error: RUN_BLOCK_MESSAGES[start.reason],
       durationMs: Date.now() - startMs,
     };
+    try {
+      await store.recordRun(start.job, skipped);
+    } catch {
+      // Best-effort write, as for a run that executed.
+    }
+    return skipped;
   }
+  const started = start.job;
 
   // A run may take longer than the claim's stale window: renew the claim
   // while it runs, so no tick claims the job again for a second run.
@@ -144,7 +177,8 @@ export const cronRunJob: JobDefinition<CronJob> = {
   kind: CRON_RUN_KIND,
   async run(job, context) {
     const result = await executeAndRecordJob(job);
-    context.log(`[cron] run job=${job.id} status=${result.status} duration=${result.durationMs ?? 0}ms`);
+    const why = result.status === "skipped" && result.error ? ` (${result.error})` : "";
+    context.log(`[cron] run job=${job.id} status=${result.status}${why} duration=${result.durationMs ?? 0}ms`);
     const shardCount = getSchedulerShardCount();
     const instanceId = getSchedulerInstanceId(normalizeSchedulerShardId(job.shardId, shardCount), shardCount);
     try {
@@ -154,6 +188,32 @@ export const cronRunJob: JobDefinition<CronJob> = {
     }
   },
 };
+
+/**
+ * "Run now": claim the job as the scheduler does and start its run, named
+ * by the claim (`force-run-<jobId>-<token>`). The run revalidates the job
+ * when it starts, like a scheduled one. Null when the job is missing or
+ * already claimed: a run in flight, or this same request retried. A run that
+ * can't be started releases its claim, so the job isn't blocked until the
+ * claim goes stale.
+ */
+export async function startForceRun(
+  jobId: string,
+  userId: string,
+): Promise<{ job: CronJob; instanceId: string } | null> {
+  const store = getCronStore();
+  const claimed = await store.claimJobForForceRun(jobId, userId);
+  const runningToken = claimed?.state.runningToken;
+  if (!claimed || !runningToken) return null;
+  const instanceId = cronRunInstanceId(claimed, "force-run");
+  try {
+    await durable().startJob(CRON_RUN_KIND, claimed, instanceId);
+  } catch (err) {
+    await store.releaseRunningClaim(claimed.id, claimed.userId, runningToken).catch(() => undefined);
+    throw err;
+  }
+  return { job: claimed, instanceId };
+}
 
 // ============================================================================
 // The scheduler alarm
@@ -178,7 +238,7 @@ export async function schedulerTick(input: SchedulerShardInput): Promise<number>
   // A run that can't be started (e.g. throttled) doesn't stop the others;
   // its claim is released, so the next tick can claim it again.
   const starts = await Promise.allSettled(
-    due.map((job) => durable().startJob(CRON_RUN_KIND, job, `cron-run-${job.id}-${job.state.runningToken ?? "unclaimed"}`)),
+    due.map((job) => durable().startJob(CRON_RUN_KIND, job, cronRunInstanceId(job))),
   );
   await Promise.all(
     starts.map(async (start, i) => {

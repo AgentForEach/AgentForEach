@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { resetConfigCache } from "../utils/index.js";
-import { resolveProviderConfig, resetLlmConfig } from "./config.js";
+import { resolveProviderConfig, resolveEmbeddingConfig, resetLlmConfig } from "./config.js";
 import { OpenAIProvider } from "./providers/openai.js";
 import type { ProviderRequest } from "./types.js";
 
@@ -122,4 +122,33 @@ test("OpenAIProvider — omits invalid context management thresholds", () => {
   ).buildRequestParams(request, "gpt-5-mini");
 
   assert.equal("context_management" in params, false);
+});
+
+test("Bedrock resolves without an API key when configured, and not otherwise", () => {
+  const configPath = join(mkdtempSync(join(tmpdir(), "bedrock-config-")), "config.json");
+  const previous = process.env.CONFIG_FILE_JSON;
+  const write = (llms: unknown) => {
+    writeFileSync(configPath, JSON.stringify({ llms }));
+    resetAll();
+  };
+  process.env.CONFIG_FILE_JSON = configPath;
+  try {
+    write({
+      defaultProvider: "bedrock",
+      providers: { bedrock: { enabled: true, defaultModel: "amazon.nova-lite-v1:0" } },
+      embedding: { provider: "bedrock", model: "amazon.titan-embed-text-v2:0" },
+    });
+    assert.equal(resolveProviderConfig("bedrock")?.apiKey, "");
+    assert.equal(resolveProviderConfig("bedrock")?.defaultModel, "amazon.nova-lite-v1:0");
+    assert.equal(resolveEmbeddingConfig().provider, "bedrock");
+    assert.equal(resolveEmbeddingConfig().apiKey, undefined);
+    write({ providers: { bedrock: { enabled: false } } });
+    assert.equal(resolveProviderConfig("bedrock"), null);
+    write({ providers: {} });
+    assert.equal(resolveProviderConfig("bedrock"), null, "an unconfigured Bedrock stays off");
+  } finally {
+    if (previous === undefined) delete process.env.CONFIG_FILE_JSON;
+    else process.env.CONFIG_FILE_JSON = previous;
+    resetAll();
+  }
 });

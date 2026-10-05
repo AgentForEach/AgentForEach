@@ -4,18 +4,22 @@
  * Where the gateway is running. A platform's entry point installs its
  * `HostInfo` at startup (`installHost`). Without one, the host is read from
  * the environment: Azure App Service / Functions sets WEBSITE_SITE_NAME and
- * WEBSITE_HOSTNAME; anything else is "local". Values are read on each call,
- * so tests can change the environment between calls.
+ * WEBSITE_HOSTNAME; Lambda sets AWS_LAMBDA_FUNCTION_NAME; anything else is
+ * "local". Lambda is recognised here too so that an AWS entry point that
+ * forgot `installHost` still counts as production (checks that must fail
+ * closed stay closed). Values are read on each call, so tests can change the
+ * environment between calls.
  */
 
 import type { HostInfo } from "@agentforeach/platform";
 
 const environmentHost: HostInfo = {
   get platform() {
-    return process.env.WEBSITE_SITE_NAME ? "azure" : "local";
+    if (process.env.WEBSITE_SITE_NAME) return "azure";
+    return process.env.AWS_LAMBDA_FUNCTION_NAME ? "aws" : "local";
   },
   get isProductionHost() {
-    return !!process.env.WEBSITE_SITE_NAME;
+    return !!(process.env.WEBSITE_SITE_NAME || process.env.AWS_LAMBDA_FUNCTION_NAME);
   },
   get publicBaseUrl() {
     const host = process.env.WEBSITE_HOSTNAME;
@@ -24,7 +28,9 @@ const environmentHost: HostInfo = {
   },
   get label() {
     const site = process.env.WEBSITE_SITE_NAME;
-    return site ? `azure:${site}` : "local";
+    if (site) return `azure:${site}`;
+    const fn = process.env.AWS_LAMBDA_FUNCTION_NAME;
+    return fn ? `aws:${fn}` : "local";
   },
 };
 

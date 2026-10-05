@@ -7,27 +7,34 @@
  * Endpoints:
  *   POST /api/chat              — Send a message and get a response
  *   POST /api/chat/abort        — Abort the current chat request
+ *   GET  /api/chat/runs/{runId} — A chat turn's status
  *   GET  /api/sessions          — List user's sessions
  *   GET  /api/sessions/{id}     — Get a specific session
  *   DELETE /api/sessions/{id}   — Delete a session
  *   GET  /api/usage             — Aggregated usage summary
  *   GET  /api/usage/records     — Individual usage records
+ *   GET  /api/hitl/pending      — Forms still waiting for the user's answer
+ *   GET  /api/hitl/{id}         — Where one input request is
  *   POST /api/token             — Generate a WebSocket access token
  *   GET  /api/health            — Health check
  */
 
-import { corsHeaders as sharedCorsHeaders, corsPolicy, type HandlerContext, type HttpRequestLike, type HttpResult, type RouteDef } from "@agentforeach/platform";
+import { corsHeaders as sharedCorsHeaders, corsPolicy, effectiveDeadline, type HandlerContext, type HttpRequestLike, type HttpResult, type RouteDef } from "@agentforeach/platform";
 import { getAgentClient } from "../shared.js";
 import { generateClientToken, getDefaultGroups } from "../websocket/index.js";
 import { sendEventToUser, EVENTS } from "../websocket/index.js";
 import { isAdmin, resolveAuthContext } from "../auth/index.js";
 import {
+  acceptChatTurn,
   backgroundTurnsEnabled,
+  ChatRunConflictError,
   chatTurnIds,
   executeChatTurn,
+  getChatRunStatus,
   HTTP_RUN_DEADLINE_MS,
   refuseIfRateLimited,
   startChatTurn,
+  waitUnavailable,
   type ChatTurnRequest,
 } from "./chat-turn.js";
 import { ensureIdentityStore, getIdentityStore } from "../channels/index.js";
@@ -46,6 +53,8 @@ import {
   validateAttachments,
 } from "../attachments/index.js";
 import { redactId } from "../utils/redact.js";
+import { answerInputRequest } from "../hitl/answer.js";
+import { inputRequestStatus, pendingInputRequests } from "../hitl/recovery.js";
 
 const MAX_CHAT_MESSAGE_CHARS = parsePositiveInt(
   process.env.CHAT_MAX_MESSAGE_CHARS,
@@ -160,6 +169,17 @@ async function apiChat(
       wait?: boolean;
     };
 
+    const waitRefused = body.wait === true ? waitUnavailable() : undefined;
+    if (waitRefused) {
+      return {
+        status: 400,
+        headers: {
+          ...corsHeaders(request),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ error: waitRefused }),
+      };
+    }
     if (!body.message?.trim()) {
       return {
         status: 400,
@@ -266,6 +286,51 @@ async function apiChat(
       request.headers.get("x-user-timezone")?.trim() ||
       undefined;
 
+    // A gated tool's form is answered by signalling its durable wait, which
+    // resumes the run; no new turn starts. A form the model raised itself is
+    // answered by the turn below (hitl/answer.ts). A form already answered
+    // differently is a conflict.
+    if (body.hitlInputResponse?.requestId) {
+      const outcome = await answerInputRequest(
+        userId,
+        {
+          requestId: body.hitlInputResponse.requestId,
+          data: body.hitlInputResponse.data,
+          cancelled: body.hitlInputResponse.cancelled,
+        },
+        context,
+      );
+      if (outcome === "not_found" || outcome === "unavailable") {
+        return {
+          status: outcome === "not_found" ? 404 : 503,
+          headers: { ...corsHeaders(request), "Content-Type": "application/json" },
+          body: JSON.stringify({ error: outcome === "not_found" ? "No pending input request with this ID (may have timed out)" : "Input requests are not available" }),
+        };
+      }
+      if (outcome === "resumed") {
+        return {
+          status: 202,
+          headers: { ...corsHeaders(request), "Content-Type": "application/json" },
+          body: JSON.stringify({
+            status: "accepted",
+            resumed: true,
+            requestId: body.hitlInputResponse.requestId,
+            sessionId: body.sessionId,
+          }),
+        };
+      }
+      if (outcome === "conflict") {
+        return {
+          status: 409,
+          headers: { ...corsHeaders(request), "Content-Type": "application/json" },
+          body: JSON.stringify({
+            error: "This form was already answered differently",
+            requestId: body.hitlInputResponse.requestId,
+          }),
+        };
+      }
+    }
+
     const { runId, instanceId, newSessionId } = chatTurnIds(userId, body.idempotencyKey);
     const turn: ChatTurnRequest = {
       runId,
@@ -306,7 +371,7 @@ async function apiChat(
       turn.sessionId ??= newSessionId;
       turn.rateLimitChecked = true;
       turn.acceptedAtMs = Date.now();
-      const { duplicate } = await startChatTurn(instanceId, turn);
+      const { duplicate } = await startChatTurn(context, instanceId, turn);
       context.log(
         `apiChat accepted user=${redactId(userId)} run=${runId} session=${redactId(turn.sessionId)}` +
           (duplicate ? " (duplicate of a running turn)" : ""),
@@ -318,8 +383,9 @@ async function apiChat(
       };
     }
 
-    // Azure's front end drops HTTP requests after 230 s.
-    const response = await executeChatTurn(context, turn, Date.now() + HTTP_RUN_DEADLINE_MS);
+    await acceptChatTurn(context, turn);
+    // Azure's front end drops HTTP requests after 230 s; the host's deadline may come sooner.
+    const response = await executeChatTurn(context, turn, effectiveDeadline(HTTP_RUN_DEADLINE_MS, context));
     if (!response) {
       context.log(`apiChat: user=${redactId(userId)} — aborted by client`);
       return {
@@ -350,6 +416,13 @@ async function apiChat(
       body: JSON.stringify(response),
     };
   } catch (err) {
+    if (err instanceof ChatRunConflictError) {
+      return {
+        status: 409,
+        headers: { ...corsHeaders(request), "Content-Type": "application/json" },
+        body: JSON.stringify({ error: err.message, code: "idempotency_conflict" }),
+      };
+    }
     const { message, stack } = toErrorParts(err);
     const errorId = context.invocationId;
     context.error(
@@ -416,6 +489,41 @@ async function apiChatAbort(
     headers: { ...corsHeaders(request), "Content-Type": "application/json" },
     body: JSON.stringify({ ok: true, aborted: didAbort }),
   };
+}
+
+// ============================================================================
+// GET /api/chat/runs/{runId}
+// ============================================================================
+
+/** Run ids are UUID-shaped (chatTurnIds); anything else names no run. */
+const RUN_ID_PATTERN = /^[A-Za-z0-9-]{1,128}$/;
+
+async function apiChatRunStatus(
+  request: HttpRequestLike,
+  context: HandlerContext,
+): Promise<HttpResult> {
+  if (request.method === "OPTIONS")
+    return { status: 204, headers: corsHeaders(request) };
+
+  const auth = await resolveAuthContext(request);
+  if (!auth) return unauthorized(request);
+  const json = (status: number, body: unknown): HttpResult => ({
+    status,
+    headers: { ...corsHeaders(request), "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  const runId = request.params.runId ?? "";
+  if (!RUN_ID_PATTERN.test(runId)) return json(400, { error: "Invalid run id" });
+
+  try {
+    // Read in the caller's own partition: another user's run is not found.
+    const run = await getChatRunStatus(auth.userId, runId);
+    return run ? json(200, run) : json(404, { error: "Run not found" });
+  } catch (err) {
+    context.error("apiChatRunStatus error:", err);
+    return json(500, { error: "Internal error" });
+  }
 }
 
 // ============================================================================
@@ -530,6 +638,96 @@ async function apiSessionById(
 }
 
 // ============================================================================
+// GET /api/hitl/pending, GET /api/hitl/{id}
+// ============================================================================
+
+/** The signed-in user's forms still waiting for an answer, to show again after a reconnect. */
+async function apiHitlPending(
+  request: HttpRequestLike,
+  context: HandlerContext,
+): Promise<HttpResult> {
+  const headers = { ...corsHeaders(request), "Cache-Control": "no-store" };
+  if (request.method === "OPTIONS") return { status: 204, headers };
+
+  const auth = await resolveAuthContext(request);
+  if (!auth) return unauthorized(request);
+
+  try {
+    const requests = await pendingInputRequests(auth.userId);
+    if (!requests) {
+      return {
+        status: 503,
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ error: "Input requests are not available" }),
+      };
+    }
+    return {
+      status: 200,
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ requests }),
+    };
+  } catch (err) {
+    context.error("apiHitlPending error:", err);
+    return {
+      status: 500,
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ error: "Internal error" }),
+    };
+  }
+}
+
+/** Where one of the signed-in user's input requests is; 404 for anyone else's. */
+async function apiHitlStatus(
+  request: HttpRequestLike,
+  context: HandlerContext,
+): Promise<HttpResult> {
+  const headers = { ...corsHeaders(request), "Cache-Control": "no-store" };
+  if (request.method === "OPTIONS") return { status: 204, headers };
+
+  const auth = await resolveAuthContext(request);
+  if (!auth) return unauthorized(request);
+
+  const requestId = request.params.id;
+  if (!requestId) {
+    return {
+      status: 400,
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ error: "requestId is required" }),
+    };
+  }
+
+  try {
+    const status = await inputRequestStatus(auth.userId, requestId);
+    if (status === undefined) {
+      return {
+        status: 503,
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ error: "Input requests are not available" }),
+      };
+    }
+    if (!status) {
+      return {
+        status: 404,
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ error: "Input request not found" }),
+      };
+    }
+    return {
+      status: 200,
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify(status),
+    };
+  } catch (err) {
+    context.error("apiHitlStatus error:", err);
+    return {
+      status: 500,
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ error: "Internal error" }),
+    };
+  }
+}
+
+// ============================================================================
 // POST /api/token
 // ============================================================================
 
@@ -564,6 +762,8 @@ async function apiToken(
       body: JSON.stringify({
         url: token.url,
         expiresAtMs: token.expiresAtMs,
+        // AppSync Events: how the portable client connects. Protocol v1 needs only the URL.
+        ...(token.descriptor ? { descriptor: token.descriptor } : {}),
       }),
     };
   } catch (err) {
@@ -933,6 +1133,15 @@ routes.push({
 });
 
 routes.push({
+  name: "apiChatRunStatus",
+  methods: ["GET", "OPTIONS"],
+  route: "api/chat/runs/{runId}",
+  // Reads the turn's durable job to reconcile a stale status.
+  durable: true,
+  handler: apiChatRunStatus,
+});
+
+routes.push({
   name: "apiSessions",
   methods: ["GET", "OPTIONS"],
   route: "api/sessions",
@@ -958,6 +1167,21 @@ routes.push({
   methods: ["GET", "OPTIONS"],
   route: "api/usage/records",
   handler: apiUsageRecords,
+});
+
+// api/hitl/pending is more specific than api/hitl/{id}, so it wins (matchRoute).
+routes.push({
+  name: "apiHitlPending",
+  methods: ["GET", "OPTIONS"],
+  route: "api/hitl/pending",
+  handler: apiHitlPending,
+});
+
+routes.push({
+  name: "apiHitlStatus",
+  methods: ["GET", "OPTIONS"],
+  route: "api/hitl/{id}",
+  handler: apiHitlStatus,
 });
 
 routes.push({

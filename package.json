@@ -21,8 +21,10 @@
     "packages/platform",
     "packages/platform-azure",
     "packages/platform-cloudflare",
+    "packages/platform-aws",
     "gateway",
-    "infra"
+    "infra",
+    "deploy/aws"
   ],
   "directories": {
     "doc": "docs"
@@ -31,13 +33,16 @@
     "build": "npm run build --workspace @agentforeach/gateway",
     "build:infra": "npm run build --workspace agentforeach-infra",
     "build:storage": "npm run build --workspace @agentforeach/storage-cosmos && npm run build --workspace @agentforeach/storage-postgres",
-    "build:platform": "npm run build --workspace @agentforeach/platform-azure && npm run build --workspace @agentforeach/platform-cloudflare",
+    "build:platform": "npm run build --workspace @agentforeach/platform-azure && npm run build --workspace @agentforeach/platform-cloudflare && npm run build --workspace @agentforeach/platform-aws",
     "test:cron-heartbeat:e2e": "node ./scripts/test-cron-heartbeat-e2e.mjs",
     "test:multi-user": "node ./scripts/test-multi-user-smoke.mjs",
-    "test": "npm test --workspace @agentforeach/storage && npm test --workspace @agentforeach/storage-cosmos && npm test --workspace @agentforeach/storage-postgres && npm test --workspace @agentforeach/platform && npm test --workspace @agentforeach/platform-azure && npm test --workspace @agentforeach/platform-cloudflare && node --test 'scripts/lib/*.test.mjs' && npm test --workspace @agentforeach/gateway",
+    "test": "npm test --workspace @agentforeach/storage && npm test --workspace @agentforeach/storage-cosmos && npm test --workspace @agentforeach/storage-postgres && npm test --workspace @agentforeach/platform && npm test --workspace @agentforeach/platform-azure && npm test --workspace @agentforeach/platform-cloudflare && npm test --workspace @agentforeach/platform-aws && npm test --workspace @agentforeach/deploy-aws && node --test 'scripts/lib/*.test.mjs' 'examples/web-chat/*.test.mjs' && npm test --workspace @agentforeach/gateway",
     "test:storage": "npm test --workspace @agentforeach/storage && npm test --workspace @agentforeach/storage-cosmos && npm test --workspace @agentforeach/storage-postgres",
-    "check:bundle": "node scripts/check-bundle.mjs",
-    "typecheck:worker": "wrangler types --config deploy/cloudflare/wrangler.jsonc --include-env=false deploy/cloudflare/worker-runtime.d.ts && tsc --noEmit -p deploy/cloudflare"
+    "build:aws": "node scripts/build-lambda.mjs",
+    "check:bundle": "node scripts/check-bundle.mjs && node scripts/check-lambda-bundle.mjs",
+    "typecheck:worker": "wrangler types --config deploy/cloudflare/wrangler.jsonc --include-env=false deploy/cloudflare/worker-runtime.d.ts && tsc --noEmit -p deploy/cloudflare",
+    "typecheck:aws": "tsc --noEmit -p deploy/aws/tsconfig.lambda.json",
+    "test:deploy:aws": "npm test --workspace @agentforeach/deploy-aws"
   },
   "devDependencies": {
     "@types/node": "^22.20.4",

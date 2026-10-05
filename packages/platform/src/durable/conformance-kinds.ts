@@ -9,10 +9,10 @@
  */
 
 import type { DurableRegistry } from "./registry.js";
-import type { Durable } from "./types.js";
+import type { Durable, DurableContext } from "./types.js";
 
-/** One handler call the suite checks. */
-export type ConformanceCall = { kind: string; id: string; input: unknown; payload?: unknown; at: number };
+/** One handler call the suite checks; `attempt` as the host passed it (`DurableContext.attempt`). */
+export type ConformanceCall = { kind: string; id: string; input: unknown; payload?: unknown; attempt?: number; at: number };
 
 /** What the conformance kinds' handlers do with the outside world. */
 export interface ConformanceHooks {
@@ -44,13 +44,20 @@ export const CONFORMANCE_ALARM = "conformance-alarm";
 
 /** Defines the suite's kinds in `registry`. */
 export function defineConformanceKinds(registry: DurableRegistry, hooks: ConformanceHooks): DurableRegistry {
-  const record = (kind: string, id: string, input: unknown, payload?: unknown) =>
-    hooks.record({ kind, id, input, ...(payload === undefined ? {} : { payload }), at: Date.now() });
+  const record = (kind: string, ctx: DurableContext, input: unknown, payload?: unknown) =>
+    hooks.record({
+      kind,
+      id: ctx.instanceId,
+      input,
+      ...(payload === undefined ? {} : { payload }),
+      ...(ctx.attempt === undefined ? {} : { attempt: ctx.attempt }),
+      at: Date.now(),
+    });
   return registry
     .defineJob<{ value: unknown; hold?: string; fail?: boolean; spawn?: string }>({
       kind: CONFORMANCE_JOB,
       async run(input, ctx) {
-        await record("job", ctx.instanceId, input);
+        await record("job", ctx, input);
         if (input.hold) await hooks.gate(input.hold);
         if (input.spawn) await hooks.durable().startJob(CONFORMANCE_JOB, { value: "child" }, input.spawn);
         if (input.fail) throw new Error("conformance job failed on purpose");
@@ -60,20 +67,20 @@ export function defineConformanceKinds(registry: DurableRegistry, hooks: Conform
       kind: CONFORMANCE_WAIT,
       event: CONFORMANCE_EVENT,
       async start(input, ctx) {
-        await record("wait-start", ctx.instanceId, input);
+        await record("wait-start", ctx, input);
         if (input.slowStart) await sleep(hooks.unitMs * 3);
       },
       async onEvent(input, payload, ctx) {
-        await record("wait-event", ctx.instanceId, input, payload);
+        await record("wait-event", ctx, input, payload);
       },
       async onTimeout(input, ctx) {
-        await record("wait-timeout", ctx.instanceId, input);
+        await record("wait-timeout", ctx, input);
       },
     })
     .defineAlarm<{ value: unknown; fail?: boolean }>({
       kind: CONFORMANCE_ALARM,
       async tick(input, ctx) {
-        await record("tick", ctx.instanceId, input);
+        await record("tick", ctx, input);
         if (input.fail) throw new Error("conformance tick failed on purpose");
         return Date.now() + (await hooks.nextTickIn(ctx.instanceId));
       },
@@ -88,7 +95,8 @@ export function defineConformanceKinds(registry: DurableRegistry, hooks: Conform
  */
 export class MemoryConformanceRecorder implements ConformanceRecorder {
   private readonly recorded: ConformanceCall[] = [];
-  private readonly held = new Map<string, () => void>();
+  /** Each key's waiting gates: a handler run again (attempt > 1) can wait on a key its cut-off run holds. */
+  private readonly held = new Map<string, Array<() => void>>();
   private readonly released = new Set<string>();
   private readonly ticks = new Map<string, number>();
 
@@ -99,12 +107,12 @@ export class MemoryConformanceRecorder implements ConformanceRecorder {
   /** Resolves once the suite releases `key`. */
   gate(key: string): Promise<void> {
     if (this.released.has(key)) return Promise.resolve();
-    return new Promise((resolve) => this.held.set(key, resolve));
+    return new Promise((resolve) => this.held.set(key, [...(this.held.get(key) ?? []), resolve]));
   }
 
   /** Marks `key` held without waiting (for hosts that poll `isReleased`). */
   hold(key: string): void {
-    if (!this.held.has(key)) this.held.set(key, () => {});
+    if (!this.held.has(key)) this.held.set(key, []);
   }
 
   isReleased(key: string): boolean {
@@ -125,7 +133,7 @@ export class MemoryConformanceRecorder implements ConformanceRecorder {
 
   async release(key: string): Promise<void> {
     this.released.add(key);
-    this.held.get(key)?.();
+    for (const resolve of this.held.get(key) ?? []) resolve();
   }
 
   async setNextTickIn(instanceId: string, ms: number): Promise<void> {

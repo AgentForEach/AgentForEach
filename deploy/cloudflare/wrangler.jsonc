@@ -7,6 +7,8 @@
 // - Azure-only modules: the gateway reaches them only through `await import()`, and each is
 //   aliased to azure-only.ts, so they are never bundled. scripts/check-bundle.mjs fails if
 //   anything reaches Azure code another way.
+// - AWS-only modules: the same, aliased to aws-only.ts (the Bedrock SDK, loaded only when the
+//   bedrock model provider is used).
 {
   "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "agentforeach",
@@ -22,7 +24,9 @@
     "@agentforeach/platform-azure/objects": "./azure-only.ts",
     "@agentforeach/platform-azure/realtime": "./azure-only.ts",
     "@agentforeach/platform-azure/sandbox": "./azure-only.ts",
-    "@modelcontextprotocol/sdk/client/stdio.js": "./azure-only.ts"
+    "@modelcontextprotocol/sdk/client/stdio.js": "./azure-only.ts",
+
+    "@aws-sdk/client-bedrock-runtime": "./aws-only.ts"
   },
 
   "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "REPLACE_WITH_YOUR_HYPERDRIVE_ID" }],

@@ -267,6 +267,13 @@ export interface SessionJsonConfig {
    */
   messageTtlSeconds?: number;
 
+  /**
+   * How long a chat run's status record (GET /api/chat/runs/{runId}) lives,
+   * in seconds, counted from its last change. Default: 604800 (7 days);
+   * 0 = never.
+   */
+  runStatusTtlSeconds?: number;
+
   /** Number of messages before triggering compaction. Default: 60. */
   compactionThreshold?: number;
 

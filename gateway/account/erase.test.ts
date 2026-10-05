@@ -119,3 +119,37 @@ test("what the sandbox backend leaves behind goes in the report", async () => {
   assert.equal(report.sandboxes, 1);
   assert.deepEqual(report.skipped, ["sandboxes: snapshots stay until they expire"]);
 });
+
+test("aws-agentcore: erasure keeps the session records until the sessions are stopped, so a retry can stop them", async () => {
+  const { Readable } = await import("node:stream");
+  const { AwsAgentCoreSandbox } = await import("@agentforeach/platform-aws/sandbox");
+  const { AWS_SANDBOX_COLLECTIONS } = await import("@agentforeach/platform-aws/collections");
+  const storage = new InMemoryStorage();
+  let stopping = false;
+  const sandbox = new AwsAgentCoreSandbox({
+    runtimeArn: "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/afe_sandbox-abc123",
+    serverToken: "runtime-token-0123456789abcdef",
+    storage,
+    agentCore: {
+      send: (async (command: { constructor: { name: string } }) => {
+        if (command.constructor.name === "StopRuntimeSessionCommand") {
+          if (!stopping) throw new Error("stop unavailable");
+          return {};
+        }
+        const answer = { status: 200, body: { success: true, count: 0 } };
+        return { statusCode: 200, response: Readable.from([Buffer.from(JSON.stringify(answer))]) };
+      }) as never,
+    },
+  });
+  await sandbox.setEnv({}, sandbox.resolveIdentifier("alice"));
+  const sessions = await storage.collection(AWS_SANDBOX_COLLECTIONS[0]);
+  const catalog = [...AWS_SANDBOX_COLLECTIONS];
+
+  const failed = await eraseUserData(storage, "alice", { sandbox, catalog });
+  assert.equal(failed.errors.length, 1);
+  assert.equal((await sessions.find({})).length, 1, "the generic erasure leaves the handle for the backend");
+  stopping = true;
+  const done = await eraseUserData(storage, "alice", { sandbox, catalog });
+  assert.deepEqual([done.sandboxes, done.errors], [1, []]);
+  assert.equal((await sessions.find({})).length, 0);
+});

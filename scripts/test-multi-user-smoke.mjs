@@ -18,10 +18,12 @@
  *
  * Optional env vars:
  *   AGENTFOREACH_TEST_USERS=3
+ *   LOADTEST_JWT_SECRET=...           // sign each user in with a JWT (a cloud stack; scripts/load-test/make-config.mjs)
  *   AGENTFOREACH_AUTH_BEARER=...      // if your env requires Authorization header
  */
 
 import process from "node:process";
+import { userHeaders } from "./lib/test-auth.mjs";
 
 const DEFAULT_USER_COUNT = 3;
 
@@ -98,8 +100,7 @@ async function requestJson({
   expectedStatuses,
   authBearer,
 }) {
-  const headers = {};
-  if (userId) headers["x-user-id"] = userId;
+  const headers = userHeaders(userId);
   if (authBearer) headers.Authorization = `Bearer ${authBearer}`;
   if (body !== undefined) headers["Content-Type"] = "application/json";
 
@@ -151,7 +152,8 @@ async function ensureTokenInMemory({
         wait: true, // reply in the response, not only over the socket
         sessionId: `${sessionBase}-store-${attempt}`,
         message:
-          `Call memory_store now with this exact text: token=${token}. ` +
+          // Not "token=…": a model rightly refuses to store what looks like a secret.
+          `Call memory_store now with this exact text: The user's favourite word is ${token}. ` +
           "Then reply with exactly: STORED",
       },
     });
@@ -168,7 +170,7 @@ async function ensureTokenInMemory({
         sessionId: `${sessionBase}-search-${attempt}`,
         message:
           `Call memory_search for this query exactly: ${token}. ` +
-          "Return only the token value if found, else return NOT_FOUND.",
+          "Return only the user's favourite word if found, else return NOT_FOUND.",
       },
     });
     lastSearchText = extractChatText(searchResp.json);
@@ -244,18 +246,24 @@ async function runForUser({
     method: "POST",
     userId,
     authBearer,
-    expectedStatuses: [200],
+    expectedStatuses: [202],
   });
   assert(runResp.json?.jobId === jobId, "Cron force-run returned wrong job id", runResp.json);
 
-  const runsResp = await requestJson({
-    baseUrl,
-    path: `/cron/runs/${jobId}`,
-    method: "GET",
-    userId,
-    authBearer,
-    expectedStatuses: [200],
-  });
+  // The force-run is dispatched (202); its run is recorded when it finishes.
+  let runsResp;
+  for (const deadline = Date.now() + 180_000; ; ) {
+    runsResp = await requestJson({
+      baseUrl,
+      path: `/cron/runs/${jobId}`,
+      method: "GET",
+      userId,
+      authBearer,
+      expectedStatuses: [200],
+    });
+    if (Number(runsResp.json?.count ?? 0) >= 1 || Date.now() > deadline) break;
+    await new Promise((r) => setTimeout(r, 3000));
+  }
   assert(
     Number(runsResp.json?.count ?? 0) >= 1,
     "Cron runs did not record execution",
@@ -320,7 +328,7 @@ async function checkMemoryIsolation({
       sessionId,
       message:
         `Call memory_search with this exact query: ${user.token}. ` +
-        "Return only the token value if found, else return NOT_FOUND.",
+        "Return only the user's favourite word if found, else return NOT_FOUND.",
     },
   });
   const text = extractChatText(resp.json);

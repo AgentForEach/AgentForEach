@@ -14,6 +14,27 @@ CREATE EXTENSION IF NOT EXISTS vector;
 CREATE TABLE IF NOT EXISTS "public"."abort-requests" ("pk" text NOT NULL, "id" text NOT NULL, "doc" jsonb NOT NULL, "etag" text NOT NULL, "expires_at" timestamptz, PRIMARY KEY (pk, id));
 CREATE INDEX IF NOT EXISTS "abort-requests_expires_at_09741ab50b" ON "public"."abort-requests" (expires_at) WHERE expires_at IS NOT NULL;
 
+-- aws-durable-conformance
+CREATE TABLE IF NOT EXISTS "public"."aws-durable-conformance" ("pk" text NOT NULL, "id" text NOT NULL, "doc" jsonb NOT NULL, "etag" text NOT NULL, "expires_at" timestamptz, PRIMARY KEY (pk, id));
+CREATE INDEX IF NOT EXISTS "aws-durable-conformance_expires_at_90f49cd53a" ON "public"."aws-durable-conformance" (expires_at) WHERE expires_at IS NOT NULL;
+
+-- aws-durable-instances
+CREATE TABLE IF NOT EXISTS "public"."aws-durable-instances" ("pk" text NOT NULL, "id" text NOT NULL, "doc" jsonb NOT NULL, "etag" text NOT NULL, "expires_at" timestamptz, PRIMARY KEY (pk, id));
+CREATE INDEX IF NOT EXISTS "aws-durable-instances_expires_at_fc0f0936eb" ON "public"."aws-durable-instances" (expires_at) WHERE expires_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS "aws-durable-instances_doc_status_fea6325fec" ON "public"."aws-durable-instances" ((doc #> '{"status"}'::text[]));
+CREATE INDEX IF NOT EXISTS "aws-durable-instances_doc_sweptAt_21a0332826" ON "public"."aws-durable-instances" ((doc #> '{"sweptAt"}'::text[]));
+CREATE INDEX IF NOT EXISTS "aws-durable-instances_doc_userId_072bbd80dc" ON "public"."aws-durable-instances" ((doc #> '{"userId"}'::text[]));
+
+-- aws-sandbox-sessions
+CREATE TABLE IF NOT EXISTS "public"."aws-sandbox-sessions" ("pk" text NOT NULL, "id" text NOT NULL, "doc" jsonb NOT NULL, "etag" text NOT NULL, "expires_at" timestamptz, PRIMARY KEY (pk, id));
+
+-- aws-sandbox-workspaces
+CREATE TABLE IF NOT EXISTS "public"."aws-sandbox-workspaces" ("pk" text NOT NULL, "id" text NOT NULL, "doc" jsonb NOT NULL, "etag" text NOT NULL, "expires_at" timestamptz, PRIMARY KEY (pk, id));
+
+-- chat-runs
+CREATE TABLE IF NOT EXISTS "public"."chat-runs" ("pk" text NOT NULL, "id" text NOT NULL, "doc" jsonb NOT NULL, "etag" text NOT NULL, "expires_at" timestamptz, PRIMARY KEY (pk, id));
+CREATE INDEX IF NOT EXISTS "chat-runs_expires_at_3e00c3e8a8" ON "public"."chat-runs" (expires_at) WHERE expires_at IS NOT NULL;
+
 -- cron-due-index
 CREATE TABLE IF NOT EXISTS "public"."cron-due-index" ("pk" text NOT NULL, "id" text NOT NULL, "doc" jsonb NOT NULL, "etag" text NOT NULL, "expires_at" timestamptz, PRIMARY KEY (pk, id));
 CREATE INDEX IF NOT EXISTS "cron-due-index_expires_at_c1e8e7e974" ON "public"."cron-due-index" (expires_at) WHERE expires_at IS NOT NULL;

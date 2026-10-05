@@ -20,6 +20,12 @@
  * frame by replying `{ echo: data, event, userId }`, and throw when the data
  * is `{ fail: true }` (the harness wires that handler); otherwise those
  * tests are skipped.
+ *
+ * The provider's capabilities gate the rest: presence and disconnect are
+ * tested where `presence` and `disconnect` are true, inbound events where
+ * `inbound` is "websocket", and forged tokens and the relay's group frames
+ * where clients speak protocol v1. A harness for another protocol adapts its
+ * client to v1's frames in `connect`, which gets each access's descriptor.
  */
 
 import assert from "node:assert/strict";
@@ -27,15 +33,15 @@ import { createHmac, randomUUID } from "node:crypto";
 import { before, describe, it } from "node:test";
 import type { Frame, RealtimeTestClient } from "./testing.js";
 import type { RealtimeTokenClaims } from "./token.js";
-import type { RealtimeProvider } from "./types.js";
+import { resolveRealtimeCapabilities, type ConnectionDescriptor, type RealtimeProvider, type ResolvedRealtimeCapabilities } from "./types.js";
 
 export { webSocketTestClient, FrameQueue, type RealtimeTestClient, type Frame } from "./testing.js";
 
 export type RealtimeConformanceOptions = {
   name: string;
   createProvider: () => RealtimeProvider | Promise<RealtimeProvider>;
-  /** Opens a client on a URL from `clientAccess` or `relay.groupAccess`. */
-  connect: (url: string) => Promise<RealtimeTestClient>;
+  /** Opens a client on a URL from `clientAccess` or `relay.groupAccess` (and its descriptor, when the provider returns one). */
+  connect: (url: string, descriptor?: ConnectionDescriptor) => Promise<RealtimeTestClient>;
   /** The client hub echoes `event` frames (see above). */
   inboundEvents?: boolean;
   /** How long presence may take to settle after a connect or close. Default 3000 ms. */
@@ -49,6 +55,13 @@ export type RealtimeConformanceOptions = {
    * after it closed.
    */
   oneTimeUrls?: boolean;
+  /**
+   * How the provider closes the connection of a sender whose frame is over
+   * 1 MiB (never delivered either way): "close" (self-hosted providers) sends
+   * a `disconnected` frame first; "close-silently" (Azure Web PubSub) closes
+   * without one. Default "close".
+   */
+  oversizeFrames?: "close" | "close-silently";
   /**
    * The provider honours a token lifetime of a few seconds, so expiry can be
    * checked without waiting a minute. Default true.
@@ -137,11 +150,12 @@ export function runRealtimeConformance(options: RealtimeConformanceOptions): voi
 
   describe(`realtime conformance: ${options.name}`, () => {
     let provider: RealtimeProvider;
+    let caps: ResolvedRealtimeCapabilities;
     const user = (): string => `conf-${randomUUID().slice(0, 12)}`;
     const open = async (userId: string): Promise<RealtimeTestClient> => {
       const access = await provider.clientAccess(userId, { ttlMinutes: 5 });
       assert.ok(access.expiresAtMs > Date.now());
-      const client = await options.connect(access.url);
+      const client = await options.connect(access.url, access.descriptor);
       const connected = await client.next(isConnected);
       assert.equal(connected.userId, userId);
       assert.equal(typeof connected.connectionId, "string");
@@ -149,10 +163,10 @@ export function runRealtimeConformance(options: RealtimeConformanceOptions): voi
     };
 
     /** `url` must not connect. A connection that does is closed, so a failing provider fails fast instead of hanging. */
-    const refused = async (url: string, what: string): Promise<void> => {
+    const refused = async (url: string, what: string, descriptor?: ConnectionDescriptor): Promise<void> => {
       let client: RealtimeTestClient;
       try {
-        client = await options.connect(url);
+        client = await options.connect(url, descriptor);
       } catch {
         return;
       }
@@ -162,6 +176,7 @@ export function runRealtimeConformance(options: RealtimeConformanceOptions): voi
 
     before(async () => {
       provider = await options.createProvider();
+      caps = resolveRealtimeCapabilities(provider.capabilities);
     });
 
     describe("client hub", () => {
@@ -182,7 +197,8 @@ export function runRealtimeConformance(options: RealtimeConformanceOptions): voi
         for (const c of [a1, a2, b]) c.close();
       });
 
-      it("reports presence", async () => {
+      it("reports presence", async (t) => {
+        if (!caps.presence) return t.skip("no presence");
         const id = user();
         assert.equal(await provider.isUserOnline(id), false);
         const client = await open(id);
@@ -192,12 +208,14 @@ export function runRealtimeConformance(options: RealtimeConformanceOptions): voi
         await eventually(async () => !(await provider.isUserOnline(id)), settleMs, "the user to be offline");
       });
 
-      it("disconnects a user, saying why", async () => {
+      it("disconnects a user, saying why", async (t) => {
+        if (!caps.disconnect) return t.skip("no forced disconnect");
         const id = user();
         const client = await open(id);
         await provider.disconnectUser(id, "account deleted");
         const frame = await client.next((f) => f?.type === "system" && f.event === "disconnected");
-        assert.equal(frame.message, "account deleted", "the reason given is the reason sent");
+        // Providers may wrap the reason in their own text (Azure prefixes one).
+        assert.ok(String(frame.message).includes("account deleted"), "the message includes the reason sent");
         await client.closed;
       });
 
@@ -218,7 +236,8 @@ export function runRealtimeConformance(options: RealtimeConformanceOptions): voi
       }
 
       if (options.inboundEvents) {
-        it("answers an event with a server message, then the ack", async () => {
+        it("answers an event with a server message, then the ack", async (t) => {
+          if (caps.inbound !== "websocket") return t.skip("client events arrive over HTTP");
           const id = user();
           const client = await open(id);
           client.send({ type: "event", event: "message", ackId: 7, dataType: "json", data: { type: "ping" } });
@@ -228,7 +247,8 @@ export function runRealtimeConformance(options: RealtimeConformanceOptions): voi
           client.close();
         });
 
-        it("acks InternalServerError, with no reply, when the handler fails", async () => {
+        it("acks InternalServerError, with no reply, when the handler fails", async (t) => {
+          if (caps.inbound !== "websocket") return t.skip("client events arrive over HTTP");
           const client = await open(user());
           client.send({ type: "event", event: "message", ackId: 8, dataType: "json", data: { fail: true } });
           const ack = await client.next(isAck(8));
@@ -241,7 +261,8 @@ export function runRealtimeConformance(options: RealtimeConformanceOptions): voi
     });
 
     describe("token authentication", () => {
-      it("refuses client tokens it didn't issue exactly as issued", async () => {
+      it("refuses client tokens it didn't issue exactly as issued", async (t) => {
+        if (caps.protocol !== "v1") return t.skip("the token isn't in the URL");
         const victim = user();
         const { url } = await provider.clientAccess(victim, { ttlMinutes: 5 });
         const token = new URL(url).searchParams.get("access_token") ?? "";
@@ -272,7 +293,7 @@ export function runRealtimeConformance(options: RealtimeConformanceOptions): voi
       });
 
       it("refuses a properly sealed token under another key, or for another audience", async (t) => {
-        if (!options.tokens) return t.skip("the harness can't mint tokens");
+        if (!options.tokens || caps.protocol !== "v1") return t.skip("the harness can't mint tokens");
         const { url } = await provider.clientAccess(user(), { ttlMinutes: 5 });
         const claims = (aud: string): RealtimeTokenClaims => ({
           sub: user(),
@@ -293,7 +314,7 @@ export function runRealtimeConformance(options: RealtimeConformanceOptions): voi
       });
 
       it("refuses a relay token whose group was changed", async (t) => {
-        if (!provider.capabilities.relay) return t.skip("no relay");
+        if (!caps.relay || caps.protocol !== "v1") return t.skip("no protocol v1 relay");
         const g = `bh-${randomUUID().replace(/-/g, "")}`;
         const { url } = await provider.relay!.groupAccess({ hub: `conf_auth_${randomUUID().slice(0, 8)}`, userId: "viewer", group: g, ttlMinutes: 5 });
         const other = `bh-${randomUUID().replace(/-/g, "")}`;
@@ -310,7 +331,7 @@ export function runRealtimeConformance(options: RealtimeConformanceOptions): voi
         const access = await provider.clientAccess(user(), { ttlMinutes: 2 / 60 });
         assert.ok(access.expiresAtMs <= Date.now() + 3000, "the lifetime asked for is the one given");
         await new Promise((r) => setTimeout(r, Math.max(0, access.expiresAtMs - Date.now()) + 1500));
-        await refused(access.url, "an expired token");
+        await refused(access.url, "an expired token", access.descriptor);
       });
     });
 
@@ -318,20 +339,23 @@ export function runRealtimeConformance(options: RealtimeConformanceOptions): voi
       const relayHub = `conf_relay_${randomUUID().slice(0, 8)}`;
       const join = async (userId: string, group: string): Promise<RealtimeTestClient> => {
         assert.ok(provider.relay, "capabilities.relay requires relay");
-        const { url } = await provider.relay.groupAccess({ hub: relayHub, userId, group, ttlMinutes: 5 });
-        const client = await options.connect(url);
+        const { url, descriptor } = await provider.relay.groupAccess({ hub: relayHub, userId, group, ttlMinutes: 5 });
+        const client = await options.connect(url, descriptor);
         await client.next(isConnected);
         return client;
       };
       const group = (): string => `bh-${randomUUID().replace(/-/g, "")}`;
 
+      /** The relay tests send protocol v1's group frames (joinGroup, sendToGroup, acks). */
+      const v1Relay = (): boolean => caps.relay && caps.protocol === "v1";
+
       it("has a host", (t) => {
-        if (!provider.capabilities.relay) return t.skip("no relay");
+        if (!caps.relay) return t.skip("no relay");
         assert.ok(provider.relay?.host);
       });
 
       it("stamps fromUserId from the sender's token, applies frames in order, and honours noEcho", async (t) => {
-        if (!provider.capabilities.relay) return t.skip("no relay");
+        if (!v1Relay()) return t.skip("no protocol v1 relay");
         const g = group();
         const driver = await join("browser-driver:abc", g);
         const viewer = await join("viewer-user", g);
@@ -360,7 +384,7 @@ export function runRealtimeConformance(options: RealtimeConformanceOptions): voi
       });
 
       it("echoes to the sender without noEcho", async (t) => {
-        if (!provider.capabilities.relay) return t.skip("no relay");
+        if (!v1Relay()) return t.skip("no protocol v1 relay");
         const g = group();
         const a = await join("a", g);
         a.send({ type: "joinGroup", group: g, ackId: 1 });
@@ -371,7 +395,7 @@ export function runRealtimeConformance(options: RealtimeConformanceOptions): voi
       });
 
       it("refuses groups the token doesn't grant, and never forwards there", async (t) => {
-        if (!provider.capabilities.relay) return t.skip("no relay");
+        if (!v1Relay()) return t.skip("no protocol v1 relay");
         const [mine, theirs] = [group(), group()];
         const victim = await join("victim", theirs);
         victim.send({ type: "joinGroup", group: theirs, ackId: 1 });
@@ -392,7 +416,7 @@ export function runRealtimeConformance(options: RealtimeConformanceOptions): voi
       });
 
       it("drops a forbidden frame silently when it has no ackId", async (t) => {
-        if (!provider.capabilities.relay) return t.skip("no relay");
+        if (!v1Relay()) return t.skip("no protocol v1 relay");
         const [mine, theirs] = [group(), group()];
         const a = await join("a", mine);
         a.send({ type: "joinGroup", group: theirs });
@@ -405,7 +429,7 @@ export function runRealtimeConformance(options: RealtimeConformanceOptions): voi
       });
 
       it("delivers to a group from a sender that hasn't joined it", async (t) => {
-        if (!provider.capabilities.relay) return t.skip("no relay");
+        if (!v1Relay()) return t.skip("no protocol v1 relay");
         const g = group();
         const listener = await join("listener", g);
         listener.send({ type: "joinGroup", group: g, ackId: 1 });
@@ -420,7 +444,7 @@ export function runRealtimeConformance(options: RealtimeConformanceOptions): voi
       });
 
       it("stops delivering to a connection that left the group", async (t) => {
-        if (!provider.capabilities.relay) return t.skip("no relay");
+        if (!v1Relay()) return t.skip("no protocol v1 relay");
         const g = group();
         const leaver = await join("leaver", g);
         const sender = await join("sender", g);
@@ -435,7 +459,7 @@ export function runRealtimeConformance(options: RealtimeConformanceOptions): voi
       });
 
       it("acks once per ackId and reports duplicates", async (t) => {
-        if (!provider.capabilities.relay) return t.skip("no relay");
+        if (!v1Relay()) return t.skip("no protocol v1 relay");
         const g = group();
         const a = await join("a", g);
         a.send({ type: "joinGroup", group: g, ackId: 5 });
@@ -448,11 +472,11 @@ export function runRealtimeConformance(options: RealtimeConformanceOptions): voi
       });
 
       it("keeps hubs apart", async (t) => {
-        if (!provider.capabilities.relay) return t.skip("no relay");
+        if (!v1Relay()) return t.skip("no protocol v1 relay");
         const g = group();
         const a = await join("a", g);
-        const { url } = await provider.relay!.groupAccess({ hub: `${relayHub}_other`, userId: "b", group: g, ttlMinutes: 5 });
-        const b = await options.connect(url);
+        const other = await provider.relay!.groupAccess({ hub: `${relayHub}_other`, userId: "b", group: g, ttlMinutes: 5 });
+        const b = await options.connect(other.url, other.descriptor);
         await b.next(isConnected);
         a.send({ type: "joinGroup", group: g, ackId: 1 });
         b.send({ type: "joinGroup", group: g, ackId: 1 });
@@ -464,7 +488,7 @@ export function runRealtimeConformance(options: RealtimeConformanceOptions): voi
       });
 
       it("allows one connection per relay URL, and a reconnect right after it closed", async (t) => {
-        if (!provider.capabilities.relay) return t.skip("no relay");
+        if (!v1Relay()) return t.skip("no protocol v1 relay");
         if (!options.oneTimeUrls) return t.skip("reusable URLs");
         const g = group();
         const { url } = await provider.relay!.groupAccess({ hub: relayHub, userId: "viewer", group: g, ttlMinutes: 5 });
@@ -480,21 +504,29 @@ export function runRealtimeConformance(options: RealtimeConformanceOptions): voi
       });
 
       it("never hands relay events to the gateway", async (t) => {
-        if (!provider.capabilities.relay) return t.skip("no relay");
+        if (!v1Relay()) return t.skip("no protocol v1 relay");
         const a = await join("a", group());
         a.send({ type: "event", event: "message", dataType: "json", data: { type: "chat", message: "hi" } });
         assert.deepEqual(await a.collect(quietMs, fromServer), []);
         a.close();
       });
 
-      it("closes a connection that sends a frame over 1 MiB", async (t) => {
-        if (!provider.capabilities.relay) return t.skip("no relay");
+      it("never delivers a frame over 1 MiB, and closes the sender's connection", async (t) => {
+        if (!v1Relay()) return t.skip("no protocol v1 relay");
         const g = group();
-        const a = await join("a", g);
+        const [a, b] = [await join("a", g), await join("b", g)];
+        a.send({ type: "joinGroup", group: g, ackId: 1 });
+        b.send({ type: "joinGroup", group: g, ackId: 1 });
+        await Promise.all([a.next(isAck(1)), b.next(isAck(1))]);
         a.send({ type: "sendToGroup", group: g, dataType: "text", data: "x".repeat(1024 * 1024 + 1) });
-        const frame = await a.next((f) => f?.type === "system", quietMs * 10);
-        assert.equal(frame.event, "disconnected", "told why before the close");
-        await a.closed;
+        if (options.oversizeFrames !== "close-silently") {
+          const frame = await a.next((f) => f?.type === "system", quietMs * 10);
+          assert.equal(frame.event, "disconnected", "told why before the close");
+        }
+        const closed = await Promise.race([a.closed.then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), quietMs * 10))]);
+        assert.ok(closed, "sender's connection not closed");
+        assert.deepEqual(await b.collect(quietMs * 10, fromGroup), [], "never delivered");
+        b.close();
       });
     });
   });

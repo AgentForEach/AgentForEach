@@ -46,6 +46,11 @@ gateway/config/agentforeach.loadtest.json
 # Stack configs are per deployment; see infra/Pulumi.example.yaml
 infra/Pulumi.*.yaml
 !infra/Pulumi.example.yaml
+deploy/aws/*/Pulumi.*.yaml
+!deploy/aws/*/Pulumi.example.yaml
+# An AWS deployment's package and teardown state exports (deploy/aws/deploy.sh, teardown.sh)
+deploy/aws/.release/
+deploy/aws/.teardown/
 
 # Deploy staging area (scripts/deploy-gateway.sh)
 .deploy-staging/

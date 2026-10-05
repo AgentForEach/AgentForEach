@@ -5,7 +5,16 @@ import { isObjectNotFound, isObjectTooLarge, ObjectStoreError } from "./errors.j
 import { MemoryObjectStore } from "./memory.js";
 
 // The in-memory store must pass the same suite as every cloud provider.
-runObjectStoreConformance({ name: "memory", createStore: () => new MemoryObjectStore() });
+runObjectStoreConformance({
+  name: "memory",
+  createStore: () => new MemoryObjectStore(),
+  linkExpiry: (url) => new Date(new URL(url).searchParams.get("expires")!),
+  withCredentialsExpiring: (_store, expiration) => new MemoryObjectStore({ credentialsExpireAt: () => expiration }),
+  // As a release before the current key rules could have written them.
+  putUnchecked: async (store, key, body) => {
+    (store as unknown as { objects: Map<string, unknown> }).objects.set(key, { bytes: new TextEncoder().encode(body), lastModified: new Date() });
+  },
+});
 
 test("returned bytes are copies, so callers cannot change stored objects", async () => {
   const store = new MemoryObjectStore();
