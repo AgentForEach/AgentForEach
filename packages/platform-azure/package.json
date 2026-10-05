@@ -47,6 +47,6 @@
     "durable-functions": "^3.5.0"
   },
   "devDependencies": {
-    "@types/node": "^22.20.4"
+    "@types/node": "^22.20.5"
   }
 }
