@@ -1,6 +1,30 @@
 # Architecture
 
-AgentForEach is one stateless Function App in front of Cosmos DB. Every turn loads what it needs, calls the model, writes the result and forgets. Nothing about a user lives in memory between turns. That is what lets one deployment serve any number of users and cost nothing for users who aren't talking to it.
+AgentForEach serves many users from one deployment on **Azure, Cloudflare or AWS**. The gateway, agent loop and workflows use six cloud-neutral contracts: host, durable work, database, files, realtime and sandbox. A platform pack supplies the cloud-specific implementations. Model providers are configured separately from the hosting cloud.
+
+<picture>
+  <source media="(max-width: 640px) and (prefers-color-scheme: dark)" srcset="assets/architecture-platform-mobile-dark.svg">
+  <source media="(max-width: 640px)" srcset="assets/architecture-platform-mobile-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="assets/architecture-platform-dark.svg">
+  <img alt="Multi-cloud, multi-tenant architecture: authenticated users share the agent runtime, with user-scoped memory, sessions, schedules, files, sandboxes and connections. Six contracts map to a choice of Azure, Cloudflare or AWS. AWS is in preview." src="assets/architecture-platform-light.svg">
+</picture>
+
+[Full diagram](assets/architecture-platform-light.svg) · [Service mapping and backend capabilities](Platforms.md)
+
+## Tenant boundaries
+
+The tenant boundary is a canonical `userId`, resolved from app authentication or a paired channel account. Compute and cloud infrastructure are shared. User-specific state is persisted in the selected database and object store, rather than requiring a gateway process for every user.
+
+- Sessions, memories, schedules and run records are accessed with the owner's identity. Session messages are reached through their owning session.
+- Sandbox identifiers encode the user, and optionally the session; files use owner-scoped paths. This is logical ownership, not a separate database per user.
+- HITL answers are checked against the request's owner. Realtime access and outgoing events are scoped to the user's connections.
+- A renewed lease permits one active turn per conversation. Other users and conversations can run independently.
+
+See the [security model](../SECURITY.md), [identity and pairing](Identity.md), [sessions](Session-management.md) and [sandbox contract](../packages/platform/src/sandbox/identifier.ts) for the implementation boundaries.
+
+## Azure reference deployment
+
+The detailed service diagram and Azure-specific operational settings below describe the Azure pack. [Platforms](Platforms.md) maps these roles to Cloudflare and AWS; their deployment guides document differences in durability, networking, realtime and sandbox capabilities.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/architecture-dark.svg">
@@ -26,7 +50,7 @@ The Pulumi program in `infra` creates all of it.
 
 1. **Accept.** `POST /api/chat` (or a WebSocket `chat` message) authenticates the caller, validates the message, counts it against the user's rate limit, and starts a `ChatTurn` durable job whose id (`chat-<hash>`) is derived from the user and the idempotency key. It returns `202 { runId, sessionId }`. A retry with the same key joins the running turn instead of starting a second one.
 2. **Run.** The job (on Azure, the `DurableJobRun` activity of a `DurableJob` orchestration) loads the session and takes its **run lease** (below), then builds the turn: history (or the provider's response chain), compaction summary, recalled memories, recent sessions, prompt documents, tools. The runner calls the model, executes tool calls (each isolated, so one failing tool doesn't fail the turn), and loops until the model answers or a limit is reached.
-3. **Stream.** Text deltas are coalesced every 400 ms and pushed over Web PubSub with their offset; the `final` event carries the whole reply.
+3. **Stream.** Text deltas are coalesced every 400 ms and pushed through the selected realtime provider with their offset; the `final` event carries the whole reply. Azure uses Web PubSub, Cloudflare uses Durable Object sockets, and AWS uses AppSync Events.
 4. **Persist.** The user message and reply are appended to the session (etag-guarded), usage is recorded, memories may be captured, and the lease is released.
 
 Channels (Telegram, WhatsApp) take the same path from their webhooks: they acknowledge first, then run the turn as a `ChannelInboundTurn` durable job.
@@ -45,7 +69,9 @@ Two guards run before the model is called. A background turn that waited more th
 
 ### Real-time protocol
 
-A client calls `GET /negotiate` (authenticated like any API call) and gets `{ url }`: a Web PubSub URL with an access token for that user. It then opens a WebSocket to that URL. What the client sends reaches `/ws/message` as a Web PubSub event, verified by its signature:
+The [portable client](../packages/platform/src/realtime/client/index.ts) uses the negotiated connection descriptor to select its protocol. Azure and Cloudflare use protocol v1; AWS uses AppSync Events, with incoming client messages sent over HTTP.
+
+On Azure, a client calls `GET /negotiate` (authenticated like any API call) and gets a Web PubSub URL with an access token for that user. It then opens a WebSocket to that URL. What the client sends reaches `/ws/message` as a Web PubSub event, verified by its signature:
 
 | Client message | Meaning |
 |---|---|
@@ -95,7 +121,7 @@ Jobs are spread over scheduler shards (8 by default), each a durable alarm that 
 
 ## Scaling
 
-Nothing in the design is per user or global. A turn holds no state between calls, user data sits in that user's partition, schedules are spread over shards, and the only lock is a lease on one session. So each ceiling below is either a limit Microsoft publishes or a setting in this repo, and you raise it without changing code.
+Compute is shared, user data is scoped to its owner, schedules are spread over shards, and the turn lease belongs to one session. The Azure service ceilings and configuration settings below describe that pack; other packs have their own limits in [Cloudflare](Cloudflare.md) and [AWS](AWS.md).
 
 | Layer | What Microsoft publishes | The setting here |
 |---|---|---|

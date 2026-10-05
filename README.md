@@ -7,9 +7,9 @@
 
 <p align="center"><code>users.forEach(user =&gt; agent(user))</code></p>
 
-<h3 align="center">Personal agents, built into your product.</h3>
+<h3 align="center">An agent for every user. On your cloud.</h3>
 
-<p align="center">Give every user an agent that remembers them, follows up while they're away and uses tools on their behalf.<br>You build the experience. AgentForEach supplies the memory, schedules, approvals and private workspaces.</p>
+<p align="center">Give every user an agent that remembers them, follows up while they're away and uses tools on their behalf.<br>You build the experience. AgentForEach supplies the memory, schedules, approvals and private workspaces.<br>Run the shared platform on <b>Azure, Cloudflare or AWS</b>, with state and work scoped to each user.</p>
 
 <p align="center">
   <a href="https://github.com/agentforeach/agentforeach/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/agentforeach/agentforeach/actions/workflows/ci.yml/badge.svg"></a>
@@ -54,16 +54,58 @@
 
 **Next:** local development without an Azure account, a starter app you can rebrand, and a Google Cloud pack. [Roadmap](ROADMAP.md)
 
+## Architecture
+
+**One shared runtime. An agent for every user. Your choice of cloud.** The gateway, agent loop, workflows and client use six platform contracts; Azure, Cloudflare and AWS implement them with their own services.
+
+<picture>
+  <source media="(max-width: 640px) and (prefers-color-scheme: dark)" srcset="docs/assets/architecture-platform-mobile-dark.svg">
+  <source media="(max-width: 640px)" srcset="docs/assets/architecture-platform-mobile-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/architecture-platform-dark.svg">
+  <img alt="Multi-cloud, multi-tenant architecture: authenticated users share the agent runtime, with user-scoped memory, sessions, schedules, files, sandboxes and connections. Six contracts map to a choice of Azure, Cloudflare or AWS. AWS is in preview." src="docs/assets/architecture-platform-light.svg">
+</picture>
+
+[Open the full diagram](docs/assets/architecture-platform-light.svg) · [Cloud services and capabilities](docs/Platforms.md)
+
+### How users stay separate
+
+A tenant here is a canonical `userId`. Users share compute and infrastructure; the runtime carries the authenticated owner's identity through their work:
+
+- **Identity:** app sign-in and paired channel accounts resolve to the same user. Requests use that identity to check ownership.
+- **State:** sessions, memories and schedules use user-scoped storage. Files and sandbox identifiers include their owner; this does not require a database or an always-on server per user.
+- **Work and replies:** a renewed lease serializes turns within a conversation. Approval answers belong to the requesting user, and realtime events target that user's connections. Reconnects can recover run status and unanswered forms.
+
+Deploy **one cloud pack** in your account. Model providers are configured independently of the hosting cloud, and backend capabilities differ. [Azure](docs/getting-started.md) · [Cloudflare](docs/Cloudflare.md) · [AWS, preview](docs/AWS.md) · [Security model](SECURITY.md)
+
+<details>
+<summary><b>Azure reference: the detailed request and reply path</b></summary>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/architecture-dark.svg">
+  <img alt="Azure reference architecture: app, Telegram and WhatsApp requests reach stateless Functions. Durable work and a sharded scheduler drive the agent runner, which uses user-scoped storage, model providers, private sandboxes and optional search. Replies stream through Web PubSub to the user’s connected devices." src="docs/assets/architecture-light.svg">
+</picture>
+
+The Azure implementation uses Functions, Durable Functions, Cosmos DB or PostgreSQL, Web PubSub and Container Apps. The other packs fill the same roles with the services shown above.
+
+</details>
+
+[Architecture details](docs/Architecture.md) · [Sessions](docs/Session-management.md) · [Approvals](docs/HITL.md)
+
 ## Hyperscale by design
 
 An agent is a user's state and work, with compute allocated when needed. You don't provision an always-on brain process for every user. Independent users can run on different instances; a conversation keeps its own lease.
+
+<details>
+<summary><b>Azure reference: scaling limits and settings</b></summary>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/scale-design-dark.svg">
   <img alt="Azure scaling map: stateless Functions serve any user, Cosmos DB partitions keep user data separate, schedules are sharded, Web PubSub delivers replies, and a renewed lease serializes each conversation." src="docs/assets/scale-design-light.svg">
 </picture>
 
-*The Azure deployment, illustrated.* Cloud quotas, the database and your configuration set capacity. The [scaling guide](docs/Architecture.md#scaling) explains the limits; [cloud packs](docs/Platforms.md) map the same runtime to Cloudflare and AWS.
+</details>
+
+Cloud quotas, the database and your configuration set capacity. The [scaling guide](docs/Architecture.md#scaling) explains the limits; [cloud packs](docs/Platforms.md) map the same runtime to Cloudflare and AWS.
 
 ### Measured end to end
 
@@ -89,12 +131,17 @@ These are estimates with [documented assumptions and a script for your own numbe
 
 ## You build the product. It runs the brain.
 
+<details>
+<summary><b>Azure reference: product, runtime and infrastructure layers</b></summary>
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/stack-dark.svg">
   <img alt="Three layers, shown on Azure: your product supplies the app, brand, sign-in, personality and skills; AgentForEach supplies memory, schedules, tool loops, approvals, channels and private workspaces; the cloud pack supplies serverless infrastructure." src="docs/assets/stack-light.svg">
 </picture>
 
-You bring the interface, brand, sign-in, agent personality and skills. AgentForEach supplies the runtime and keeps each user's state separate. The illustration shows the Azure infrastructure; Cloudflare and AWS implement the same [six platform contracts](docs/Platforms.md).
+</details>
+
+You bring the interface, brand, sign-in, agent personality and skills. AgentForEach supplies the runtime and keeps each user's state separate. Azure, Cloudflare and AWS implement the same [six platform contracts](docs/Platforms.md). The expandable illustration shows an Azure deployment.
 
 It runs in your cloud account, using the model providers you configure. For one person's own agent, there is [single-user mode](docs/Identity.md#deployment-scenarios).
 
@@ -189,21 +236,6 @@ The [portable realtime client](packages/platform/src/realtime/client/index.ts) s
 </table>
 
 Capabilities such as sandbox credential injection vary by backend. [Platforms](docs/Platforms.md) and [Sandboxes](docs/Sandbox.md) describe those differences.
-
-## Architecture
-
-The runtime talks to six contracts: **host, durable work, database, files, realtime and sandbox**. Each cloud pack implements them. The product API, agent loop and client stay shared.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/architecture-dark.svg">
-  <img alt="Azure reference architecture: app, Telegram and WhatsApp requests reach stateless Functions. Durable work and a sharded scheduler drive the agent runner, which uses user-scoped storage, model providers, private sandboxes and optional search. Replies stream through Web PubSub to the user’s connected devices." src="docs/assets/architecture-light.svg">
-</picture>
-
-*The Azure deployment, end to end.* [Cloud packs](docs/Platforms.md) shows which services fill these roles on Cloudflare and AWS.
-
-A request authenticates the user and starts durable work. The run loads that user's state, calls the model and tools, and streams events to their connections. A renewed session lease prevents concurrent turns in one conversation. Reconnects can recover run status and pending forms.
-
-[Architecture](docs/Architecture.md) · [Cloud packs](docs/Platforms.md) · [Sessions](docs/Session-management.md) · [Approvals](docs/HITL.md)
 
 ## How it compares
 

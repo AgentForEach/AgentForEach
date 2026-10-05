@@ -6,7 +6,7 @@ AgentForEach runs on more than one cloud. The gateway's code is written against 
 |---|---|---|---|
 | Azure | [`packages/platform-azure`](../packages/platform-azure) | [`infra/`](../infra) (Pulumi) | The default |
 | Cloudflare | [`packages/platform-cloudflare`](../packages/platform-cloudflare) | `deploy/cloudflare/` (Wrangler) | New; see [Cloudflare](Cloudflare.md) |
-| AWS | [`packages/platform-aws`](../packages/platform-aws) | [`deploy/aws/`](../deploy/aws) (Pulumi) | Preview, to be validated on a fresh deployment; see [AWS](AWS.md) |
+| AWS | [`packages/platform-aws`](../packages/platform-aws) | [`deploy/aws/`](../deploy/aws) (Pulumi) | Preview; live-validated on a fresh deployment. See [AWS](AWS.md) and the [validation record](AWS-Validation.md) |
 | Google Cloud | Not yet | | Follow [Adding a cloud](#adding-a-cloud) |
 
 ## The ports
