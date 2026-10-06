@@ -27,6 +27,6 @@
     "test": "npm run build && node --test dist/*.test.js dist/memory/*.test.js"
   },
   "devDependencies": {
-    "@types/node": "^22.20.4"
+    "@types/node": "^22.20.5"
   }
 }
