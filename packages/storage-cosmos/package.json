@@ -33,9 +33,9 @@
   "dependencies": {
     "@agentforeach/storage": "0.1.0",
     "@azure/core-auth": "^1.11.0",
-    "@azure/cosmos": "^4.10.1"
+    "@azure/cosmos": "^4.10.2"
   },
   "devDependencies": {
-    "@types/node": "^22.20.4"
+    "@types/node": "^22.20.5"
   }
 }
