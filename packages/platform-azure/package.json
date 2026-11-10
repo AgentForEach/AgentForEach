@@ -41,12 +41,12 @@
   "dependencies": {
     "@agentforeach/platform": "0.1.0",
     "@azure/core-auth": "^1.11.0",
-    "@azure/functions": "^4.16.5",
+    "@azure/functions": "^4.17.0",
     "@azure/storage-blob": "^12.34.0",
     "@azure/web-pubsub": "^1.2.0",
-    "durable-functions": "^3.5.0"
+    "durable-functions": "^3.6.0"
   },
   "devDependencies": {
-    "@types/node": "^22.20.4"
+    "@types/node": "^22.20.5"
   }
 }
